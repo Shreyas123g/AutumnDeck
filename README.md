@@ -39,8 +39,26 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 > **Code Signing In-Progress:** AutumnDeck has officially applied for free open-source code signing provided by [SignPath.io](https://signpath.io) (certificate by [SignPath Foundation](https://signpath.org)).
 >
 > On Windows 11 22H2 / 24H2+ machines with **Smart App Control (SAC)** or **Hypervisor Code Integrity (HVCI)** active, Windows blocks unsigned installers running from `%TEMP%` (`Error 4551: Application Control policy`) or unsigned DLL injection into `explorer.exe`.
-> - **During Pre-Release Testing:** We recommend the **Portable Edition (`.zip`)**. If testing on a clean Windows 11 machine with strict App Control, unblock the downloaded files before running.
-> - **Once Approved:** All releases will be automatically signed by SignPath directly in GitHub Actions, providing seamless, trusted installation with zero warnings.
+>
+> Once SignPath Foundation issues our official certificate, all releases will be signed automatically via GitHub Actions, and AutumnDeck will install and run natively on standard boot with zero warnings.
+
+#### How to Test Pre-Release Builds (Prior to Official Signing)
+If you are testing current unsigned pre-release builds on a Windows 11 PC with strict Smart App Control or HVCI enabled:
+
+1. **Use Portable Edition (`.zip`):**
+   - Download `AutumnDeck-2.0.0-Portable.zip`.
+   - Right-click the `.zip` ➔ **Properties** ➔ check **Unblock** (if present) ➔ click **Apply**.
+   - Extract the folder to your preferred location (e.g., `Downloads` or `Desktop`).
+
+2. **If Windows 11 Blocks Unsigned DLL Injection:**
+   - Hold down the **Shift** key while clicking **Restart** in the Windows Start menu (or run `shutdown /r /o /t 0` in PowerShell).
+   - Navigate to: **Troubleshoot** ➔ **Advanced options** ➔ **Startup Settings** ➔ click **Restart**.
+   - On the Startup Settings screen, press **`7`** or **`F7`** to select **Disable driver signature enforcement** (this temporarily suspends HVCI / unsigned injection restrictions for that test session).
+
+3. **Verify Taskbar Styling:**
+   - Double-click `AutumnDeck.exe`.
+   - Choose any preset in **Taskbar Studio** (e.g., *Cosmic Gravity*, *Split Pill*, or *Katana Glass*).
+   - Restart `explorer.exe` from Task Manager — styling will remain locked and persistent without reverting.
 
 ---
 

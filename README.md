@@ -29,20 +29,10 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 
 ## Download & Installation
 1. Download the latest release from **Releases**:
-   - **Portable Edition (Recommended for Pre-releases):** `AutumnDeck-2.0.0-Portable.zip` (extract all files together, right-click `AutumnDeck.exe` -> Properties -> Unblock if present, and run).
+   - **Portable Edition (Recommended):** `AutumnDeck-2.0.0-Portable.zip` (right-click `.zip` ➔ Properties ➔ check **Unblock** if present ➔ extract all files together and run `AutumnDeck.exe`).
    - **Installer:** `AutumnDeck-Setup-2.0.0.exe`
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
-
-### Windows 11 Smart App Control & Code Signing
-AutumnDeck binaries are signed with an official project Authenticode certificate (`AutumnDeck.cer`).
-
-On Windows 11 (22H2 / 24H2+) with **Smart App Control (SAC)** or strict security policies enabled:
-1. **Portable Edition (Recommended):**
-   - Download and extract `AutumnDeck-2.0.0-Portable.zip`.
-   - Right-click `Install-Certificate.bat` and select **Run as administrator** once.
-   - This registers the AutumnDeck certificate into your PC's **Trusted Publishers** store so Windows 11 natively trusts AutumnDeck and allows taskbar styling without warnings or requiring Advanced Boot.
-2. Double-click `AutumnDeck.exe` and enjoy!
 
 ---
 

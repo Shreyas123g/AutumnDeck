@@ -17,9 +17,6 @@ try {
         New-Item -ItemType Directory -Path $distDir | Out-Null
     }
 
-    # Ensure binaries are signed
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "sign.ps1")
-
     # 1. Build Inno Setup Installer
     $iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
     if (-not $iscc) {
@@ -40,15 +37,6 @@ try {
         throw "ISCC.exe failed with exit code $LASTEXITCODE"
     }
 
-    # Re-sign the generated installer
-    $setupExe = Join-Path $distDir "AutumnDeck-Setup-2.0.0.exe"
-    if (Test-Path $setupExe) {
-        $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object { $_.Subject -match "AutumnDeck" } | Select-Object -First 1
-        if ($cert) {
-            Set-AuthenticodeSignature -FilePath $setupExe -Certificate $cert -HashAlgorithm SHA256 | Out-Null
-        }
-    }
-
     # 2. Build Clean Portable ZIP (tests self-healing AutumnXamlTap.dll ACL automatically)
     $stageDir = Join-Path $distDir "portable_stage"
     if (Test-Path $stageDir) {
@@ -60,12 +48,6 @@ try {
     Copy-Item (Join-Path $PSScriptRoot "AutumnGuard.exe") $stageDir
     Copy-Item (Join-Path $PSScriptRoot "AutumnXamlTap.dll") $stageDir
     Copy-Item (Join-Path $PSScriptRoot "assets\AutumnDeck.ico") $stageDir
-    if (Test-Path (Join-Path $PSScriptRoot "AutumnDeck.cer")) {
-        Copy-Item (Join-Path $PSScriptRoot "AutumnDeck.cer") $stageDir
-    }
-    if (Test-Path (Join-Path $PSScriptRoot "Install-Certificate.bat")) {
-        Copy-Item (Join-Path $PSScriptRoot "Install-Certificate.bat") $stageDir
-    }
     $starterMp4 = Join-Path $PSScriptRoot "assets\Autumn_Sanctuary_Starter.mp4"
     if (Test-Path $starterMp4) {
         $wpStage = Join-Path $stageDir "Wallpapers"
@@ -84,10 +66,7 @@ Requirements:
 Quick Start:
 1. Extract all files in this folder together (keep AutumnDeck.exe, AutumnGuard.exe,
    and AutumnXamlTap.dll in the same directory).
-2. (Optional for Windows 11 Smart App Control):
-   - Right-click 'Install-Certificate.bat' and click 'Run as administrator' once.
-   - This registers the AutumnDeck certificate into Windows Trusted Publishers so
-     the app and taskbar styling run permanently on normal boot without warnings.
+2. Right-click AutumnDeck-2.0.0-Portable.zip -> Properties -> check 'Unblock' before extracting.
 3. Double-click AutumnDeck.exe.
    - Required permissions on AutumnXamlTap.dll are verified and repaired automatically.
    - Right-click the tray icon or run AutumnDeck.exe again to open AutumnDeck Studio.

@@ -29,10 +29,18 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 
 ## Download & Installation
 1. Download the latest release from **Releases**:
+   - **Portable Edition (Recommended for Pre-releases):** `AutumnDeck-2.0.0-Portable.zip` (extract all files together, right-click `AutumnDeck.exe` -> Properties -> Unblock if present, and run).
    - **Installer:** `AutumnDeck-Setup-2.0.0.exe`
-   - **Portable Edition:** `AutumnDeck-2.0.0-Portable.zip` (extract all files together and run `AutumnDeck.exe`)
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
+
+### Windows 11 Smart App Control & Code Signing Notice
+> [!NOTE]
+> **Code Signing In-Progress:** AutumnDeck has officially applied for free open-source code signing provided by [SignPath.io](https://signpath.io) (certificate by [SignPath Foundation](https://signpath.org)).
+>
+> On Windows 11 22H2 / 24H2+ machines with **Smart App Control (SAC)** or **Hypervisor Code Integrity (HVCI)** active, Windows blocks unsigned installers running from `%TEMP%` (`Error 4551: Application Control policy`) or unsigned DLL injection into `explorer.exe`.
+> - **During Pre-Release Testing:** We recommend the **Portable Edition (`.zip`)**. If testing on a clean Windows 11 machine with strict App Control, unblock the downloaded files before running.
+> - **Once Approved:** All releases will be automatically signed by SignPath directly in GitHub Actions, providing seamless, trusted installation with zero warnings.
 
 ---
 

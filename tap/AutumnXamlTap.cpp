@@ -29,16 +29,17 @@ static HMODULE g_hModule = nullptr;
 static LONG g_dllRefs = 0;
 
 static bool ReadSharedConfig(TapSharedConfig& out) {
-    out = { 1, 0, 0x00000000, 0 };
     HANDLE hMap = OpenFileMappingW(FILE_MAP_READ, FALSE, L"Local\\AutumnTaskbarTapCfg");
     if (!hMap) return false;
     auto* ptr = (TapSharedConfig*)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, sizeof(TapSharedConfig));
     if (ptr) {
         out = *ptr;
         UnmapViewOfFile(ptr);
+        CloseHandle(hMap);
+        return true;
     }
     CloseHandle(hMap);
-    return true;
+    return false;
 }
 
 static void WriteDiagLog(const wchar_t* line) {
@@ -80,6 +81,7 @@ class AutumnTap final : public IObjectWithSite, public IVisualTreeServiceCallbac
     bool m_loggedApply = false;
     bool m_everTouchedBrush = false;
     bool m_applying = false;
+    TapSharedConfig m_lastCfg = { 1, 1, 0x00000000, 0 };
 
 public:
     AutumnTap() { InterlockedIncrement(&g_dllRefs); }
@@ -290,7 +292,7 @@ private:
         if (self) {
             if (msg == WM_APP_TAP_APPLY) {
                 KillTimer(hwnd, TIMER_TAP_COALESCE);
-                self->ApplyAll();
+                self->ApplyAll(wp, lp);
                 return 0;
             }
             if (msg == WM_APP_TAP_SCHEDULE) {
@@ -305,6 +307,7 @@ private:
             if (msg == WM_APP_TAP_DETACH) {
                 KillTimer(hwnd, TIMER_TAP_COALESCE);
                 TapSharedConfig restore = { 1, 0, 0, 0 };
+                self->m_lastCfg = restore;
                 self->ApplyAllWith(restore);
                 return self->m_everTouchedBrush ? 2 : 0;
             }
@@ -385,16 +388,27 @@ private:
         if (props) CoTaskMemFree(props);
     }
 
-    void ApplyAll() {
-        TapSharedConfig cfg;
-        ReadSharedConfig(cfg);
-        ApplyAllWith(cfg);
+    void ApplyAll(WPARAM wp = 0, LPARAM lp = 0) {
+        if (wp == 1) {
+            m_lastCfg = { 1, 1, (DWORD)lp, 0 };
+        } else if (wp == 2) {
+            m_lastCfg = { 1, 0, (DWORD)lp, 0 };
+        } else {
+            TapSharedConfig cfg = m_lastCfg;
+            if (ReadSharedConfig(cfg)) {
+                m_lastCfg = cfg;
+            }
+        }
+        ApplyAllWith(m_lastCfg);
     }
 
     void ApplyAllIfActive() {
-        TapSharedConfig cfg;
-        if (ReadSharedConfig(cfg) && cfg.active) {
-            ApplyAllWith(cfg);
+        TapSharedConfig cfg = m_lastCfg;
+        if (ReadSharedConfig(cfg)) {
+            m_lastCfg = cfg;
+        }
+        if (m_lastCfg.active) {
+            ApplyAllWith(m_lastCfg);
         } else if (!m_opacityModified.empty() || !m_visibilityModified.empty() || !m_brushModified.empty()) {
             TapSharedConfig restore = { 1, 0, 0, 0 };
             ApplyAllWith(restore);
@@ -409,15 +423,19 @@ private:
     }
 
     void ApplyToFill(InstanceHandle h) {
-        TapSharedConfig cfg;
-        ReadSharedConfig(cfg);
-        ApplyToFillWith(h, cfg);
+        TapSharedConfig cfg = m_lastCfg;
+        if (ReadSharedConfig(cfg)) {
+            m_lastCfg = cfg;
+        }
+        ApplyToFillWith(h, m_lastCfg);
     }
 
     void ApplyToStroke(InstanceHandle h) {
-        TapSharedConfig cfg;
-        ReadSharedConfig(cfg);
-        ApplyToStrokeWith(h, cfg);
+        TapSharedConfig cfg = m_lastCfg;
+        if (ReadSharedConfig(cfg)) {
+            m_lastCfg = cfg;
+        }
+        ApplyToStrokeWith(h, m_lastCfg);
     }
 
     bool SetPropByName(InstanceHandle h, const wchar_t* propName, const wchar_t* typeName, const wchar_t* valStr, HRESULT* outHrCreate = nullptr, HRESULT* outHrSet = nullptr) {

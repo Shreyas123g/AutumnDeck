@@ -34,6 +34,10 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, MONITORINFO,
     MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::Security::{
+    InitializeSecurityDescriptor, SetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR,
+    SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
     COINIT_MULTITHREADED,
@@ -1519,10 +1523,36 @@ impl TapBridge {
     fn new(notify_hwnd: HWND, notify_tap_msg: u32) -> Self {
         let mut h_map = HANDLE::default();
         let mut view = MEMORY_MAPPED_VIEW_ADDRESS::default();
+        let mut sa = SECURITY_ATTRIBUTES::default();
+        let mut sd = SECURITY_DESCRIPTOR::default();
+        let mut sa_ptr: Option<*const SECURITY_ATTRIBUTES> = None;
         unsafe {
+            if InitializeSecurityDescriptor(
+                PSECURITY_DESCRIPTOR(&mut sd as *mut _ as *mut _),
+                1,
+            )
+            .is_ok()
+            {
+                // NULL DACL explicitly grants read/write access across all integrity levels
+                // (Medium explorer.exe, Low/AppContainer, and High Administrator).
+                if SetSecurityDescriptorDacl(
+                    PSECURITY_DESCRIPTOR(&mut sd as *mut _ as *mut _),
+                    true,
+                    None,
+                    false,
+                )
+                .is_ok()
+                {
+                    sa.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
+                    sa.lpSecurityDescriptor = &mut sd as *mut _ as *mut _;
+                    sa.bInheritHandle = false.into();
+                    sa_ptr = Some(&sa);
+                }
+            }
+
             if let Ok(h) = CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
-                None,
+                sa_ptr,
                 PAGE_READWRITE,
                 0,
                 size_of::<TapSharedConfig>() as u32,
@@ -1728,7 +1758,7 @@ impl TapBridge {
                 let _ = SendMessageTimeoutW(
                     self.msg_wnd,
                     WM_APP_TAP_APPLY,
-                    WPARAM(0),
+                    WPARAM(1),
                     LPARAM(0),
                     SMTO_ABORTIFHUNG,
                     150,

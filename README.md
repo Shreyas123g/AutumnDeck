@@ -39,6 +39,7 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 ## Community & Sponsorship
 If you love AutumnDeck and want to support ongoing development, new presets, and features:
 - **Patreon:** [patreon.com/c/AutumnDeck](https://www.patreon.com/c/AutumnDeck)
+- **Ko-fi:** [ko-fi.com/autumndeck](https://ko-fi.com/autumndeck)
 - **GitHub Sponsors:** [github.com/sponsors/Shreyas123g](https://github.com/sponsors/Shreyas123g)
 
 ---

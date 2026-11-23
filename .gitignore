@@ -1,0 +1,20 @@
+# Build outputs & installers
+/target/
+/dist/
+*.exe
+*.dll
+*.old.*
+*.new.*
+*.obj
+*.lib
+*.exp
+*.pdb
+*.res
+
+# Scratch & local test artifacts
+panic.txt
+GEMINI_HANDOFF_PROMPT.txt
+BUGS_AND_FIXES_PLAN.md
+verify_modular_widgets.*
+modular_verify_*.png
+Themes/

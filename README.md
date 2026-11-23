@@ -34,39 +34,22 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 
-### Windows 11 Smart App Control & Code Signing Notice
-> [!NOTE]
-> **Code Signing In-Progress:** AutumnDeck has officially applied for free open-source code signing provided by [SignPath.io](https://signpath.io) (certificate by [SignPath Foundation](https://signpath.org)).
->
-> On Windows 11 22H2 / 24H2+ machines with **Smart App Control (SAC)** or **Hypervisor Code Integrity (HVCI)** active, Windows blocks unsigned installers running from `%TEMP%` (`Error 4551: Application Control policy`) or unsigned DLL injection into `explorer.exe`.
->
-> Once SignPath Foundation issues our official certificate, all releases will be signed automatically via GitHub Actions, and AutumnDeck will install and run natively on standard boot with zero warnings.
+### Windows 11 Smart App Control & Code Signing
+AutumnDeck binaries are signed with an official project Authenticode certificate (`AutumnDeck.cer`).
 
-#### How to Test Pre-Release Builds (Prior to Official Signing)
-If you are testing current unsigned pre-release builds on a Windows 11 PC with strict Smart App Control or HVCI enabled:
-
-1. **Use Portable Edition (`.zip`):**
-   - Download `AutumnDeck-2.0.0-Portable.zip`.
-   - Right-click the `.zip` ➔ **Properties** ➔ check **Unblock** (if present) ➔ click **Apply**.
-   - Extract the folder to your preferred location (e.g., `Downloads` or `Desktop`).
-
-2. **If Windows 11 Blocks Unsigned DLL Injection:**
-   - Hold down the **Shift** key while clicking **Restart** in the Windows Start menu (or run `shutdown /r /o /t 0` in PowerShell).
-   - Navigate to: **Troubleshoot** ➔ **Advanced options** ➔ **Startup Settings** ➔ click **Restart**.
-   - On the Startup Settings screen, press **`7`** or **`F7`** to select **Disable driver signature enforcement** (this temporarily suspends HVCI / unsigned injection restrictions for that test session).
-
-3. **Verify Taskbar Styling:**
-   - Double-click `AutumnDeck.exe`.
-   - Choose any preset in **Taskbar Studio** (e.g., *Cosmic Gravity*, *Split Pill*, or *Katana Glass*).
-   - Restart `explorer.exe` from Task Manager — styling will remain locked and persistent without reverting.
+On Windows 11 (22H2 / 24H2+) with **Smart App Control (SAC)** or strict security policies enabled:
+1. **Portable Edition (Recommended):**
+   - Download and extract `AutumnDeck-2.0.0-Portable.zip`.
+   - Right-click `Install-Certificate.bat` and select **Run as administrator** once.
+   - This registers the AutumnDeck certificate into your PC's **Trusted Publishers** store so Windows 11 natively trusts AutumnDeck and allows taskbar styling without warnings or requiring Advanced Boot.
+2. Double-click `AutumnDeck.exe` and enjoy!
 
 ---
 
-## Code Signing Policy
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-- **Authors & Committers:** [@Shreyas123g](https://github.com/Shreyas123g)
-- **Reviewers & Approvers:** [@Shreyas123g](https://github.com/Shreyas123g)
+## Community & Sponsorship
+If you love AutumnDeck and want to support ongoing development, new presets, and features:
+- **Patreon:** [patreon.com/c/AutumnDeck](https://www.patreon.com/c/AutumnDeck)
+- **GitHub Sponsors:** [github.com/sponsors/Shreyas123g](https://github.com/sponsors/Shreyas123g)
 
 ---
 

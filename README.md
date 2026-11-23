@@ -33,3 +33,17 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
    - **Portable Edition:** `AutumnDeck-2.0.0-Portable.zip` (extract all files together and run `AutumnDeck.exe`)
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
+
+---
+
+## Code Signing Policy
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- **Authors & Committers:** [@Shreyas123g](https://github.com/Shreyas123g)
+- **Reviewers & Approvers:** [@Shreyas123g](https://github.com/Shreyas123g)
+
+---
+
+## Privacy Policy
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it (e.g., retrieving weather data from Open-Meteo only when the Weather widget is enabled). AutumnDeck does not collect, track, or share any personal data, analytics, or telemetry. Full details: [PRIVACY.md](PRIVACY.md).
+

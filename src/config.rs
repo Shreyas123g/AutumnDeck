@@ -129,6 +129,7 @@ pub enum MacDockHideMode {
     SmartAutoHide,
     HoverReveal,
     AlwaysVisible,
+    StealthHide,
 }
 
 impl MacDockHideMode {
@@ -137,6 +138,7 @@ impl MacDockHideMode {
             MacDockHideMode::SmartAutoHide => "smart",
             MacDockHideMode::HoverReveal => "hover",
             MacDockHideMode::AlwaysVisible => "always",
+            MacDockHideMode::StealthHide => "stealth",
         }
     }
 
@@ -144,6 +146,7 @@ impl MacDockHideMode {
         match s.trim().to_ascii_lowercase().as_str() {
             "hover" | "edge" => MacDockHideMode::HoverReveal,
             "always" | "visible" => MacDockHideMode::AlwaysVisible,
+            "stealth" | "hidden" | "hide" => MacDockHideMode::StealthHide,
             _ => MacDockHideMode::SmartAutoHide,
         }
     }
@@ -437,6 +440,50 @@ impl TaskbarVizStyle {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VizColorMode {
+    ThemeNative,
+    CustomAccent,
+    MatchWallpaper,
+}
+
+impl VizColorMode {
+    pub const SWATCHES: [(u32, &'static str); 8] = [
+        (0x00E8FF, "Cyber Cyan"),
+        (0xFF38A8, "Synth Magenta"),
+        (0x8CFF3A, "Electric Lime"),
+        (0x7A86FF, "Vivid Indigo"),
+        (0xFF7A28, "Solar Orange"),
+        (0x34E86C, "Studio Emerald"),
+        (0xFF3B5C, "Crimson Laser"),
+        (0xE8F6FF, "Frost Ice"),
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VizColorMode::ThemeNative => "native",
+            VizColorMode::CustomAccent => "custom",
+            VizColorMode::MatchWallpaper => "wallpaper",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VizColorMode::ThemeNative => "Native",
+            VizColorMode::CustomAccent => "Custom",
+            VizColorMode::MatchWallpaper => "Wallpaper",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "custom" | "accent" | "custom_accent" => VizColorMode::CustomAccent,
+            "wallpaper" | "match_wallpaper" | "chameleon" => VizColorMode::MatchWallpaper,
+            _ => VizColorMode::ThemeNative,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TaskbarThemeFolder {
     RealisticMaterials,
     InteractiveDocks,
@@ -474,13 +521,13 @@ impl TaskbarThemeFolder {
     pub fn label(self) -> &'static str {
         match self {
             TaskbarThemeFolder::RealisticMaterials => "Realistic Themes (18)",
-            TaskbarThemeFolder::InteractiveDocks => "Interactive Docks (19)",
+            TaskbarThemeFolder::InteractiveDocks => "Interactive Docks (20)",
             TaskbarThemeFolder::OsDocks => "OS & Iconic Docks (6)",
             TaskbarThemeFolder::KineticThemes => "Kinetic Interactive (6)",
             TaskbarThemeFolder::InteractiveElements => "Interactive Elements (6)",
             TaskbarThemeFolder::LiveThemes => "Live & Crystal (8)",
             TaskbarThemeFolder::MusicThemes => "Music Themes (6)",
-            TaskbarThemeFolder::All => "All Themes (69)",
+            TaskbarThemeFolder::All => "All Themes (70)",
         }
     }
 
@@ -3103,9 +3150,15 @@ pub struct AppConfig {
     pub tb_viz_style: TaskbarVizStyle,
     pub tb_viz_opacity: u8,
     pub tb_viz_mirror: bool,
+    pub tb_viz_color_mode: VizColorMode,
+    pub tb_viz_accent_rgb: u32,
     pub tb_hover_react: bool,
     pub tb_ambient_anim: bool,
+    pub tb_show_backdrop: bool,
+    pub tb_show_rim: bool,
+    pub tb_show_fx: bool,
     pub viz_eco_fps: bool,
+    pub anim_fps: u32,
     pub dt_hover_fx: TaskbarVizStyle,
     pub apps_hover_fx: TaskbarVizStyle,
     pub vitals_hover_fx: TaskbarVizStyle,
@@ -4299,6 +4352,9 @@ pub struct DockShelfFrameConfig {
     pub art_override: Option<DockArtLayer>,
     pub glass_alpha_pct: u8,
     pub rim_alpha_pct: u8,
+    pub show_plate: bool,
+    pub show_rim: bool,
+    pub show_art: bool,
 }
 
 impl Default for DockShelfFrameConfig {
@@ -4310,7 +4366,17 @@ impl Default for DockShelfFrameConfig {
             art_override: None,
             glass_alpha_pct: 100,
             rim_alpha_pct: 100,
+            show_plate: true,
+            show_rim: true,
+            show_art: true,
         }
+    }
+}
+
+impl DockShelfFrameConfig {
+    #[inline]
+    pub fn is_all_elements_off(&self) -> bool {
+        !self.show_plate && !self.show_rim && !self.show_art
     }
 }
 
@@ -4326,6 +4392,10 @@ pub struct DockAppWidgetConfig {
     pub show_window_count_badge: bool,
     pub middle_click_action: u8,
     pub wheel_action: u8,
+    pub show_icons: bool,
+    pub show_cards: bool,
+    pub show_indicators: bool,
+    pub show_separators: bool,
 }
 
 impl Default for DockAppWidgetConfig {
@@ -4341,7 +4411,18 @@ impl Default for DockAppWidgetConfig {
             show_window_count_badge: false,
             middle_click_action: 0,
             wheel_action: 0,
+            show_icons: true,
+            show_cards: true,
+            show_indicators: true,
+            show_separators: true,
         }
+    }
+}
+
+impl DockAppWidgetConfig {
+    #[inline]
+    pub fn is_all_elements_off(&self) -> bool {
+        !self.show_icons && !self.show_cards && !self.show_indicators && !self.show_separators
     }
 }
 
@@ -4350,6 +4431,7 @@ pub struct DockClockWidgetConfig {
     pub theme_override: Option<TaskbarTheme>,
     pub engine: DockClockEngine,
     pub use_24h: Option<bool>,
+    pub show_time: bool,
     pub show_seconds: bool,
     pub show_date: bool,
     pub show_weekday: bool,
@@ -4366,6 +4448,7 @@ impl Default for DockClockWidgetConfig {
             theme_override: None,
             engine: DockClockEngine::InheritTheme,
             use_24h: None,
+            show_time: true,
             show_seconds: false,
             show_date: true,
             show_weekday: true,
@@ -4378,6 +4461,13 @@ impl Default for DockClockWidgetConfig {
     }
 }
 
+impl DockClockWidgetConfig {
+    #[inline]
+    pub fn is_all_elements_off(&self) -> bool {
+        !self.show_time && !self.show_date
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DockTrayWidgetConfig {
     pub theme_override: Option<TaskbarTheme>,
@@ -4387,6 +4477,9 @@ pub struct DockTrayWidgetConfig {
     pub show_osd_on_scroll: bool,
     pub wheel_step_pct: u8,
     pub custom_accent_rgb: Option<u32>,
+    pub show_net: bool,
+    pub show_audio: bool,
+    pub show_battery: bool,
 }
 
 impl Default for DockTrayWidgetConfig {
@@ -4399,7 +4492,32 @@ impl Default for DockTrayWidgetConfig {
             show_osd_on_scroll: true,
             wheel_step_pct: 2,
             custom_accent_rgb: None,
+            show_net: true,
+            show_audio: true,
+            show_battery: true,
         }
+    }
+}
+
+impl DockTrayWidgetConfig {
+    #[inline]
+    pub fn eff_show_net(&self) -> bool {
+        self.show_net && self.net_style != TrayNetMeterStyle::Hidden
+    }
+
+    #[inline]
+    pub fn eff_show_audio(&self) -> bool {
+        self.show_audio
+    }
+
+    #[inline]
+    pub fn eff_show_battery(&self) -> bool {
+        self.show_battery && self.battery_style != TrayBatteryMeterStyle::Hidden
+    }
+
+    #[inline]
+    pub fn is_all_elements_off(&self) -> bool {
+        !self.eff_show_net() && !self.eff_show_audio() && !self.eff_show_battery()
     }
 }
 
@@ -4413,6 +4531,8 @@ pub struct DockHudWidgetConfig {
     pub width_pct: u8,
     pub plate_alpha_pct: u8,
     pub marquee_ticker: bool,
+    pub show_telemetry: bool,
+    pub show_active_app: bool,
 }
 
 impl Default for DockHudWidgetConfig {
@@ -4426,7 +4546,16 @@ impl Default for DockHudWidgetConfig {
             width_pct: 66,
             plate_alpha_pct: 97,
             marquee_ticker: false,
+            show_telemetry: true,
+            show_active_app: true,
         }
+    }
+}
+
+impl DockHudWidgetConfig {
+    #[inline]
+    pub fn is_all_elements_off(&self) -> bool {
+        !self.show_telemetry && !self.show_active_app
     }
 }
 
@@ -4457,6 +4586,17 @@ impl Default for DockUtilityWidgetConfig {
     }
 }
 
+impl DockUtilityWidgetConfig {
+    #[inline]
+    pub fn is_all_elements_off(&self) -> bool {
+        !self.show_start
+            && !self.show_search
+            && !self.show_taskview
+            && !self.show_trash
+            && !self.show_studio
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -4471,9 +4611,15 @@ impl Default for AppConfig {
             tb_viz_style: TaskbarVizStyle::Off,
             tb_viz_opacity: 80,
             tb_viz_mirror: false,
+            tb_viz_color_mode: VizColorMode::ThemeNative,
+            tb_viz_accent_rgb: 0x00E8FF,
             tb_hover_react: true,
             tb_ambient_anim: true,
-            viz_eco_fps: true,
+            tb_show_backdrop: true,
+            tb_show_rim: true,
+            tb_show_fx: true,
+            viz_eco_fps: false,
+            anim_fps: AppConfig::DEFAULT_ANIM_FPS,
             dt_hover_fx: TaskbarVizStyle::Off,
             apps_hover_fx: TaskbarVizStyle::Off,
             vitals_hover_fx: TaskbarVizStyle::Off,
@@ -4485,21 +4631,21 @@ impl Default for AppConfig {
             widgets_hover_react: true,
             widgets_live_material: true,
             show_datetime: true,
-            show_apps: true,
-            show_vitals: true,
-            show_music: true,
-            show_cc: true,
+            show_apps: false,
+            show_vitals: false,
+            show_music: false,
+            show_cc: false,
 
-            dt_x: 91,
-            dt_y: 51,
-            apps_x: 84,
-            apps_y: 265,
-            vitals_x: 836,
-            vitals_y: 567,
-            music_x: 838,
-            music_y: 638,
-            cc_x: 837,
-            cc_y: 244,
+            dt_x: 68,
+            dt_y: 42,
+            apps_x: 68,
+            apps_y: 198,
+            vitals_x: 810,
+            vitals_y: 502,
+            music_x: 804,
+            music_y: 42,
+            cc_x: 828,
+            cc_y: 178,
 
             dt_scale_pct: 100,
             dt_show_plate: true,
@@ -4658,16 +4804,43 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub const DEFAULT_ANIM_FPS: u32 = 45;
+
+    pub fn clamp_anim_fps(fps: u32) -> u32 {
+        fps.clamp(15, 120)
+    }
+
+    /// Dynamically calculates the render timer interval in milliseconds: `max(8, 1000 / anim_fps)`.
+    pub fn anim_frame_ms_for(fps: u32) -> u32 {
+        let clamped = Self::clamp_anim_fps(fps);
+        (1000 / clamped).max(8)
+    }
+
+    /// Active animation frame interval (ms) derived from `self.anim_fps`.
+    pub fn anim_frame_ms(&self) -> u32 {
+        Self::anim_frame_ms_for(self.anim_fps)
+    }
+
+    /// Updates `anim_fps` (clamped 15..=120) and keeps legacy `viz_eco_fps` synced (`<= 24`).
+    pub fn set_anim_fps(&mut self, fps: u32) {
+        self.anim_fps = Self::clamp_anim_fps(fps);
+        self.viz_eco_fps = self.anim_fps <= 24;
+    }
+
+    /// Unifies 12h/24h clock format across desktop widgets and the taskbar/dock clock.
+    pub fn set_clock_24h(&mut self, use_24h: bool) {
+        self.widgets_24h = use_24h;
+        self.w_clock.use_24h = Some(use_24h);
+    }
+
     /// Target frame interval (ms) for active audio spectrum visualizers (taskbar & music widget).
-    /// Eco mode caps rendering to ~24 FPS (42 ms) to roughly halve active playback CPU usage.
     pub fn viz_audio_frame_ms(&self) -> u32 {
-        if self.viz_eco_fps { 42 } else { 30 }
+        self.anim_frame_ms()
     }
 
     /// Target frame interval (ms) for the Dynamic Island music visualizer.
-    /// Eco mode caps to ~24 FPS (42 ms); full mode runs 60 FPS (16 ms).
     pub fn viz_island_frame_ms(&self) -> u32 {
-        if self.viz_eco_fps { 42 } else { 16 }
+        self.anim_frame_ms()
     }
     pub fn reset_dock_widget_overrides(&mut self) {
         self.w_shelf = DockShelfFrameConfig::default();
@@ -4676,6 +4849,21 @@ impl AppConfig {
         self.w_tray = DockTrayWidgetConfig::default();
         self.w_hud = DockHudWidgetConfig::default();
         self.w_util = DockUtilityWidgetConfig::default();
+    }
+
+    #[inline]
+    pub fn is_native_tb_all_elements_off(&self) -> bool {
+        !self.tb_show_backdrop && !self.tb_show_rim && !self.tb_show_fx
+    }
+
+    #[inline]
+    pub fn is_dock_all_elements_off(&self) -> bool {
+        self.w_shelf.is_all_elements_off()
+            && self.w_apps.is_all_elements_off()
+            && self.w_clock.is_all_elements_off()
+            && self.w_tray.is_all_elements_off()
+            && self.w_hud.is_all_elements_off()
+            && self.w_util.is_all_elements_off()
     }
 
     pub fn canvas_elem(&self, target: WidgetCanvasTarget, idx: usize) -> ClockElemTransform {
@@ -4952,6 +5140,9 @@ impl AppConfig {
         self.tb_viz_style = viz;
         self.tb_viz_mirror = mirror;
         self.tb_viz_opacity = 85;
+        self.tb_show_backdrop = true;
+        self.tb_show_rim = true;
+        self.tb_show_fx = true;
         self.corner_radius = match theme {
             TaskbarTheme::Retro95Classic | TaskbarTheme::FrutigerAero7 => 0,
             TaskbarTheme::EditorialPaperDock | TaskbarTheme::TerminalPhosphorDock => 4,
@@ -5010,6 +5201,11 @@ impl AppConfig {
             theme,
             TaskbarTheme::WallpaperGlass | TaskbarTheme::AuroraBorealis
         );
+        self.tb_viz_color_mode = if self.tb_match_wallpaper {
+            VizColorMode::MatchWallpaper
+        } else {
+            VizColorMode::ThemeNative
+        };
         let was_dock = self.mac_dock_enabled;
         let now_dock = theme.uses_virtual_dock();
         self.mac_dock_enabled = now_dock;
@@ -5020,18 +5216,34 @@ impl AppConfig {
         }
     }
 
+    pub fn set_tb_viz_color_mode(&mut self, mode: VizColorMode) {
+        self.tb_viz_color_mode = mode;
+        self.tb_match_wallpaper = mode == VizColorMode::MatchWallpaper;
+    }
+
+    pub fn set_tb_match_wallpaper(&mut self, on: bool) {
+        self.tb_match_wallpaper = on;
+        if on {
+            self.tb_viz_color_mode = VizColorMode::MatchWallpaper;
+        } else if self.tb_viz_color_mode == VizColorMode::MatchWallpaper {
+            self.tb_viz_color_mode = VizColorMode::ThemeNative;
+        }
+    }
+
     pub fn sync_hide_mode_from_dock(&mut self) {
         self.mode = match self.mac_dock_hide {
             MacDockHideMode::AlwaysVisible => TaskbarMode::AlwaysVisible,
             MacDockHideMode::HoverReveal => TaskbarMode::HoverReveal,
             MacDockHideMode::SmartAutoHide => TaskbarMode::SmartMaximize,
+            MacDockHideMode::StealthHide => TaskbarMode::StealthHide,
         };
     }
 
     pub fn sync_dock_hide_from_mode(&mut self) {
         self.mac_dock_hide = match self.mode {
             TaskbarMode::AlwaysVisible => MacDockHideMode::AlwaysVisible,
-            TaskbarMode::HoverReveal | TaskbarMode::StealthHide => MacDockHideMode::HoverReveal,
+            TaskbarMode::HoverReveal => MacDockHideMode::HoverReveal,
+            TaskbarMode::StealthHide => MacDockHideMode::StealthHide,
             TaskbarMode::SmartMaximize => MacDockHideMode::SmartAutoHide,
         };
     }
@@ -5853,6 +6065,7 @@ pub fn load_config() -> AppConfig {
 }
 
 /// Exports the active `AppConfig` to a portable `.autumn` / `.ini` file atomically.
+#[allow(dead_code)]
 pub fn export_setup_to_path(cfg: &AppConfig, dest: &Path) -> Result<(), String> {
     let mut portable = cfg.clone();
     portable.onboarding_done = true;
@@ -5861,6 +6074,7 @@ pub fn export_setup_to_path(cfg: &AppConfig, dest: &Path) -> Result<(), String> 
 }
 
 /// Saves a safety backup (`config.pre_import.bak`) of the live config before importing a setup.
+#[allow(dead_code)]
 pub fn backup_config_before_import(current: &AppConfig) {
     let bak = config_sibling_path(&config_path(), ".pre_import.bak");
     let _ = write_atomic_synced(&bak, &serialize_config_ini(current));
@@ -5868,6 +6082,7 @@ pub fn backup_config_before_import(current: &AppConfig) {
 
 /// Imports and validates a `.autumn` / `.ini` setup file. Gracefully preserves the local
 /// machine's `wallpaper_path` if the imported setup references a file not present on this PC.
+#[allow(dead_code)]
 pub fn import_setup_from_path(src: &Path, current: &AppConfig) -> Result<AppConfig, String> {
     let text = fs::read_to_string(src).map_err(|e| format!("Could not read setup file: {e}"))?;
     if !has_valid_config_header(&text) {
@@ -5899,6 +6114,7 @@ pub fn import_setup_from_path(src: &Path, current: &AppConfig) -> Result<AppConf
 }
 
 /// Opens a native Windows Save dialog for exporting a `.autumn` setup file.
+#[allow(dead_code)]
 pub fn pick_export_setup_file(owner: HWND) -> Option<PathBuf> {
     let mut buf = vec![0u16; 520];
     let def_name = to_wide("AutumnDeck-Setup.autumn");
@@ -5932,6 +6148,7 @@ pub fn pick_export_setup_file(owner: HWND) -> Option<PathBuf> {
 }
 
 /// Opens a native Windows Open dialog for importing a `.autumn` / `.ini` setup file.
+#[allow(dead_code)]
 pub fn pick_import_setup_file(owner: HWND) -> Option<PathBuf> {
     let mut buf = vec![0u16; 520];
     let filter = to_wide(
@@ -5988,6 +6205,8 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
     let mut saw_per_widget_match = false;
     let mut saw_dock_sync_flag = false;
     let mut saw_onboarding = false;
+    let mut saw_anim_fps = false;
+    let mut saw_viz_color_mode = false;
     let mut canvas_schema: u8 = 5;
     let mut legacy_dynamic_accent: Option<bool> = None;
     let mut pending_ext_elems: Vec<(usize, usize, ClockElemTransform)> = Vec::new();
@@ -6026,9 +6245,31 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                     }
                 }
                 "tb_viz_mirror" => cfg.tb_viz_mirror = parse_bool(val),
+                "tb_viz_color_mode" => {
+                    cfg.tb_viz_color_mode = VizColorMode::from_str(val);
+                    saw_viz_color_mode = true;
+                }
+                "tb_viz_accent_rgb" => {
+                    if let Some(c) = parse_hex_rgb(val) {
+                        cfg.tb_viz_accent_rgb = c;
+                    }
+                }
                 "tb_hover_react" => cfg.tb_hover_react = parse_bool(val),
                 "tb_ambient_anim" => cfg.tb_ambient_anim = parse_bool(val),
-                "viz_eco_fps" => cfg.viz_eco_fps = parse_bool(val),
+                "tb_show_backdrop" => cfg.tb_show_backdrop = parse_bool(val),
+                "tb_show_rim" => cfg.tb_show_rim = parse_bool(val),
+                "tb_show_fx" => cfg.tb_show_fx = parse_bool(val),
+                "anim_fps" => {
+                    if let Ok(v) = val.parse::<u32>() {
+                        cfg.set_anim_fps(v);
+                        saw_anim_fps = true;
+                    }
+                }
+                "viz_eco_fps" => {
+                    if !saw_anim_fps {
+                        cfg.viz_eco_fps = parse_bool(val);
+                    }
+                }
                 "dt_hover_fx" => cfg.dt_hover_fx = TaskbarVizStyle::from_str(val),
                 "apps_hover_fx" => cfg.apps_hover_fx = TaskbarVizStyle::from_str(val),
                 "vitals_hover_fx" => cfg.vitals_hover_fx = TaskbarVizStyle::from_str(val),
@@ -6262,6 +6503,9 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "w_shelf_art" => cfg.w_shelf.art_override = DockArtLayer::from_opt_str(val),
                 "w_shelf_glass_pct" => if let Ok(v) = val.parse::<u8>() { cfg.w_shelf.glass_alpha_pct = v.clamp(10, 100); },
                 "w_shelf_rim_pct" => if let Ok(v) = val.parse::<u8>() { cfg.w_shelf.rim_alpha_pct = v.clamp(0, 100); },
+                "w_shelf_show_plate" => cfg.w_shelf.show_plate = parse_bool(val),
+                "w_shelf_show_rim" => cfg.w_shelf.show_rim = parse_bool(val),
+                "w_shelf_show_art" => cfg.w_shelf.show_art = parse_bool(val),
 
                 "w_apps_theme" => cfg.w_apps.theme_override = TaskbarTheme::from_opt_str(val),
                 "w_apps_card" => cfg.w_apps.card_style = DockSlotCardStyle::from_str(val),
@@ -6273,6 +6517,10 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "w_apps_count_badge" => cfg.w_apps.show_window_count_badge = parse_bool(val),
                 "w_apps_mclick" => if let Ok(v) = val.parse::<u8>() { cfg.w_apps.middle_click_action = v.min(2); },
                 "w_apps_wheel" => if let Ok(v) = val.parse::<u8>() { cfg.w_apps.wheel_action = v.min(1); },
+                "w_apps_show_icons" => cfg.w_apps.show_icons = parse_bool(val),
+                "w_apps_show_cards" => cfg.w_apps.show_cards = parse_bool(val),
+                "w_apps_show_indicators" => cfg.w_apps.show_indicators = parse_bool(val),
+                "w_apps_show_separators" => cfg.w_apps.show_separators = parse_bool(val),
 
                 "w_clock_theme" => cfg.w_clock.theme_override = TaskbarTheme::from_opt_str(val),
                 "w_clock_engine" => cfg.w_clock.engine = DockClockEngine::from_str(val),
@@ -6284,6 +6532,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                         Some(parse_bool(val))
                     };
                 }
+                "w_clock_show_time" => cfg.w_clock.show_time = parse_bool(val),
                 "w_clock_seconds" => cfg.w_clock.show_seconds = parse_bool(val),
                 "w_clock_date" => cfg.w_clock.show_date = parse_bool(val),
                 "w_clock_weekday" => cfg.w_clock.show_weekday = parse_bool(val),
@@ -6300,6 +6549,9 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "w_tray_osd" => cfg.w_tray.show_osd_on_scroll = parse_bool(val),
                 "w_tray_wheel_step" => if let Ok(v) = val.parse::<u8>() { cfg.w_tray.wheel_step_pct = v.clamp(1, 10); },
                 "w_tray_accent" => cfg.w_tray.custom_accent_rgb = parse_hex_rgb(val),
+                "w_tray_show_net" => cfg.w_tray.show_net = parse_bool(val),
+                "w_tray_show_audio" => cfg.w_tray.show_audio = parse_bool(val),
+                "w_tray_show_battery" => cfg.w_tray.show_battery = parse_bool(val),
 
                 "w_hud_mode" => cfg.w_hud.mode = HudWingMode::from_str(val),
                 "w_hud_theme" => cfg.w_hud.theme_override = TaskbarTheme::from_opt_str(val),
@@ -6309,6 +6561,8 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "w_hud_width_pct" => if let Ok(v) = val.parse::<u8>() { cfg.w_hud.width_pct = v.clamp(40, 95); },
                 "w_hud_alpha_pct" => if let Ok(v) = val.parse::<u8>() { cfg.w_hud.plate_alpha_pct = v.clamp(50, 100); },
                 "w_hud_marquee" => cfg.w_hud.marquee_ticker = parse_bool(val),
+                "w_hud_show_telemetry" => cfg.w_hud.show_telemetry = parse_bool(val),
+                "w_hud_show_active_app" => cfg.w_hud.show_active_app = parse_bool(val),
 
                 "w_util_theme" => cfg.w_util.theme_override = TaskbarTheme::from_opt_str(val),
                 "w_util_start_style" => cfg.w_util.start_style = StartBadgeStyle::from_str(val),
@@ -6474,6 +6728,10 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
         }
     }
 
+    if !saw_anim_fps {
+        cfg.set_anim_fps(AppConfig::DEFAULT_ANIM_FPS);
+    }
+
     if canvas_schema < 6 {
         if !cfg.music_elem_transforms[4].is_default() && cfg.music_elem_transforms[5].is_default() {
             cfg.music_elem_transforms[5] = cfg.music_elem_transforms[4];
@@ -6540,6 +6798,11 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
             cfg.cc_match_wallpaper = true;
         }
     }
+    if saw_viz_color_mode {
+        cfg.tb_match_wallpaper = cfg.tb_viz_color_mode == VizColorMode::MatchWallpaper;
+    } else if cfg.tb_match_wallpaper {
+        cfg.tb_viz_color_mode = VizColorMode::MatchWallpaper;
+    }
     if !saw_onboarding {
         cfg.onboarding_done = true;
     }
@@ -6588,8 +6851,16 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("tb_viz_style={}\n", cfg.tb_viz_style.as_str()));
     out.push_str(&format!("tb_viz_opacity={}\n", cfg.tb_viz_opacity));
     out.push_str(&format!("tb_viz_mirror={}\n", b(cfg.tb_viz_mirror)));
+    out.push_str(&format!("tb_viz_color_mode={}\n", cfg.tb_viz_color_mode.as_str()));
+    out.push_str(&format!(
+        "tb_viz_accent_rgb=0x{:06X}\n",
+        cfg.tb_viz_accent_rgb & 0x00FF_FFFF
+    ));
     out.push_str(&format!("tb_hover_react={}\n", b(cfg.tb_hover_react)));
     out.push_str(&format!("tb_ambient_anim={}\n", b(cfg.tb_ambient_anim)));
+    out.push_str(&format!("tb_show_backdrop={}\n", b(cfg.tb_show_backdrop)));
+    out.push_str(&format!("tb_show_rim={}\n", b(cfg.tb_show_rim)));
+    out.push_str(&format!("tb_show_fx={}\n", b(cfg.tb_show_fx)));
     out.push_str(&format!("viz_eco_fps={}\n", b(cfg.viz_eco_fps)));
     out.push_str(&format!("dt_hover_fx={}\n", cfg.dt_hover_fx.as_str()));
     out.push_str(&format!("apps_hover_fx={}\n", cfg.apps_hover_fx.as_str()));
@@ -6805,6 +7076,9 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("w_shelf_art={}\n", cfg.w_shelf.art_override.map(|x| x.as_str()).unwrap_or("inherit")));
     out.push_str(&format!("w_shelf_glass_pct={}\n", cfg.w_shelf.glass_alpha_pct));
     out.push_str(&format!("w_shelf_rim_pct={}\n", cfg.w_shelf.rim_alpha_pct));
+    out.push_str(&format!("w_shelf_show_plate={}\n", b(cfg.w_shelf.show_plate)));
+    out.push_str(&format!("w_shelf_show_rim={}\n", b(cfg.w_shelf.show_rim)));
+    out.push_str(&format!("w_shelf_show_art={}\n", b(cfg.w_shelf.show_art)));
 
     out.push_str("\n[widget.dock_apps]\n");
     out.push_str(&format!("w_apps_theme={}\n", TaskbarTheme::opt_to_str(cfg.w_apps.theme_override)));
@@ -6817,6 +7091,10 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("w_apps_count_badge={}\n", b(cfg.w_apps.show_window_count_badge)));
     out.push_str(&format!("w_apps_mclick={}\n", cfg.w_apps.middle_click_action));
     out.push_str(&format!("w_apps_wheel={}\n", cfg.w_apps.wheel_action));
+    out.push_str(&format!("w_apps_show_icons={}\n", b(cfg.w_apps.show_icons)));
+    out.push_str(&format!("w_apps_show_cards={}\n", b(cfg.w_apps.show_cards)));
+    out.push_str(&format!("w_apps_show_indicators={}\n", b(cfg.w_apps.show_indicators)));
+    out.push_str(&format!("w_apps_show_separators={}\n", b(cfg.w_apps.show_separators)));
 
     out.push_str("\n[widget.clock]\n");
     out.push_str(&format!("w_clock_theme={}\n", TaskbarTheme::opt_to_str(cfg.w_clock.theme_override)));
@@ -6829,6 +7107,7 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
             None => "inherit",
         }
     ));
+    out.push_str(&format!("w_clock_show_time={}\n", b(cfg.w_clock.show_time)));
     out.push_str(&format!("w_clock_seconds={}\n", b(cfg.w_clock.show_seconds)));
     out.push_str(&format!("w_clock_date={}\n", b(cfg.w_clock.show_date)));
     out.push_str(&format!("w_clock_weekday={}\n", b(cfg.w_clock.show_weekday)));
@@ -6846,6 +7125,9 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("w_tray_osd={}\n", b(cfg.w_tray.show_osd_on_scroll)));
     out.push_str(&format!("w_tray_wheel_step={}\n", cfg.w_tray.wheel_step_pct));
     out.push_str(&format!("w_tray_accent={}\n", opt_hex(cfg.w_tray.custom_accent_rgb)));
+    out.push_str(&format!("w_tray_show_net={}\n", b(cfg.w_tray.show_net)));
+    out.push_str(&format!("w_tray_show_audio={}\n", b(cfg.w_tray.show_audio)));
+    out.push_str(&format!("w_tray_show_battery={}\n", b(cfg.w_tray.show_battery)));
 
     out.push_str("\n[widget.hud]\n");
     out.push_str(&format!("w_hud_mode={}\n", cfg.w_hud.mode.as_str()));
@@ -6856,6 +7138,8 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("w_hud_width_pct={}\n", cfg.w_hud.width_pct));
     out.push_str(&format!("w_hud_alpha_pct={}\n", cfg.w_hud.plate_alpha_pct));
     out.push_str(&format!("w_hud_marquee={}\n", b(cfg.w_hud.marquee_ticker)));
+    out.push_str(&format!("w_hud_show_telemetry={}\n", b(cfg.w_hud.show_telemetry)));
+    out.push_str(&format!("w_hud_show_active_app={}\n", b(cfg.w_hud.show_active_app)));
 
     out.push_str("\n[widget.utilities]\n");
     out.push_str(&format!("w_util_theme={}\n", TaskbarTheme::opt_to_str(cfg.w_util.theme_override)));
@@ -6867,6 +7151,9 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("w_util_show_studio={}\n", b(cfg.w_util.show_studio)));
     out.push_str(&format!("w_util_show_sliver={}\n", b(cfg.w_util.show_desktop_sliver)));
     out.push_str("canvas_schema=6\n");
+
+    out.push_str("\n[General]\n");
+    out.push_str(&format!("anim_fps={}\n", AppConfig::clamp_anim_fps(cfg.anim_fps)));
     out
 }
 
@@ -7311,6 +7598,71 @@ pub fn notify_tray_settings_changed() {
     }
 }
 
+fn write_hkcu_sz(subkey: PCWSTR, value_name: &str, value: &str) -> bool {
+    unsafe {
+        let mut hk = HKEY::default();
+        let res = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey,
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE,
+            None,
+            &mut hk,
+            None,
+        );
+        if res.is_err() {
+            return false;
+        }
+        let wname = to_wide(value_name);
+        let wval = to_wide(value);
+        let bytes = std::slice::from_raw_parts(wval.as_ptr() as *const u8, wval.len() * 2);
+        let ok = RegSetValueExW(hk, PCWSTR(wname.as_ptr()), None, REG_SZ, Some(bytes)).is_ok();
+        let _ = RegCloseKey(hk);
+        ok
+    }
+}
+
+/// Syncs Windows' native taskbar system tray clock (`Control Panel\International`)
+/// between 24-hour (`HH:mm` / `HH:mm:ss`) and 12-hour (`h:mm tt` / `h:mm:ss tt`)
+/// and notifies Explorer via `WM_SETTINGCHANGE("intl")` so the live taskbar clock updates immediately.
+pub fn apply_win_clock_24h(use_24h: bool) {
+    let intl_key = w!(r"Control Panel\International");
+    let (short_t, long_t, itime) = if use_24h {
+        ("HH:mm", "HH:mm:ss", "1")
+    } else {
+        ("h:mm tt", "h:mm:ss tt", "0")
+    };
+    let ok1 = write_hkcu_sz(intl_key, "sShortTime", short_t);
+    let ok2 = write_hkcu_sz(intl_key, "sTimeFormat", long_t);
+    let _ = write_hkcu_sz(intl_key, "iTime", itime);
+    if ok1 || ok2 {
+        unsafe {
+            let intl_param = w!("intl");
+            let _ = SendNotifyMessageW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                WPARAM(0),
+                LPARAM(intl_param.as_ptr() as isize),
+            );
+            let main = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).unwrap_or_default();
+            if !main.0.is_null() {
+                let mut res = 0usize;
+                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageTimeoutW(
+                    main,
+                    WM_SETTINGCHANGE,
+                    WPARAM(0),
+                    LPARAM(intl_param.as_ptr() as isize),
+                    SMTO_ABORTIFHUNG,
+                    150,
+                    Some(&mut res),
+                );
+            }
+        }
+    }
+}
+
 pub fn ensure_windows_transparency_enabled() {
     let sub = w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
     if read_hkcu_dword(sub, "EnableTransparency", 1) == 0 {
@@ -7555,27 +7907,68 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
             assert!(c.mac_dock_enabled);
             assert_eq!(c.mac_dock_hide, MacDockHideMode::HoverReveal);
         }
+
+        // 4. Full Stealth Hide syncs cleanly between virtual docks and native taskbar + INI round-trip
+        let mut stealth_cfg = AppConfig::default();
+        stealth_cfg.apply_taskbar_theme_preset(TaskbarTheme::RealisticWaterDock);
+        stealth_cfg.mac_dock_hide = MacDockHideMode::StealthHide;
+        stealth_cfg.sync_hide_mode_from_dock();
+        assert_eq!(stealth_cfg.mode, TaskbarMode::StealthHide);
+        let ini = serialize_config_ini(&stealth_cfg);
+        assert!(ini.contains("mac_dock_hide=stealth\n"));
+        let parsed = parse_config_body(&ini, true).0;
+        assert_eq!(parsed.mac_dock_hide, MacDockHideMode::StealthHide);
+        assert_eq!(parsed.mode, TaskbarMode::StealthHide);
+
+        // 5. Unified 24-hour clock format helper syncs widgets_24h and w_clock.use_24h
+        stealth_cfg.set_clock_24h(true);
+        assert!(stealth_cfg.widgets_24h);
+        assert_eq!(stealth_cfg.w_clock.use_24h, Some(true));
+        stealth_cfg.set_clock_24h(false);
+        assert!(!stealth_cfg.widgets_24h);
+        assert_eq!(stealth_cfg.w_clock.use_24h, Some(false));
     }
 
     #[test]
-    fn viz_eco_fps_defaults_cadence_and_ini_roundtrip() {
+    fn anim_fps_defaults_45_cadence_and_ini_roundtrip() {
         let mut cfg = AppConfig::default();
-        assert!(cfg.viz_eco_fps, "Eco ~24 FPS visualizer cap should default ON");
-        assert_eq!(cfg.viz_audio_frame_ms(), 42);
-        assert_eq!(cfg.viz_island_frame_ms(), 42);
+        assert_eq!(cfg.anim_fps, 45, "Animation FPS must default to 45 FPS");
+        assert!(!cfg.viz_eco_fps, "45 FPS default is above Eco 24 FPS threshold");
+        assert_eq!(cfg.anim_frame_ms(), 22);
+        assert_eq!(cfg.viz_audio_frame_ms(), 22);
+        assert_eq!(cfg.viz_island_frame_ms(), 22);
 
-        cfg.viz_eco_fps = false;
-        assert_eq!(cfg.viz_audio_frame_ms(), 30);
-        assert_eq!(cfg.viz_island_frame_ms(), 16);
+        // Verify max(8, 1000 / anim_fps) formula across all presets
+        assert_eq!(AppConfig::anim_frame_ms_for(24), 41);
+        assert_eq!(AppConfig::anim_frame_ms_for(30), 33);
+        assert_eq!(AppConfig::anim_frame_ms_for(45), 22);
+        assert_eq!(AppConfig::anim_frame_ms_for(60), 16);
+        assert_eq!(AppConfig::anim_frame_ms_for(90), 11);
+        assert_eq!(AppConfig::anim_frame_ms_for(120), 8);
 
-        let ini = serialize_config_ini(&cfg);
-        assert!(ini.contains("viz_eco_fps=0"));
-        let parsed = parse_config_body(&ini, true).0;
-        assert!(!parsed.viz_eco_fps);
+        cfg.set_anim_fps(24);
+        assert!(cfg.viz_eco_fps);
+        assert_eq!(cfg.anim_frame_ms(), 41);
+        let ini_24 = serialize_config_ini(&cfg);
+        assert!(ini_24.contains("[General]\nanim_fps=24\n"));
+        let parsed_24 = parse_config_body(&ini_24, true).0;
+        assert_eq!(parsed_24.anim_fps, 24);
+        assert!(parsed_24.viz_eco_fps);
 
-        cfg.viz_eco_fps = true;
-        let parsed_on = parse_config_body(&serialize_config_ini(&cfg), true).0;
-        assert!(parsed_on.viz_eco_fps);
+        cfg.set_anim_fps(120);
+        assert!(!cfg.viz_eco_fps);
+        assert_eq!(cfg.anim_frame_ms(), 8);
+        let ini_120 = serialize_config_ini(&cfg);
+        assert!(ini_120.contains("[General]\nanim_fps=120\n"));
+        let parsed_120 = parse_config_body(&ini_120, true).0;
+        assert_eq!(parsed_120.anim_fps, 120);
+        assert!(!parsed_120.viz_eco_fps);
+
+        // Legacy config without anim_fps migrates cleanly to 45 FPS default
+        let legacy = "[AutumnStudioV5]\nviz_eco_fps=1\n";
+        let parsed_legacy = parse_config_body(legacy, true).0;
+        assert_eq!(parsed_legacy.anim_fps, 45);
+        assert!(!parsed_legacy.viz_eco_fps);
     }
 
     #[test]
@@ -7595,7 +7988,7 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         exported.tb_theme = TaskbarTheme::KatanaGlassDock;
         exported.mac_dock_enabled = true;
         exported.widgets_24h = true;
-        exported.viz_eco_fps = false;
+        exported.set_anim_fps(60);
         exported.game_mode_pause = false;
         exported.wallpaper_enabled = true;
         exported.wallpaper_path = r"Z:\nonexistent_other_pc\missing.mp4".to_string();
@@ -7614,6 +8007,7 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert_eq!(imported.tb_theme, TaskbarTheme::KatanaGlassDock);
         assert!(imported.mac_dock_enabled);
         assert!(imported.widgets_24h);
+        assert_eq!(imported.anim_fps, 60);
         assert!(!imported.viz_eco_fps);
         assert!(!imported.game_mode_pause);
         assert!(!imported.wallpaper_pause_maximized);
@@ -7630,6 +8024,43 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(import_setup_from_path(&bad_file, &current).is_err());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn viz_color_mode_and_accent_ini_roundtrip() {
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::LiveMusicBars);
+        assert_eq!(cfg.tb_viz_color_mode, VizColorMode::ThemeNative);
+        assert!(!cfg.tb_match_wallpaper);
+
+        cfg.set_tb_viz_color_mode(VizColorMode::CustomAccent);
+        cfg.tb_viz_accent_rgb = 0xFF38A8;
+        let ini = serialize_config_ini(&cfg);
+        let (parsed, _, _, _) = parse_config_body(&ini, true);
+        assert_eq!(parsed.tb_viz_color_mode, VizColorMode::CustomAccent);
+        assert_eq!(parsed.tb_viz_accent_rgb, 0xFF38A8);
+        assert!(!parsed.tb_match_wallpaper);
+
+        cfg.set_tb_viz_color_mode(VizColorMode::MatchWallpaper);
+        assert!(cfg.tb_match_wallpaper);
+        let ini_wp = serialize_config_ini(&cfg);
+        let (parsed_wp, _, _, _) = parse_config_body(&ini_wp, true);
+        assert_eq!(parsed_wp.tb_viz_color_mode, VizColorMode::MatchWallpaper);
+        assert!(parsed_wp.tb_match_wallpaper);
+    }
+
+    #[test]
+    fn fresh_install_starts_clean_without_crowded_widgets() {
+        let def = AppConfig::default();
+        assert!(def.show_datetime, "Fresh install should show the signature clock");
+        assert!(!def.show_apps, "Fresh install must not crowd desktop with Quick Apps");
+        assert!(!def.show_vitals, "Fresh install must not crowd desktop with Vitals");
+        assert!(!def.show_music, "Fresh install must not crowd desktop with Now Playing");
+        assert!(!def.show_cc, "Fresh install must not crowd desktop with Control Center");
+        assert!(
+            def.ext_widgets.iter().all(|w| !w.enabled),
+            "Fresh install must not enable extended widgets by default"
+        );
     }
 }
 

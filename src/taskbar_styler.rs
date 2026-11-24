@@ -42,6 +42,11 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
     COINIT_MULTITHREADED,
 };
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, GetFinalPathNameByHandleW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_GENERIC_READ, FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    OPEN_EXISTING,
+};
 use windows::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleW, GetProcAddress, LoadLibraryW,
 };
@@ -62,7 +67,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, FindWindowExW, FindWindowW, GetCursorPos, GetWindow,
     GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
     LoadCursorW, PostMessageW, RegisterClassExW, SendMessageTimeoutW, SetWindowPos, ShowWindow,
-    UpdateLayeredWindow, GWL_EXSTYLE, GW_HWNDNEXT, HWND_MESSAGE, HWND_NOTOPMOST, HWND_TOPMOST,
+    UpdateLayeredWindow, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV, HWND_MESSAGE, HWND_NOTOPMOST,
+    HWND_TOPMOST,
     IDC_ARROW, SMTO_ABORTIFHUNG, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, ULW_ALPHA, WNDCLASSEXW,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
@@ -71,7 +77,7 @@ use windows_numerics::Vector2;
 
 use crate::config::{
     ensure_windows_transparency_enabled, load_pill_cache, save_pill_cache, to_wide, AppConfig,
-    PillMode, SurfaceMode, TaskbarTheme, TaskbarVizStyle,
+    PillMode, SurfaceMode, TaskbarTheme, TaskbarVizStyle, VizColorMode,
 };
 use crate::theme::{resolve_palette_for, ThemePalette};
 
@@ -249,112 +255,128 @@ pub fn elemental_palette_for_fx(style: TaskbarVizStyle) -> Option<ThemePalette> 
     }
 }
 
+pub fn is_vu_tricolor_active(cfg: &AppConfig) -> bool {
+    cfg.tb_theme == TaskbarTheme::VuPeakStudio
+        && cfg.tb_viz_color_mode == VizColorMode::ThemeNative
+        && !cfg.tb_match_wallpaper
+}
+
 pub fn effective_taskbar_palette(cfg: &AppConfig) -> ThemePalette {
-    if cfg.tb_match_wallpaper {
+    if cfg.tb_match_wallpaper || cfg.tb_viz_color_mode == VizColorMode::MatchWallpaper {
         return resolve_palette_for(cfg, true);
     }
-    if let Some(pal) = crate::dock_themes::dock_palette(cfg.tb_theme) {
-        return pal;
+    let native_pal = if let Some(pal) = crate::dock_themes::dock_palette(cfg.tb_theme) {
+        pal
+    } else if let Some(pal) = ThemePalette::for_music_taskbar_theme(cfg.tb_theme) {
+        pal
+    } else {
+        match cfg.tb_theme {
+            TaskbarTheme::CupertinoDock => ThemePalette {
+                accent: (206, 228, 252),
+                accent_light: (250, 252, 255),
+                accent_deep: (92, 138, 204),
+                rim: (232, 240, 252),
+                text_primary: (246, 249, 255),
+                text_muted: (196, 210, 232),
+                glass_top: (34, 40, 52),
+                glass_bot: (18, 22, 32),
+                preview_a: (20, 38, 70),
+                preview_b: (56, 102, 162),
+                preview_c: (14, 24, 46),
+                swatches: [0xCEE4FC, 0xFAFCFF, 0x5C8ACC, 0x3866A2, 0x0E182E],
+            },
+            TaskbarTheme::DynamicIslandDock => ThemePalette {
+                accent: (158, 184, 224),
+                accent_light: (94, 234, 212),
+                accent_deep: (64, 78, 108),
+                rim: (188, 204, 232),
+                text_primary: (244, 247, 252),
+                text_muted: (168, 180, 202),
+                glass_top: (14, 16, 22),
+                glass_bot: (8, 10, 14),
+                preview_a: (16, 22, 38),
+                preview_b: (34, 52, 82),
+                preview_c: (10, 12, 22),
+                swatches: [0x9EB8E0, 0x5EEAD4, 0x404E6C, 0x223452, 0x0A0C16],
+            },
+            TaskbarTheme::FrutigerAero7 => ThemePalette {
+                accent: (84, 224, 255),
+                accent_light: (232, 252, 255),
+                accent_deep: (18, 126, 188),
+                rim: (184, 244, 255),
+                text_primary: (244, 252, 255),
+                text_muted: (188, 232, 248),
+                glass_top: (18, 86, 128),
+                glass_bot: (10, 48, 86),
+                preview_a: (14, 96, 160),
+                preview_b: (56, 184, 230),
+                preview_c: (12, 66, 114),
+                swatches: [0x54E0FF, 0xE8FCFF, 0x127EBC, 0x38B8E6, 0x0C4272],
+            },
+            TaskbarTheme::UnixPolybar => ThemePalette {
+                accent: (180, 190, 254),
+                accent_light: (137, 220, 235),
+                accent_deep: (250, 179, 135),
+                rim: (180, 190, 254),
+                text_primary: (205, 214, 244),
+                text_muted: (166, 173, 200),
+                glass_top: (24, 24, 38),
+                glass_bot: (18, 18, 28),
+                preview_a: (24, 24, 42),
+                preview_b: (52, 46, 86),
+                preview_c: (18, 18, 32),
+                swatches: [0xB4BEFE, 0x89DCEB, 0xFAB387, 0x342E56, 0x121220],
+            },
+            TaskbarTheme::CyberArasakaDeck => ThemePalette {
+                accent: (0, 240, 255),
+                accent_light: (255, 58, 102),
+                accent_deep: (255, 184, 0),
+                rim: (0, 240, 255),
+                text_primary: (238, 250, 255),
+                text_muted: (162, 204, 218),
+                glass_top: (14, 16, 24),
+                glass_bot: (8, 10, 16),
+                preview_a: (16, 12, 28),
+                preview_b: (64, 18, 48),
+                preview_c: (10, 16, 30),
+                swatches: [0x00F0FF, 0xFF3A66, 0xFFB800, 0x401230, 0x0A101E],
+            },
+            TaskbarTheme::Retro95Classic => ThemePalette {
+                accent: (206, 214, 226),
+                accent_light: (242, 246, 252),
+                accent_deep: (74, 82, 98),
+                rim: (218, 224, 234),
+                text_primary: (242, 246, 252),
+                text_muted: (188, 196, 210),
+                glass_top: (76, 82, 96),
+                glass_bot: (58, 64, 76),
+                preview_a: (0, 102, 104),
+                preview_b: (0, 132, 132),
+                preview_c: (0, 74, 78),
+                swatches: [0xCED6E2, 0xF2F6FC, 0x4A5262, 0x008484, 0x004A4E],
+            },
+            _ => {
+                if let Some(pal) = elemental_palette_for_fx(cfg.tb_viz_style) {
+                    pal
+                } else {
+                    match cfg.tb_theme {
+                        TaskbarTheme::HoverSnowfall => ThemePalette::from_accent_rgb(0x78D4FF),
+                        TaskbarTheme::HoverInferno => ThemePalette::from_accent_rgb(0xFF7622),
+                        TaskbarTheme::HoverWaterRipples => ThemePalette::from_accent_rgb(0x2EDEF0),
+                        TaskbarTheme::HoverSakuraWind => ThemePalette::from_accent_rgb(0xFF8AB4),
+                        TaskbarTheme::HoverNebulaStardust => ThemePalette::from_accent_rgb(0x987EFF),
+                        TaskbarTheme::HoverNeonPlasma => ThemePalette::from_accent_rgb(0x40F0FF),
+                        _ => ThemePalette::autumn(),
+                    }
+                }
+            }
+        }
+    };
+
+    if cfg.tb_viz_color_mode == VizColorMode::CustomAccent {
+        return ThemePalette::with_custom_viz_accent(cfg.tb_viz_accent_rgb, &native_pal);
     }
-    match cfg.tb_theme {
-        TaskbarTheme::CupertinoDock => return ThemePalette {
-            accent: (206, 228, 252),
-            accent_light: (250, 252, 255),
-            accent_deep: (92, 138, 204),
-            rim: (232, 240, 252),
-            text_primary: (246, 249, 255),
-            text_muted: (196, 210, 232),
-            glass_top: (34, 40, 52),
-            glass_bot: (18, 22, 32),
-            preview_a: (20, 38, 70),
-            preview_b: (56, 102, 162),
-            preview_c: (14, 24, 46),
-            swatches: [0xCEE4FC, 0xFAFCFF, 0x5C8ACC, 0x3866A2, 0x0E182E],
-        },
-        TaskbarTheme::DynamicIslandDock => return ThemePalette {
-            accent: (158, 184, 224),
-            accent_light: (94, 234, 212),
-            accent_deep: (64, 78, 108),
-            rim: (188, 204, 232),
-            text_primary: (244, 247, 252),
-            text_muted: (168, 180, 202),
-            glass_top: (14, 16, 22),
-            glass_bot: (8, 10, 14),
-            preview_a: (16, 22, 38),
-            preview_b: (34, 52, 82),
-            preview_c: (10, 12, 22),
-            swatches: [0x9EB8E0, 0x5EEAD4, 0x404E6C, 0x223452, 0x0A0C16],
-        },
-        TaskbarTheme::FrutigerAero7 => return ThemePalette {
-            accent: (84, 224, 255),
-            accent_light: (232, 252, 255),
-            accent_deep: (18, 126, 188),
-            rim: (184, 244, 255),
-            text_primary: (244, 252, 255),
-            text_muted: (188, 232, 248),
-            glass_top: (18, 86, 128),
-            glass_bot: (10, 48, 86),
-            preview_a: (14, 96, 160),
-            preview_b: (56, 184, 230),
-            preview_c: (12, 66, 114),
-            swatches: [0x54E0FF, 0xE8FCFF, 0x127EBC, 0x38B8E6, 0x0C4272],
-        },
-        TaskbarTheme::UnixPolybar => return ThemePalette {
-            accent: (180, 190, 254),
-            accent_light: (137, 220, 235),
-            accent_deep: (250, 179, 135),
-            rim: (180, 190, 254),
-            text_primary: (205, 214, 244),
-            text_muted: (166, 173, 200),
-            glass_top: (24, 24, 38),
-            glass_bot: (18, 18, 28),
-            preview_a: (24, 24, 42),
-            preview_b: (52, 46, 86),
-            preview_c: (18, 18, 32),
-            swatches: [0xB4BEFE, 0x89DCEB, 0xFAB387, 0x342E56, 0x121220],
-        },
-        TaskbarTheme::CyberArasakaDeck => return ThemePalette {
-            accent: (0, 240, 255),
-            accent_light: (255, 58, 102),
-            accent_deep: (255, 184, 0),
-            rim: (0, 240, 255),
-            text_primary: (238, 250, 255),
-            text_muted: (162, 204, 218),
-            glass_top: (14, 16, 24),
-            glass_bot: (8, 10, 16),
-            preview_a: (16, 12, 28),
-            preview_b: (64, 18, 48),
-            preview_c: (10, 16, 30),
-            swatches: [0x00F0FF, 0xFF3A66, 0xFFB800, 0x401230, 0x0A101E],
-        },
-        TaskbarTheme::Retro95Classic => return ThemePalette {
-            accent: (206, 214, 226),
-            accent_light: (242, 246, 252),
-            accent_deep: (74, 82, 98),
-            rim: (218, 224, 234),
-            text_primary: (242, 246, 252),
-            text_muted: (188, 196, 210),
-            glass_top: (76, 82, 96),
-            glass_bot: (58, 64, 76),
-            preview_a: (0, 102, 104),
-            preview_b: (0, 132, 132),
-            preview_c: (0, 74, 78),
-            swatches: [0xCED6E2, 0xF2F6FC, 0x4A5262, 0x008484, 0x004A4E],
-        },
-        _ => {}
-    }
-    if let Some(pal) = elemental_palette_for_fx(cfg.tb_viz_style) {
-        return pal;
-    }
-    match cfg.tb_theme {
-        TaskbarTheme::HoverSnowfall => ThemePalette::from_accent_rgb(0x78D4FF),
-        TaskbarTheme::HoverInferno => ThemePalette::from_accent_rgb(0xFF7622),
-        TaskbarTheme::HoverWaterRipples => ThemePalette::from_accent_rgb(0x2EDEF0),
-        TaskbarTheme::HoverSakuraWind => ThemePalette::from_accent_rgb(0xFF8AB4),
-        TaskbarTheme::HoverNebulaStardust => ThemePalette::from_accent_rgb(0x987EFF),
-        TaskbarTheme::HoverNeonPlasma => ThemePalette::from_accent_rgb(0x40F0FF),
-        _ => ThemePalette::autumn(),
-    }
+    native_pal
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -449,8 +471,10 @@ pub struct TaskbarRipple {
 pub struct VizSnapshot {
     pub bands: [f32; 24],
     pub peaks: [f32; 24],
+    pub peak_hold: [f32; 24],
     pub phase: f32,
     pub energy: f32,
+    pub beat_pulse: f32,
     pub particles: [TaskbarParticle; SIM_PARTICLE_COUNT],
     pub ripples: [TaskbarRipple; SIM_RIPPLE_COUNT],
     pub sim_inited: bool,
@@ -473,8 +497,10 @@ impl Default for VizSnapshot {
         Self {
             bands: [0.0; 24],
             peaks: [0.0; 24],
+            peak_hold: [0.0; 24],
             phase: 0.0,
             energy: 0.0,
+            beat_pulse: 0.0,
             particles: [TaskbarParticle::default(); SIM_PARTICLE_COUNT],
             ripples: [TaskbarRipple::default(); SIM_RIPPLE_COUNT],
             sim_inited: false,
@@ -1337,13 +1363,17 @@ impl VizSnapshot {
         }
     }
 
-    pub fn update_from_raw(&mut self, raw: &[f32; 12], dt_phase: f32, allow_ambient_idle: bool) {
+    pub fn update_from_raw(&mut self, raw: &[f32; 12], dt_sec: f32, allow_ambient_idle: bool) {
         if !self.phase.is_finite() {
             self.phase = 0.0;
         }
         if !self.energy.is_finite() {
             self.energy = 0.0;
         }
+        if !self.beat_pulse.is_finite() {
+            self.beat_pulse = 0.0;
+        }
+        let dt = dt_sec.clamp(0.008, 0.12);
         let raw_max = raw
             .iter()
             .copied()
@@ -1354,15 +1384,22 @@ impl VizSnapshot {
             + (if raw[2].is_finite() { raw[2] } else { 0.0 }))
             / 3.0)
             .clamp(0.0, 1.0);
-        let has_live_audio = raw_max > 0.008 || bass > 0.015;
-        let next_phase =
-            (self.phase + dt_phase * (1.05 + self.energy * 1.35)) % (std::f32::consts::TAU * 64.0);
+        let has_live_audio = raw_max > 0.006 || bass > 0.012;
+        let phase_step = dt * (3.8 + self.energy * 4.2);
+        let next_phase = (self.phase + phase_step) % (std::f32::consts::TAU * 64.0);
         self.phase = if next_phase.is_finite() { next_phase } else { 0.0 };
+
+        // Frame-rate independent exponential attack & release so 24/30/45/60/90/120 FPS feel identical
+        let atk = 1.0 - (-dt * 36.0).exp();
+        let rel = 1.0 - (-dt * 11.5).exp();
+        let decay_mul = (-dt * 10.5).exp();
+        let pk_gravity = 1.15 * dt;
 
         let mut sum = 0.0f32;
         for i in 0..24usize {
             let p = i as f32 / 23.0;
             if has_live_audio {
+                // Smoothly interpolate across the 12 true FFT bands without bass-to-treble smear
                 let f = p * 11.0;
                 let idx0 = (f.floor() as usize).min(11);
                 let idx1 = (idx0 + 1).min(11);
@@ -1370,20 +1407,21 @@ impl VizSnapshot {
                 let r0 = if raw[idx0].is_finite() { raw[idx0] } else { 0.0 };
                 let r1 = if raw[idx1].is_finite() { raw[idx1] } else { 0.0 };
                 let lin = (r0 * (1.0 - frac) + r1 * frac).clamp(0.0, 1.0);
-                let target = (lin * 2.45 + bass * 0.32).max(0.0).powf(0.62).clamp(0.08, 1.0);
+                let target = lin.powf(0.84).clamp(0.0, 1.0);
 
                 let prev = if self.bands[i].is_finite() { self.bands[i] } else { 0.0 };
-                let next = if target > prev {
-                    prev + (target - prev) * 0.62
-                } else {
-                    prev * 0.76 + target * 0.24
-                };
-                self.bands[i] = next.clamp(0.0, 1.0);
+                let alpha = if target > prev { atk } else { rel };
+                let next = prev + (target - prev) * alpha;
+                self.bands[i] = if next < 0.003 { 0.0 } else { next.clamp(0.0, 1.0) };
+
                 let prev_pk = if self.peaks[i].is_finite() { self.peaks[i] } else { 0.0 };
                 if self.bands[i] >= prev_pk {
-                    self.peaks[i] = (self.bands[i] + 0.05).min(0.98);
+                    self.peaks[i] = (self.bands[i] + 0.025).min(0.99);
+                    self.peak_hold[i] = 0.24; // Hold studio peak cap briefly at crest
+                } else if self.peak_hold[i] > 0.0 {
+                    self.peak_hold[i] = (self.peak_hold[i] - dt).max(0.0);
                 } else {
-                    self.peaks[i] = (prev_pk - 0.018).max(self.bands[i]);
+                    self.peaks[i] = (prev_pk - pk_gravity).max(self.bands[i]);
                 }
             } else if allow_ambient_idle {
                 let arch = (p * std::f32::consts::FRAC_PI_2).cos().max(0.0).powf(0.55);
@@ -1394,29 +1432,49 @@ impl VizSnapshot {
                     .clamp(0.12, 0.90);
 
                 let prev = if self.bands[i].is_finite() { self.bands[i] } else { 0.0 };
-                let next = if target > prev {
-                    prev + (target - prev) * 0.62
-                } else {
-                    prev * 0.76 + target * 0.24
-                };
-                self.bands[i] = next.clamp(0.0, 1.0);
+                let alpha = if target > prev { atk * 0.7 } else { rel };
+                self.bands[i] = (prev + (target - prev) * alpha).clamp(0.0, 1.0);
                 let prev_pk = if self.peaks[i].is_finite() { self.peaks[i] } else { 0.0 };
                 if self.bands[i] >= prev_pk {
-                    self.peaks[i] = (self.bands[i] + 0.05).min(0.98);
+                    self.peaks[i] = (self.bands[i] + 0.04).min(0.98);
+                    self.peak_hold[i] = 0.20;
+                } else if self.peak_hold[i] > 0.0 {
+                    self.peak_hold[i] = (self.peak_hold[i] - dt).max(0.0);
                 } else {
-                    self.peaks[i] = (prev_pk - 0.018).max(self.bands[i]);
+                    self.peaks[i] = (prev_pk - pk_gravity).max(self.bands[i]);
                 }
             } else {
                 let prev = if self.bands[i].is_finite() { self.bands[i] } else { 0.0 };
-                let next = prev * 0.70;
-                self.bands[i] = if next < 0.005 { 0.0 } else { next };
+                let next = prev * decay_mul;
+                self.bands[i] = if next < 0.004 { 0.0 } else { next };
+                self.peak_hold[i] = (self.peak_hold[i] - dt).max(0.0);
                 let prev_pk = if self.peaks[i].is_finite() { self.peaks[i] } else { 0.0 };
-                let next_pk = (prev_pk - 0.032).max(self.bands[i]);
-                self.peaks[i] = if next_pk < 0.006 { 0.0 } else { next_pk };
+                let next_pk = if self.peak_hold[i] > 0.0 {
+                    prev_pk.max(self.bands[i])
+                } else {
+                    (prev_pk - pk_gravity * 1.35).max(self.bands[i])
+                };
+                self.peaks[i] = if next_pk < 0.005 { 0.0 } else { next_pk };
             }
             sum += self.bands[i];
         }
-        self.energy = (sum / 24.0).clamp(0.0, 1.0);
+        let next_energy = (sum / 24.0).clamp(0.0, 1.0);
+        let beat_src = if has_live_audio {
+            (bass * 0.72 + raw_max * 0.28).clamp(0.0, 1.0)
+        } else if allow_ambient_idle {
+            next_energy * 0.75
+        } else {
+            0.0
+        };
+        if beat_src > self.beat_pulse {
+            self.beat_pulse = self.beat_pulse + (beat_src - self.beat_pulse) * atk;
+        } else {
+            self.beat_pulse *= (-dt * 8.5).exp();
+            if self.beat_pulse < 0.004 {
+                self.beat_pulse = 0.0;
+            }
+        }
+        self.energy = next_energy;
     }
 
     pub fn demo_wave(raw: &[f32; 12], phase: f32) -> Self {
@@ -1424,8 +1482,25 @@ impl VizSnapshot {
         let mut out = Self::default();
         out.phase = phase;
         let raw_energy: f32 = raw.iter().copied().filter(|v| v.is_finite()).sum::<f32>() / 12.0;
-        if raw_energy > 0.018 {
-            out.update_from_raw(raw, 0.0, true);
+        if raw_energy > 0.012 {
+            let mut sum = 0.0f32;
+            let mut raw_max = 0.0f32;
+            for i in 0..24usize {
+                let p = i as f32 / 23.0;
+                let f = p * 11.0;
+                let idx0 = (f.floor() as usize).min(11);
+                let idx1 = (idx0 + 1).min(11);
+                let frac = f - idx0 as f32;
+                let r0 = if raw[idx0].is_finite() { raw[idx0] } else { 0.0 };
+                let r1 = if raw[idx1].is_finite() { raw[idx1] } else { 0.0 };
+                let val = (r0 * (1.0 - frac) + r1 * frac).clamp(0.0, 1.0).powf(0.84);
+                raw_max = raw_max.max(val);
+                out.bands[i] = val;
+                out.peaks[i] = (val + 0.04).min(0.98);
+                sum += val;
+            }
+            out.energy = (sum / 24.0).clamp(0.0, 1.0);
+            out.beat_pulse = (out.bands[0] + out.bands[1] + out.bands[2]) / 3.0 * 0.72 + raw_max * 0.28;
             return out;
         }
         let mut sum = 0.0f32;
@@ -1442,6 +1517,7 @@ impl VizSnapshot {
             sum += val;
         }
         out.energy = (sum / 24.0).clamp(0.0, 1.0);
+        out.beat_pulse = out.energy * 0.75;
         out
     }
 
@@ -1504,6 +1580,34 @@ type InitializeXamlDiagnosticsExFn = unsafe extern "system" fn(
     PCWSTR,
 ) -> HRESULT;
 
+#[derive(Clone, Default)]
+pub struct TapDiagSnapshot {
+    pub attempted: bool,
+    pub last_hr: Option<i32>,
+    pub last_stage_mode: String,
+    pub last_dll_path: String,
+    pub last_acl_status: String,
+}
+
+struct ComMtaGuard(bool);
+
+impl ComMtaGuard {
+    fn new() -> Self {
+        let ok = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).is_ok() };
+        Self(ok)
+    }
+}
+
+impl Drop for ComMtaGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
+
 struct TapBridge {
     h_map: HANDLE,
     view: MEMORY_MAPPED_VIEW_ADDRESS,
@@ -1515,6 +1619,7 @@ struct TapBridge {
     notify_hwnd: isize,
     notify_tap_msg: u32,
     connecting: Arc<AtomicBool>,
+    diag: Arc<Mutex<TapDiagSnapshot>>,
     pub tap_ok: bool,
     pub needs_explorer_restart: bool,
 }
@@ -1581,9 +1686,18 @@ impl TapBridge {
             notify_hwnd: notify_hwnd.0 as isize,
             notify_tap_msg,
             connecting: Arc::new(AtomicBool::new(false)),
+            diag: Arc::new(Mutex::new(TapDiagSnapshot::default())),
             tap_ok: false,
             needs_explorer_restart: false,
         }
+    }
+
+    fn has_attempted_connect(&self) -> bool {
+        self.diag.lock().map(|d| d.attempted).unwrap_or(false)
+    }
+
+    fn diag_snapshot(&self) -> TapDiagSnapshot {
+        self.diag.lock().map(|d| d.clone()).unwrap_or_default()
     }
 
     fn write_cfg(&self, active: bool, tint_argb: u32) {
@@ -1651,6 +1765,15 @@ impl TapBridge {
                 self.connect_tries = 0;
                 self.last_active = None;
                 self.tap_ok = true;
+                if let Ok(mut d) = self.diag.lock() {
+                    d.attempted = true;
+                    if d.last_hr.is_none() {
+                        d.last_hr = Some(0);
+                    }
+                    if d.last_stage_mode.is_empty() {
+                        d.last_stage_mode = "attached".to_string();
+                    }
+                }
                 return true;
             }
 
@@ -1658,7 +1781,13 @@ impl TapBridge {
                 return false;
             }
             if let Some(last_t) = self.last_connect_try {
-                let cooldown = if self.connect_tries < 12 { 250 } else { 2500 };
+                let cooldown = if self.connect_tries < 3 {
+                    1200
+                } else if self.connect_tries < 6 {
+                    6000
+                } else {
+                    30_000
+                };
                 if last_t.elapsed() < Duration::from_millis(cooldown) {
                     return false;
                 }
@@ -1676,62 +1805,109 @@ impl TapBridge {
             };
             let dll_path = dir.join("AutumnXamlTap.dll");
             if !dll_path.exists() {
+                let first_miss = self
+                    .diag
+                    .lock()
+                    .map(|mut d| {
+                        let first = !d.attempted;
+                        d.attempted = true;
+                        d.last_stage_mode = "missing_dll".to_string();
+                        d.last_dll_path = dll_path.to_string_lossy().into_owned();
+                        d.last_acl_status = "MISSING".to_string();
+                        first
+                    })
+                    .unwrap_or(false);
+                if first_miss {
+                    crate::diagnostics::record_event(
+                        "TAP",
+                        &format!("missing sibling DLL at {}", dll_path.display()),
+                    );
+                }
                 return false;
             }
 
             // Connect XAML Diagnostics on a background thread so cold start & bootup stay instant.
             self.connecting.store(true, Ordering::Relaxed);
             let conn_flag = Arc::clone(&self.connecting);
+            let diag_arc = Arc::clone(&self.diag);
             let notify_raw = self.notify_hwnd;
             let notify_msg = self.notify_tap_msg;
-            let dll_w = to_wide(&dll_path.to_string_lossy());
             std::thread::spawn(move || {
-                // Self-heal ALL APPLICATION PACKAGES (S-1-15-2-1) RX ACL so extracted ZIPs
-                // and portable folders can always be loaded by Windows 11's XAML taskbar host.
-                let _ = ensure_app_package_rx_acl(&dll_path);
+                let _com = ComMtaGuard::new();
+                let candidates = build_tap_injection_candidates(&dll_path);
                 let mut ok_hwnd = false;
-                if let Ok(xaml_mod) = LoadLibraryW(w!("Windows.UI.Xaml.dll")) {
-                    if let Some(proc_addr) =
-                        GetProcAddress(xaml_mod, windows::core::s!("InitializeXamlDiagnosticsEx"))
-                    {
-                        let init_fn: InitializeXamlDiagnosticsExFn =
-                            std::mem::transmute(proc_addr);
-                        let mut any_connected = false;
-                        for idx in 1..=16u32 {
-                            let ep_w = to_wide(&format!("VisualDiagConnection{}", idx));
-                            let hr = init_fn(
-                                PCWSTR(ep_w.as_ptr()),
-                                exp_pid,
-                                w!("Windows.UI.Xaml.dll"),
-                                PCWSTR(dll_w.as_ptr()),
-                                CLSID_AUTUMN_XAML_TAP,
-                                PCWSTR::null(),
-                            );
-                            if hr.is_ok() {
-                                any_connected = true;
-                                if Self::find_existing_msg_wnd(exp_pid).is_some() {
+                let mut recorded_hr: Option<i32> = None;
+                let mut recorded_mode = String::from("unattempted");
+                let mut recorded_path = dll_path.to_string_lossy().into_owned();
+                let mut recorded_acl = String::from("UNKNOWN");
+
+                match LoadLibraryW(w!("Windows.UI.Xaml.dll")) {
+                    Ok(xaml_mod) => {
+                        if let Some(proc_addr) = GetProcAddress(
+                            xaml_mod,
+                            windows::core::s!("InitializeXamlDiagnosticsEx"),
+                        ) {
+                            let init_fn: InitializeXamlDiagnosticsExFn =
+                                std::mem::transmute(proc_addr);
+                            for (mode, cand_path, acl_status) in &candidates {
+                                recorded_mode = mode.clone();
+                                recorded_path = cand_path.to_string_lossy().into_owned();
+                                recorded_acl = acl_status.clone();
+                                let dll_w = to_wide(&recorded_path);
+                                let (connected, hr_opt) =
+                                    try_init_xaml_diagnostics(init_fn, exp_pid, &dll_w);
+                                if let Some(hr) = hr_opt {
+                                    recorded_hr = Some(hr.0);
+                                }
+                                if connected {
                                     ok_hwnd = true;
+                                    recorded_hr = Some(0);
                                     break;
                                 }
                             }
-                        }
-                        if !ok_hwnd && any_connected {
-                            for _ in 0..32 {
-                                if Self::find_existing_msg_wnd(exp_pid).is_some() {
-                                    ok_hwnd = true;
-                                    break;
-                                }
-                                std::thread::sleep(Duration::from_millis(25));
-                            }
+                        } else {
+                            recorded_mode = "no_xaml_diag_proc".to_string();
                         }
                     }
+                    Err(e) => {
+                        recorded_mode = "load_xaml_dll_failed".to_string();
+                        recorded_hr = Some(e.code().0);
+                    }
                 }
+
+                let (first_done, hr_changed) = diag_arc
+                    .lock()
+                    .map(|mut d| {
+                        let first = !d.attempted;
+                        let changed = d.last_hr != recorded_hr || d.last_stage_mode != recorded_mode;
+                        d.attempted = true;
+                        d.last_hr = recorded_hr;
+                        d.last_stage_mode = recorded_mode.clone();
+                        d.last_dll_path = recorded_path.clone();
+                        d.last_acl_status = recorded_acl.clone();
+                        (first, changed)
+                    })
+                    .unwrap_or((false, false));
+
+                if ok_hwnd || first_done || hr_changed {
+                    let hr_hex = recorded_hr
+                        .map(|h| format!("0x{:08X}", h as u32))
+                        .unwrap_or_else(|| "none".to_string());
+                    crate::diagnostics::record_event(
+                        "TAP",
+                        &format!(
+                            "connected={} mode={} hr={} acl={} dll={}",
+                            ok_hwnd, recorded_mode, hr_hex, recorded_acl, recorded_path
+                        ),
+                    );
+                }
+
                 conn_flag.store(false, Ordering::Relaxed);
-                if ok_hwnd && notify_raw != 0 && notify_msg != 0 {
+                if (ok_hwnd || first_done) && notify_raw != 0 && notify_msg != 0 {
                     let _ = PostMessageW(
                         Some(HWND(notify_raw as *mut c_void)),
                         notify_msg,
-                        WPARAM(0),
+                        WPARAM(if ok_hwnd { 1 } else { 0 }),
                         LPARAM(0),
                     );
                 }
@@ -1936,8 +2112,29 @@ impl UiaWorker {
             let ctx = build_uia_context();
 
             while let Ok(first_job) = rx.recv() {
-                // Coalesce burst requests per taskbar HWND so primary and secondary jobs never overwrite each other
+                // Coalesce burst requests within a single deferred frame (35ms window) per taskbar HWND
+                // so Explorer's UIA subtree is only walked once per layout change burst.
                 let mut batch: Vec<UiaJob> = vec![first_job];
+                let coalesce_deadline = Instant::now() + Duration::from_millis(35);
+                loop {
+                    let rem = coalesce_deadline.saturating_duration_since(Instant::now());
+                    if rem.is_zero() {
+                        break;
+                    }
+                    match rx.recv_timeout(rem) {
+                        Ok(newer) => {
+                            if let Some(pos) = batch
+                                .iter()
+                                .position(|j| j.taskbar_hwnd == newer.taskbar_hwnd)
+                            {
+                                batch[pos] = newer;
+                            } else {
+                                batch.push(newer);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
                 while let Ok(newer) = rx.try_recv() {
                     if let Some(pos) = batch
                         .iter()
@@ -1949,6 +2146,9 @@ impl UiaWorker {
                     }
                 }
                 for job in batch {
+                    if !matches!(job.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill) {
+                        continue;
+                    }
                     let pills = if let Some((ref uia, ref cond, ref cache)) = ctx {
                         measure_pills_cached(
                             uia,
@@ -2052,7 +2252,26 @@ fn create_dc_render_target(factory: &ID2D1Factory) -> Option<ID2D1DCRenderTarget
     unsafe { factory.CreateDCRenderTarget(&props).ok() }
 }
 
-type StyleSig = (u8, u8, u8, u8, bool, i32, u8, u8, bool, (u8, u8, u8));
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct StyleSig {
+    pill_mode: u8,
+    surface_mode: u8,
+    tint_alpha: u8,
+    tb_theme: u8,
+    amber_border: bool,
+    corner_radius: i32,
+    tb_viz_style: u8,
+    tb_viz_opacity: u8,
+    tb_viz_mirror: bool,
+    tb_viz_color_mode: u8,
+    tb_viz_accent_rgb: u32,
+    tb_show_backdrop: bool,
+    tb_show_rim: bool,
+    tb_show_fx: bool,
+    accent: (u8, u8, u8),
+    accent_deep: (u8, u8, u8),
+    tap_connected: bool,
+}
 
 struct TrayOverlayState {
     hinst: HINSTANCE,
@@ -2391,6 +2610,29 @@ impl TaskbarStyler {
             && self.primary.refreshed_dwm_hwnd == self.primary.last_tray_hwnd
     }
 
+    pub fn is_tap_connecting(&self) -> bool {
+        self.tap.connecting.load(Ordering::Relaxed)
+    }
+
+    pub fn tap_diag_snapshot(&self) -> TapDiagSnapshot {
+        self.tap.diag_snapshot()
+    }
+
+    pub fn is_tap_fallback_active(&self, cfg: &AppConfig) -> bool {
+        !self.tap_connected
+            && !cfg.mac_dock_enabled
+            && wants_overlay(cfg)
+            && !self.is_tap_connecting()
+            && self.tap.has_attempted_connect()
+    }
+
+    pub fn is_settled(&self, cfg: &AppConfig) -> bool {
+        if !wants_overlay(cfg) {
+            return true;
+        }
+        self.tap_connected && self.has_dwm_refreshed(cfg)
+    }
+
     pub fn note_tap_ready(&mut self) {
         self.tap.last_active = None;
         self.primary.refreshed_dwm_hwnd = HWND::default();
@@ -2707,14 +2949,16 @@ impl TaskbarStyler {
     }
 
     pub fn tick_visualizer(&mut self, cfg: &AppConfig, raw_bands: &[f32; 12]) {
-        if cfg.tb_viz_style == TaskbarVizStyle::Off || !wants_overlay(cfg) {
+        if !cfg.tb_show_fx || cfg.tb_viz_style == TaskbarVizStyle::Off || !wants_overlay(cfg) {
             self.viz = VizSnapshot::default();
             return;
         }
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_viz_tick);
         let allow_ambient = cfg.tb_ambient_anim && cfg.tb_viz_style.is_ambient_live();
-        if cfg.viz_eco_fps && !allow_ambient && elapsed < Duration::from_millis(36) {
+        let frame_ms = cfg.anim_frame_ms();
+        let active_gap = Duration::from_millis(frame_ms.saturating_sub(2).max(6) as u64);
+        if elapsed < active_gap {
             return;
         }
 
@@ -2751,23 +2995,14 @@ impl TaskbarStyler {
             }
         }
 
-        let raw_audio = raw_bands.iter().any(|&b| b > 0.012);
-        let idle_ambient_only =
-            allow_ambient && !hover_in && !raw_audio && !self.is_viz_hover_active();
-        if idle_ambient_only {
-            let min_gap = Duration::from_millis(if cfg.viz_eco_fps { 95 } else { 75 });
-            if elapsed < min_gap {
-                return;
-            }
-        }
-
         let dt = elapsed.as_secs_f32();
         self.last_viz_tick = now;
 
         let prev_bands = self.viz.bands;
+        let prev_peaks = self.viz.peaks;
         let prev_hover = self.viz.hover_mix;
-        let dt_phase = (dt.clamp(0.016, 0.13) * 4.65).clamp(0.075, 0.55);
-        self.viz.update_from_raw(raw_bands, dt_phase, allow_ambient);
+        let prev_had_energy = self.viz.has_energy();
+        self.viz.update_from_raw(raw_bands, dt, allow_ambient);
         if hover_bar_w > 2.0 && hover_bar_h > 2.0 {
             self.viz.step_hover_physics(
                 cfg.tb_viz_style,
@@ -2782,18 +3017,33 @@ impl TaskbarStyler {
         }
 
         if !allow_ambient && !self.viz.has_energy() {
+            // Always paint the final clear frame when transitioning from active energy to silence
+            // so zero frozen ghost bars or peak-hold caps ever remain stuck on the taskbar.
             let max_band_diff = self
                 .viz
                 .bands
                 .iter()
                 .zip(prev_bands.iter())
                 .fold(0.0f32, |acc, (&a, &b)| acc.max((a - b).abs()));
-            if max_band_diff < 0.003 && (self.viz.hover_mix - prev_hover).abs() < 0.003 {
+            let max_peak_diff = self
+                .viz
+                .peaks
+                .iter()
+                .zip(prev_peaks.iter())
+                .fold(0.0f32, |acc, (&a, &b)| acc.max((a - b).abs()));
+            let hover_cleared = prev_hover >= 0.003 && self.viz.hover_mix < 0.003;
+            if !prev_had_energy
+                && !hover_cleared
+                && max_band_diff < 0.003
+                && max_peak_diff < 0.003
+                && (self.viz.hover_mix - prev_hover).abs() < 0.003
+            {
                 return;
             }
         }
 
-        let want_blur = wants_blur_backdrop(cfg);
+        let tap_ok = self.tap_connected;
+        let want_blur = wants_blur_backdrop(cfg) && tap_ok;
         let d2d_opt = self.d2d_factory.as_ref();
         for ov in std::iter::once(&mut self.primary).chain(self.secondaries.iter_mut()) {
             let bar_rect = ov.last_bar_rect;
@@ -2818,13 +3068,14 @@ impl TaskbarStyler {
                 &pills,
                 scaled_radius,
                 u,
+                tap_ok,
                 cfg,
                 d2d_opt,
                 &mut self.dc_rt,
                 &mut self.viz,
             );
-            if !was_vis {
-                ov.sync_overlay_zorder(ov.last_tray_hwnd, want_blur);
+            if !was_vis || !tap_ok {
+                ov.sync_overlay_zorder(ov.last_tray_hwnd, want_blur, tap_ok);
             }
         }
     }
@@ -2838,10 +3089,11 @@ impl TaskbarStyler {
         if !wants_overlay(cfg) {
             return;
         }
-        let want_blur = wants_blur_backdrop(cfg);
+        let tap_ok = self.tap_connected;
+        let want_blur = wants_blur_backdrop(cfg) && tap_ok;
         for (tray_hw, _, _) in query_all_tray_geometries() {
             if let Some(ov) = self.find_overlay_for_hwnd(tray_hw) {
-                ov.sync_overlay_zorder(tray_hw, want_blur);
+                ov.sync_overlay_zorder(tray_hw, want_blur, tap_ok);
             }
         }
     }
@@ -2924,8 +3176,14 @@ impl TaskbarStyler {
                 }
             }
             if matches!(cfg.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill) {
-                ov.last_uia_req_time = Some(now);
-                self.uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode);
+                let cooldown_ok = ov
+                    .last_uia_req_time
+                    .map(|t| now.duration_since(t) >= Duration::from_millis(320))
+                    .unwrap_or(true);
+                if cooldown_ok {
+                    ov.last_uia_req_time = Some(now);
+                    self.uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode);
+                }
             }
         }
     }
@@ -2943,7 +3201,8 @@ impl TaskbarStyler {
         }
         let mut any_changed = false;
         let mut hide_all = false;
-        let want_blur = wants_blur_backdrop(cfg);
+        let tap_ok = self.tap_connected;
+        let want_blur = wants_blur_backdrop(cfg) && tap_ok;
         {
             let TaskbarStyler {
                 primary,
@@ -3010,17 +3269,27 @@ impl TaskbarStyler {
                         &res.pills,
                         scaled_radius,
                         u,
+                        tap_ok,
                         cfg,
                         d2d_opt,
                         dc_rt,
                         viz,
                     );
-                    ov.update_blur_window(target_hw, cur_bar, &res.pills, scaled_radius, u, cfg, swca);
+                    ov.update_blur_window(
+                        target_hw,
+                        cur_bar,
+                        &res.pills,
+                        scaled_radius,
+                        u,
+                        tap_ok,
+                        cfg,
+                        swca,
+                    );
                     ov.last_pills = res.pills;
                     ov.last_bar_rect = cur_bar;
                     any_changed = true;
                 }
-                ov.sync_overlay_zorder(target_hw, want_blur);
+                ov.sync_overlay_zorder(target_hw, want_blur, tap_ok);
             }
         }
         if hide_all {
@@ -3050,18 +3319,25 @@ impl TaskbarStyler {
         self.tap_connected = self.tap.tap_ok;
 
         let pal = effective_taskbar_palette(cfg);
-        let sig: StyleSig = (
-            cfg.pill_mode as u8,
-            cfg.surface_mode as u8,
-            cfg.tint_alpha,
-            cfg.tb_theme as u8,
-            cfg.amber_border,
-            cfg.corner_radius,
-            cfg.tb_viz_style as u8,
-            cfg.tb_viz_opacity,
-            cfg.tb_viz_mirror,
-            pal.accent,
-        );
+        let sig = StyleSig {
+            pill_mode: cfg.pill_mode as u8,
+            surface_mode: cfg.surface_mode as u8,
+            tint_alpha: cfg.tint_alpha,
+            tb_theme: cfg.tb_theme as u8,
+            amber_border: cfg.amber_border,
+            corner_radius: cfg.corner_radius,
+            tb_viz_style: cfg.tb_viz_style as u8,
+            tb_viz_opacity: cfg.tb_viz_opacity,
+            tb_viz_mirror: cfg.tb_viz_mirror,
+            tb_viz_color_mode: cfg.tb_viz_color_mode as u8,
+            tb_viz_accent_rgb: cfg.tb_viz_accent_rgb,
+            tb_show_backdrop: cfg.tb_show_backdrop,
+            tb_show_rim: cfg.tb_show_rim,
+            tb_show_fx: cfg.tb_show_fx,
+            accent: pal.accent,
+            accent_deep: pal.accent_deep,
+            tap_connected: self.tap_connected,
+        };
 
         let d2d_opt = self.d2d_factory.as_ref();
         Self::sync_overlay_target(
@@ -3190,6 +3466,7 @@ impl TaskbarStyler {
             Self::dwm_refresh_tray_surface_hwnd(tray_hw);
             ov.refreshed_dwm_hwnd = tray_hw;
             ov.last_dwm_rect = bar_rect;
+            ov.pending_dwm_settle = false;
         }
 
         let scaled_radius = ((cfg.corner_radius as f32) * u).round() as i32;
@@ -3206,16 +3483,26 @@ impl TaskbarStyler {
                     &full_pills,
                     0,
                     u,
+                    tap_connected,
                     cfg,
                     d2d_factory,
                     dc_rt,
                     viz,
                 );
-                ov.update_blur_window(tray_hw, bar_rect, &full_pills, 0, u, cfg, swca_fn);
+                ov.update_blur_window(
+                    tray_hw,
+                    bar_rect,
+                    &full_pills,
+                    0,
+                    u,
+                    tap_connected,
+                    cfg,
+                    swca_fn,
+                );
                 ov.last_pills = full_pills;
                 ov.last_bar_rect = bar_rect;
             }
-            ov.sync_overlay_zorder(tray_hw, wants_blur_backdrop(cfg));
+            ov.sync_overlay_zorder(tray_hw, wants_blur_backdrop(cfg) && tap_connected, tap_connected);
             ov.last_pill_mode = Some(cfg.pill_mode);
             ov.last_style_sig = Some(sig);
             return;
@@ -3231,7 +3518,7 @@ impl TaskbarStyler {
                     || hwnd_changed
                     || ov
                         .last_uia_req_time
-                        .map(|t| t.elapsed() >= Duration::from_millis(2200))
+                        .map(|t| t.elapsed() >= Duration::from_millis(5500))
                         .unwrap_or(true))
             {
                 ov.last_uia_req_time = Some(Instant::now());
@@ -3266,17 +3553,27 @@ impl TaskbarStyler {
                 &screen_pills,
                 scaled_radius,
                 u,
+                tap_connected,
                 cfg,
                 d2d_factory,
                 dc_rt,
                 viz,
             );
-            ov.update_blur_window(tray_hw, bar_rect, &screen_pills, scaled_radius, u, cfg, swca_fn);
+            ov.update_blur_window(
+                tray_hw,
+                bar_rect,
+                &screen_pills,
+                scaled_radius,
+                u,
+                tap_connected,
+                cfg,
+                swca_fn,
+            );
             ov.last_pills = screen_pills;
             ov.last_bar_rect = bar_rect;
         }
 
-        ov.sync_overlay_zorder(tray_hw, wants_blur_backdrop(cfg));
+        ov.sync_overlay_zorder(tray_hw, wants_blur_backdrop(cfg) && tap_connected, tap_connected);
         ov.last_pill_mode = Some(cfg.pill_mode);
         ov.last_style_sig = Some(sig);
     }
@@ -3335,10 +3632,11 @@ impl TrayOverlayState {
         screen_pills: &[RECT],
         radius: i32,
         u_bar: f32,
+        tap_connected: bool,
         cfg: &AppConfig,
         swca_fn: Option<SetWindowCompositionAttributeFn>,
     ) {
-        let want_blur = wants_blur_backdrop(cfg) && !screen_pills.is_empty();
+        let want_blur = wants_blur_backdrop(cfg) && tap_connected && !screen_pills.is_empty();
         if !want_blur {
             unsafe {
                 for &hw in &self.blur_hwnds {
@@ -3492,6 +3790,7 @@ impl TrayOverlayState {
         screen_pills: &[RECT],
         radius: i32,
         u: f32,
+        tap_connected: bool,
         cfg: &AppConfig,
         d2d_opt: Option<&ID2D1Factory>,
         dc_rt_slot: &mut Option<ID2D1DCRenderTarget>,
@@ -3534,6 +3833,7 @@ impl TrayOverlayState {
                     screen_pills,
                     radius,
                     u,
+                    tap_connected,
                     cfg,
                     viz,
                 )
@@ -3582,8 +3882,24 @@ impl TrayOverlayState {
         self.last_glass_win_rect = win_rect;
         self.glass_visible = true;
     }
+}
 
-    fn sync_overlay_zorder(&self, taskbar_hwnd: HWND, show_blur: bool) {
+pub fn desired_overlay_is_above_taskbar(tap_connected: bool) -> bool {
+    !tap_connected
+}
+
+pub fn fallback_overlay_alpha(cfg: &AppConfig, base_alpha: f32, tap_connected: bool) -> f32 {
+    if tap_connected {
+        return base_alpha;
+    }
+    if cfg.surface_mode == SurfaceMode::ClearTint && cfg.tint_alpha == 0 {
+        return 0.0;
+    }
+    (base_alpha * 0.20).clamp(0.0, 0.11)
+}
+
+impl TrayOverlayState {
+    fn sync_overlay_zorder(&self, taskbar_hwnd: HWND, show_blur: bool, tap_connected: bool) {
         if self.glass_hwnd.0.is_null() {
             return;
         }
@@ -3615,7 +3931,57 @@ impl TrayOverlayState {
                 );
             }
 
+            let glass_w = (self.last_glass_win_rect.right - self.last_glass_win_rect.left).max(2);
+            let glass_h = (self.last_glass_win_rect.bottom - self.last_glass_win_rect.top).max(2);
             let glass_hidden = !IsWindowVisible(self.glass_hwnd).as_bool();
+
+            if desired_overlay_is_above_taskbar(tap_connected) {
+                for &blur_hw in &self.blur_hwnds {
+                    if !blur_hw.0.is_null() && IsWindowVisible(blur_hw).as_bool() {
+                        let _ = ShowWindow(blur_hw, SW_HIDE);
+                    }
+                }
+                let prev_above_tray = GetWindow(taskbar_hwnd, GW_HWNDPREV).unwrap_or_default();
+                if glass_hidden || prev_above_tray != self.glass_hwnd {
+                    let top_of_band = if tray_topmost {
+                        HWND_TOPMOST
+                    } else {
+                        HWND_NOTOPMOST
+                    };
+                    let prev_same_band = !prev_above_tray.0.is_null()
+                        && prev_above_tray != self.glass_hwnd
+                        && ((GetWindowLongW(prev_above_tray, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0)
+                            != 0)
+                            == tray_topmost;
+                    let insert_after = if prev_same_band {
+                        prev_above_tray
+                    } else {
+                        top_of_band
+                    };
+                    let pos_res = SetWindowPos(
+                        self.glass_hwnd,
+                        Some(insert_after),
+                        self.last_glass_win_rect.left,
+                        self.last_glass_win_rect.top,
+                        glass_w,
+                        glass_h,
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                    if pos_res.is_err() && insert_after != top_of_band {
+                        let _ = SetWindowPos(
+                            self.glass_hwnd,
+                            Some(top_of_band),
+                            self.last_glass_win_rect.left,
+                            self.last_glass_win_rect.top,
+                            glass_w,
+                            glass_h,
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        );
+                    }
+                }
+                return;
+            }
+
             let after_tray = GetWindow(taskbar_hwnd, GW_HWNDNEXT).unwrap_or_default();
             if glass_hidden || after_tray != self.glass_hwnd {
                 let _ = SetWindowPos(
@@ -3623,8 +3989,8 @@ impl TrayOverlayState {
                     Some(taskbar_hwnd),
                     self.last_glass_win_rect.left,
                     self.last_glass_win_rect.top,
-                    (self.last_glass_win_rect.right - self.last_glass_win_rect.left).max(2),
-                    (self.last_glass_win_rect.bottom - self.last_glass_win_rect.top).max(2),
+                    glass_w,
+                    glass_h,
                     SWP_NOACTIVATE | SWP_SHOWWINDOW,
                 );
             }
@@ -3690,10 +4056,12 @@ fn wants_overlay(cfg: &AppConfig) -> bool {
 }
 
 fn wants_blur_backdrop(cfg: &AppConfig) -> bool {
-    if matches!(
-        cfg.tb_theme,
-        TaskbarTheme::CyberArasakaDeck | TaskbarTheme::Retro95Classic
-    ) {
+    if !cfg.tb_show_backdrop
+        || matches!(
+            cfg.tb_theme,
+            TaskbarTheme::CyberArasakaDeck | TaskbarTheme::Retro95Classic
+        )
+    {
         return false;
     }
     match cfg.pill_mode {
@@ -3889,8 +4257,9 @@ unsafe fn draw_capsule_backdrop(
     bounds_w: f32,
     bounds_h: f32,
     is_full_bar: bool,
+    above_taskbar: bool,
     cfg: &AppConfig,
-    _pal: &ThemePalette,
+    pal: &ThemePalette,
 ) {
     if cfg.pill_mode == PillMode::NativeDefault {
         return;
@@ -3903,8 +4272,8 @@ unsafe fn draw_capsule_backdrop(
         SurfaceMode::SystemDefault => (fill_alpha * 0.80).clamp(0.10, 0.92),
     };
 
-    // Contained soft floating shadow for capsule pills
-    if !is_full_bar && (fill_alpha > 0.04 || cfg.amber_border) {
+    // Contained soft floating shadow for capsule pills (suppressed when layered above opaque taskbar)
+    if !above_taskbar && !is_full_bar && (fill_alpha > 0.04 || cfg.amber_border) {
         let is_mac_dock = matches!(
             cfg.tb_theme,
             TaskbarTheme::QuartzShellDock
@@ -3943,10 +4312,17 @@ unsafe fn draw_capsule_backdrop(
     };
 
     // Bespoke OS Dock surface fills
+    let bespoke_alpha = |normal: f32| -> f32 {
+        if above_taskbar {
+            (fill_alpha * 0.16).clamp(0.05, 0.14)
+        } else {
+            normal
+        }
+    };
     match cfg.tb_theme {
         TaskbarTheme::Retro95Classic => {
             if let Ok(br) = rt.CreateSolidColorBrush(
-                &rgba_u8(68, 74, 86, fill_alpha.max(0.88)),
+                &rgba_u8(68, 74, 86, bespoke_alpha(fill_alpha.max(0.88))),
                 None,
             ) {
                 rt.FillRoundedRectangle(&rr, &br);
@@ -3954,7 +4330,7 @@ unsafe fn draw_capsule_backdrop(
             return;
         }
         TaskbarTheme::FrutigerAero7 => {
-            let a = fill_alpha.max(0.46).min(0.86);
+            let a = bespoke_alpha(fill_alpha.max(0.46).min(0.86));
             let aero_stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(32, 146, 198, a * 0.88) },
                 D2D1_GRADIENT_STOP { position: 0.48, color: rgba_u8(14, 84, 134, a * 0.92) },
@@ -3967,9 +4343,10 @@ unsafe fn draw_capsule_backdrop(
             // Signature Win7 glassy white upper-half reflection band
             let clip_guard = push_capsule_clip(rt, d2d, l, t, r, b, if is_full_bar { 0.0 } else { rad });
             let mid_y = t + (b - t) * 0.48;
+            let (gl_top, gl_bot) = if above_taskbar { (0.09, 0.03) } else { (0.34, 0.11) };
             let gloss_stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, 0.34) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(210, 246, 255, 0.11) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, gl_top) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(210, 246, 255, gl_bot) },
             ];
             if let Some(gbr) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: mid_y }, &gloss_stops) {
                 rt.FillRectangle(&D2D_RECT_F { left: l, top: t, right: r, bottom: mid_y }, &gbr);
@@ -3978,7 +4355,7 @@ unsafe fn draw_capsule_backdrop(
             return;
         }
         TaskbarTheme::UnixPolybar => {
-            let a = fill_alpha.max(0.78);
+            let a = bespoke_alpha(fill_alpha.max(0.78));
             let u_stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(28, 28, 44, a) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(20, 20, 32, a) },
@@ -3989,10 +4366,10 @@ unsafe fn draw_capsule_backdrop(
             return;
         }
         TaskbarTheme::CyberArasakaDeck => {
-            let a = fill_alpha.max(0.76);
+            let a = bespoke_alpha(fill_alpha.max(0.76));
             let c_stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(16, 18, 28, a) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(10, 12, 20, (a + 0.06).min(0.96)) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(10, 12, 20, bespoke_alpha((a + 0.06).min(0.96))) },
             ];
             if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: r, Y: b }, &c_stops) {
                 if let Some(factory) = d2d {
@@ -4008,9 +4385,9 @@ unsafe fn draw_capsule_backdrop(
         TaskbarTheme::QuartzShellDock
         | TaskbarTheme::CupertinoDock
         | TaskbarTheme::KineticCupertinoWave => {
-            let a = effective_alpha.max(0.28);
+            let a = bespoke_alpha(effective_alpha.max(0.28));
             let q_stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(220, 230, 246, (a * 0.56).clamp(0.18, 0.42)) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(220, 230, 246, (a * 0.56).clamp(0.04, 0.42)) },
                 D2D1_GRADIENT_STOP { position: 0.38, color: rgba_u8(36, 42, 56, (a * 0.92).min(0.78)) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(20, 24, 34, (a * 0.98).min(0.84)) },
             ];
@@ -4020,10 +4397,10 @@ unsafe fn draw_capsule_backdrop(
             return;
         }
         TaskbarTheme::DynamicIslandDock => {
-            let a = fill_alpha.max(0.84);
+            let a = bespoke_alpha(fill_alpha.max(0.84));
             let d_stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(18, 20, 26, a) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(9, 10, 14, (a + 0.06).min(0.98)) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(9, 10, 14, bespoke_alpha((a + 0.06).min(0.98))) },
             ];
             if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &d_stops) {
                 rt.FillRoundedRectangle(&rr, &br);
@@ -4033,23 +4410,39 @@ unsafe fn draw_capsule_backdrop(
         _ => {}
     }
 
-    if effective_alpha > 0.005 {
-        let bg_stops = match cfg.surface_mode {
-            SurfaceMode::SystemDefault => [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(34, 32, 30, (effective_alpha + 0.05).min(0.96)) },
-                D2D1_GRADIENT_STOP { position: 0.55, color: rgba_u8(26, 25, 25, effective_alpha) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(20, 19, 19, (effective_alpha * 0.90).max(0.0)) },
-            ],
-            SurfaceMode::Blur => [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(46, 38, 33, (effective_alpha + 0.06).min(0.90)) },
-                D2D1_GRADIENT_STOP { position: 0.55, color: rgba_u8(30, 24, 21, effective_alpha) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(24, 19, 17, (effective_alpha * 0.88).max(0.0)) },
-            ],
-            _ => [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(20, 15, 13, (effective_alpha + 0.06).min(0.98)) },
-                D2D1_GRADIENT_STOP { position: 0.55, color: rgba_u8(15, 11, 10, effective_alpha) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(12, 9, 8, (effective_alpha * 0.88).max(0.0)) },
-            ],
+    let surface_alpha = fallback_overlay_alpha(cfg, effective_alpha, !above_taskbar);
+    if surface_alpha > 0.005 {
+        let use_pal_glass = ThemePalette::for_music_taskbar_theme(cfg.tb_theme).is_some()
+            || cfg.tb_viz_color_mode == VizColorMode::CustomAccent;
+        let bg_stops = if use_pal_glass {
+            let (tr, tg, tb) = pal.glass_top;
+            let (br, bg, bb) = pal.glass_bot;
+            let mr = ((tr as u16 + br as u16) / 2) as u8;
+            let mg = ((tg as u16 + bg as u16) / 2) as u8;
+            let mb = ((tb as u16 + bb as u16) / 2) as u8;
+            [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(tr, tg, tb, (surface_alpha + 0.04).min(0.96)) },
+                D2D1_GRADIENT_STOP { position: 0.55, color: rgba_u8(mr, mg, mb, surface_alpha) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(br, bg, bb, (surface_alpha * 0.90).max(0.0)) },
+            ]
+        } else {
+            match cfg.surface_mode {
+                SurfaceMode::SystemDefault => [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(34, 32, 30, (surface_alpha + 0.04).min(0.96)) },
+                    D2D1_GRADIENT_STOP { position: 0.55, color: rgba_u8(26, 25, 25, surface_alpha) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(20, 19, 19, (surface_alpha * 0.90).max(0.0)) },
+                ],
+                SurfaceMode::Blur => [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(46, 38, 33, (surface_alpha + 0.04).min(0.90)) },
+                    D2D1_GRADIENT_STOP { position: 0.55, color: rgba_u8(30, 24, 21, surface_alpha) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(24, 19, 17, (surface_alpha * 0.88).max(0.0)) },
+                ],
+                _ => [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(20, 15, 13, (surface_alpha + 0.04).min(0.98)) },
+                    D2D1_GRADIENT_STOP { position: 0.55, color: rgba_u8(15, 11, 10, surface_alpha) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(12, 9, 8, (surface_alpha * 0.88).max(0.0)) },
+                ],
+            }
         };
         if let Some(bg_br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: r, Y: b }, &bg_stops) {
             rt.FillRoundedRectangle(&rr, &bg_br);
@@ -4287,8 +4680,9 @@ unsafe fn draw_capsule_rim_and_accents(
         return;
     }
 
-    // Standard top-left crystal frost specular sheen
+    // Standard top-left crystal frost specular sheen (tinted to active palette, never stale amber)
     let sheen_top_a = if cfg.surface_mode == SurfaceMode::Blur { 0.28 } else { 0.15 };
+    let (sr, sg, sb) = pal.text_primary;
     let sheen_rr = D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
             left: l + 1.0 * u,
@@ -4300,9 +4694,9 @@ unsafe fn draw_capsule_rim_and_accents(
         radiusY: (rad - 1.0 * u).max(2.0),
     };
     let sheen_stops = [
-        D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 243, 220, sheen_top_a) },
-        D2D1_GRADIENT_STOP { position: 0.38, color: rgba_u8(255, 243, 220, sheen_top_a * 0.16) },
-        D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(255, 243, 220, 0.0) },
+        D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(sr, sg, sb, sheen_top_a) },
+        D2D1_GRADIENT_STOP { position: 0.38, color: rgba_u8(sr, sg, sb, sheen_top_a * 0.16) },
+        D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(sr, sg, sb, 0.0) },
     ];
     if let Some(sh_br) = create_grad(
         rt,
@@ -4326,7 +4720,7 @@ unsafe fn draw_capsule_rim_and_accents(
             rt.DrawRoundedRectangle(&rr, &rim_br, 1.45 * u, None);
         }
     } else if fill_alpha > 0.04 {
-        if let Ok(sub_rim) = rt.CreateSolidColorBrush(&rgba_u8(255, 243, 220, 0.16), None) {
+        if let Ok(sub_rim) = rt.CreateSolidColorBrush(&rgba_u8(sr, sg, sb, 0.16), None) {
             rt.DrawRoundedRectangle(&rr, &sub_rim, 1.0 * u, None);
         }
     }
@@ -4343,6 +4737,7 @@ unsafe fn draw_glass_surface(
     screen_pills: &[RECT],
     radius: i32,
     u: f32,
+    tap_connected: bool,
     cfg: &AppConfig,
     viz: &VizSnapshot,
 ) -> bool {
@@ -4355,6 +4750,9 @@ unsafe fn draw_glass_surface(
 
     dc_rt.BeginDraw();
     dc_rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+    if cfg.is_native_tb_all_elements_off() {
+        return dc_rt.EndDraw(None, None).is_ok();
+    }
 
     let pal = effective_taskbar_palette(cfg);
     let bar_w = bar_rect.right - bar_rect.left;
@@ -4373,33 +4771,57 @@ unsafe fn draw_glass_surface(
         effective_pill_radius_for(screen_pills, radius, u, cfg.tb_theme)
     };
 
+    let above_taskbar = !tap_connected;
+    let vu_tricolor = is_vu_tricolor_active(cfg);
     if is_full_bar {
         let l = 0.0;
         let t = 0.0;
         let r = win_w as f32;
         let b = win_h as f32;
-        draw_capsule_backdrop(dc_rt, d2d, l, t, r, b, 0.0, u, r, b, true, cfg, &pal);
-        draw_taskbar_viz_in_rect(
-            dc_rt,
-            d2d,
-            l,
-            t,
-            r,
-            b,
-            (l, t, r, b),
-            0.0,
-            u,
-            is_vertical,
-            anchor_min,
-            cfg.tb_viz_style,
-            cfg.tb_viz_opacity,
-            cfg.tb_viz_mirror,
-            &pal,
-            viz,
-        );
-        draw_capsule_rim_and_accents(
-            dc_rt, d2d, l, t, r, b, 0.0, u, is_vertical, anchor_min, true, 0, false, cfg, viz, &pal,
-        );
+        if cfg.tb_show_backdrop {
+            draw_capsule_backdrop(
+                dc_rt,
+                d2d,
+                l,
+                t,
+                r,
+                b,
+                0.0,
+                u,
+                r,
+                b,
+                true,
+                above_taskbar,
+                cfg,
+                &pal,
+            );
+        }
+        if cfg.tb_show_fx {
+            draw_taskbar_viz_in_rect_themed(
+                dc_rt,
+                d2d,
+                l,
+                t,
+                r,
+                b,
+                (l, t, r, b),
+                0.0,
+                u,
+                is_vertical,
+                anchor_min,
+                cfg.tb_viz_style,
+                cfg.tb_viz_opacity,
+                cfg.tb_viz_mirror,
+                vu_tricolor,
+                &pal,
+                viz,
+            );
+        }
+        if cfg.tb_show_rim {
+            draw_capsule_rim_and_accents(
+                dc_rt, d2d, l, t, r, b, 0.0, u, is_vertical, anchor_min, true, 0, false, cfg, viz, &pal,
+            );
+        }
     } else {
         for (cap_idx, &raw_sr) in screen_pills.iter().enumerate() {
             let sr = dock_adjusted_rect(raw_sr, bar_rect, is_vertical, anchor_min, u, cfg.tb_theme);
@@ -4407,30 +4829,50 @@ unsafe fn draw_glass_surface(
             let t = (sr.top - win_rect.top) as f32;
             let r = (sr.right - win_rect.left) as f32;
             let b = (sr.bottom - win_rect.top) as f32;
-            draw_capsule_backdrop(
-                dc_rt, d2d, l, t, r, b, rad, u, win_w as f32, win_h as f32, false, cfg, &pal,
-            );
-            draw_taskbar_viz_in_rect(
-                dc_rt,
-                d2d,
-                l,
-                t,
-                r,
-                b,
-                (0.0, 0.0, win_w as f32, win_h as f32),
-                rad,
-                u,
-                is_vertical,
-                anchor_min,
-                cfg.tb_viz_style,
-                cfg.tb_viz_opacity,
-                cfg.tb_viz_mirror,
-                &pal,
-                viz,
-            );
-            draw_capsule_rim_and_accents(
-                dc_rt, d2d, l, t, r, b, rad, u, is_vertical, anchor_min, false, cap_idx, false, cfg, viz, &pal,
-            );
+            if cfg.tb_show_backdrop {
+                draw_capsule_backdrop(
+                    dc_rt,
+                    d2d,
+                    l,
+                    t,
+                    r,
+                    b,
+                    rad,
+                    u,
+                    win_w as f32,
+                    win_h as f32,
+                    false,
+                    above_taskbar,
+                    cfg,
+                    &pal,
+                );
+            }
+            if cfg.tb_show_fx {
+                draw_taskbar_viz_in_rect_themed(
+                    dc_rt,
+                    d2d,
+                    l,
+                    t,
+                    r,
+                    b,
+                    (0.0, 0.0, win_w as f32, win_h as f32),
+                    rad,
+                    u,
+                    is_vertical,
+                    anchor_min,
+                    cfg.tb_viz_style,
+                    cfg.tb_viz_opacity,
+                    cfg.tb_viz_mirror,
+                    vu_tricolor,
+                    &pal,
+                    viz,
+                );
+            }
+            if cfg.tb_show_rim {
+                draw_capsule_rim_and_accents(
+                    dc_rt, d2d, l, t, r, b, rad, u, is_vertical, anchor_min, false, cap_idx, false, cfg, viz, &pal,
+                );
+            }
         }
     }
 
@@ -4823,7 +5265,56 @@ pub unsafe fn draw_taskbar_viz_in_rect(
     pal: &ThemePalette,
     viz: &VizSnapshot,
 ) {
-    if style == TaskbarVizStyle::Off || (!style.is_ambient_live() && !viz.has_energy()) {
+    draw_taskbar_viz_in_rect_themed(
+        rt,
+        d2d,
+        l,
+        t,
+        r,
+        b,
+        canvas_box,
+        rad,
+        u,
+        is_vertical,
+        anchor_min,
+        style,
+        opacity_pct,
+        mirror,
+        false,
+        pal,
+        viz,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_taskbar_viz_in_rect_themed(
+    rt: &ID2D1RenderTarget,
+    d2d: Option<&ID2D1Factory>,
+    l: f32,
+    t: f32,
+    r: f32,
+    b: f32,
+    canvas_box: (f32, f32, f32, f32),
+    rad: f32,
+    u: f32,
+    is_vertical: bool,
+    anchor_min: bool,
+    style: TaskbarVizStyle,
+    opacity_pct: u8,
+    mirror: bool,
+    vu_tricolor: bool,
+    pal: &ThemePalette,
+    viz: &VizSnapshot,
+) {
+    let is_music_style = matches!(
+        style,
+        TaskbarVizStyle::EqualizerBars | TaskbarVizStyle::AuroraWave | TaskbarVizStyle::EdgePulse
+    );
+    if style == TaskbarVizStyle::Off
+        || (!style.is_ambient_live()
+            && !viz.has_energy()
+            && !(is_music_style && viz.hover_mix > 0.01))
+    {
         return;
     }
     let span_len = if is_vertical { b - t } else { r - l };
@@ -4860,16 +5351,16 @@ pub unsafe fn draw_taskbar_viz_in_rect(
             bottom: p0.Y.max(p1.Y),
         }
     };
+    // Center-out symmetrical spectrum when mirrored; authentic left-to-right bass->treble otherwise
     let sample_band = |p: f32| -> (f32, f32) {
-        let arch = (p * 2.0 - 1.0).abs();
-        let f = arch * 23.0;
+        let freq_pos = if mirror { (p * 2.0 - 1.0).abs() } else { p.clamp(0.0, 1.0) };
+        let f = freq_pos * 23.0;
         let i0 = (f.floor() as usize).min(23);
         let i1 = (i0 + 1).min(23);
         let frac = f - i0 as f32;
-        let b_val = viz.bands[i0] * (1.0 - frac) + viz.bands[i1] * frac;
-        let pk_val = viz.peaks[i0] * (1.0 - frac) + viz.peaks[i1] * frac;
-        let ripple = 0.88 + 0.12 * (viz.phase * 1.15 + p * std::f32::consts::TAU * 2.0).sin();
-        ((b_val * ripple).clamp(0.06, 1.0), pk_val.clamp(0.08, 1.0))
+        let b_val = (viz.bands[i0] * (1.0 - frac) + viz.bands[i1] * frac).clamp(0.0, 1.0);
+        let pk_val = (viz.peaks[i0] * (1.0 - frac) + viz.peaks[i1] * frac).clamp(0.0, 1.0);
+        (b_val, pk_val)
     };
 
     let pad = (rad * 0.55).max(5.0 * u).min(span_len * 0.22);
@@ -4884,72 +5375,215 @@ pub unsafe fn draw_taskbar_viz_in_rect(
             let max_reach = if mirror {
                 cross_len * 0.45
             } else {
-                cross_len * 0.86
+                cross_len * 0.88
             };
             let grad_start = if mirror {
-                map_pt(span_len * 0.5, cross_len * 0.5)
+                map_pt(span_len * 0.5, cross_len * 0.5 - max_reach)
             } else {
                 map_pt(span_len * 0.5, 2.0 * u)
             };
             let grad_end = if mirror {
-                map_pt(span_len * 0.5, cross_len * 0.96)
+                map_pt(span_len * 0.5, cross_len * 0.5 + max_reach)
             } else {
                 map_pt(span_len * 0.5, 2.0 * u + max_reach)
             };
-            let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: pal.deep_col(0.88 * op) },
-                D2D1_GRADIENT_STOP { position: 0.52, color: pal.accent_col(0.98 * op) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: pal.light_col(1.0 * op) },
-            ];
-            let bar_br = create_grad(rt, grad_start, grad_end, &stops);
-            let bloom_br = rt.CreateSolidColorBrush(&pal.accent_col(0.28 * op), None).ok();
+            let bar_br = if vu_tricolor {
+                if mirror {
+                    // Symmetrical Studio Tri-Color LED Equalizer Gradient (Peak Red <- Yellow <- Green -> Yellow -> Peak Red)
+                    let vu_mirror_stops = [
+                        D2D1_GRADIENT_STOP { position: 0.00, color: rgba_u8(255, 54, 62, 1.0 * op) },
+                        D2D1_GRADIENT_STOP { position: 0.14, color: rgba_u8(255, 214, 48, 1.0 * op) },
+                        D2D1_GRADIENT_STOP { position: 0.50, color: rgba_u8(34, 224, 98, 0.94 * op) },
+                        D2D1_GRADIENT_STOP { position: 0.86, color: rgba_u8(255, 214, 48, 1.0 * op) },
+                        D2D1_GRADIENT_STOP { position: 1.00, color: rgba_u8(255, 54, 62, 1.0 * op) },
+                    ];
+                    create_grad(rt, grad_start, grad_end, &vu_mirror_stops)
+                } else {
+                    // Authentic Studio Tri-Color LED Equalizer Gradient: Green -> Lime -> Yellow -> Peak Red
+                    let vu_stops = [
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(34, 224, 98, 0.94 * op) },
+                        D2D1_GRADIENT_STOP { position: 0.54, color: rgba_u8(116, 238, 72, 0.98 * op) },
+                        D2D1_GRADIENT_STOP { position: 0.78, color: rgba_u8(255, 214, 48, 1.0 * op) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(255, 54, 62, 1.0 * op) },
+                    ];
+                    create_grad(rt, grad_start, grad_end, &vu_stops)
+                }
+            } else if mirror {
+                let mirror_stops = [
+                    D2D1_GRADIENT_STOP { position: 0.00, color: pal.light_col(1.0 * op) },
+                    D2D1_GRADIENT_STOP { position: 0.24, color: pal.accent_col(0.98 * op) },
+                    D2D1_GRADIENT_STOP { position: 0.50, color: pal.deep_col(0.90 * op) },
+                    D2D1_GRADIENT_STOP { position: 0.76, color: pal.accent_col(0.98 * op) },
+                    D2D1_GRADIENT_STOP { position: 1.00, color: pal.light_col(1.0 * op) },
+                ];
+                create_grad(rt, grad_start, grad_end, &mirror_stops)
+            } else {
+                let stops = [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: pal.deep_col(0.90 * op) },
+                    D2D1_GRADIENT_STOP { position: 0.52, color: pal.accent_col(0.98 * op) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: pal.light_col(1.0 * op) },
+                ];
+                create_grad(rt, grad_start, grad_end, &stops)
+            };
+            let bloom_br = rt.CreateSolidColorBrush(&pal.accent_col(0.24 * op), None).ok();
             let peak_br = rt.CreateSolidColorBrush(&pal.text_col(0.96 * op), None).ok();
+            let vu_pk_green = if vu_tricolor {
+                rt.CreateSolidColorBrush(&rgba_u8(190, 255, 212, 0.98 * op), None).ok()
+            } else {
+                None
+            };
+            let vu_pk_yellow = if vu_tricolor {
+                rt.CreateSolidColorBrush(&rgba_u8(255, 230, 88, 0.98 * op), None).ok()
+            } else {
+                None
+            };
+            let vu_pk_red = if vu_tricolor {
+                rt.CreateSolidColorBrush(&rgba_u8(255, 72, 78, 1.0 * op), None).ok()
+            } else {
+                None
+            };
+            let led_slot_br = if vu_tricolor {
+                rt.CreateSolidColorBrush(&rgba_u8(8, 12, 12, 0.44), None).ok()
+            } else {
+                None
+            };
 
             for i in 0..n_bars {
                 let p = (i as f32 + 0.5) / n_bars as f32;
                 let (amp, peak) = sample_band(p);
+                if amp < 0.004 && peak < 0.008 {
+                    continue;
+                }
                 let sc = pad + (i as f32 + 0.5) * step;
                 let s0 = sc - bw * 0.5;
                 let s1 = sc + bw * 0.5;
-                let rr_rad = (bw * 0.45).min(4.0 * u);
+                let rr_rad = if vu_tricolor {
+                    (bw * 0.25).min(2.2 * u)
+                } else {
+                    (bw * 0.45).min(4.0 * u)
+                };
 
                 if mirror {
                     let mid = cross_len * 0.5;
-                    let half = (amp * max_reach).max(2.2 * u);
-                    if let Some(ref bl) = bloom_br {
-                        let br = map_rect(s0 - 1.5 * u, s1 + 1.5 * u, mid - half - 2.0 * u, mid + half + 2.0 * u);
-                        rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: br, radiusX: rr_rad, radiusY: rr_rad }, bl);
+                    let half = (amp * max_reach).max(if amp > 0.008 { 1.4 * u } else { 0.0 });
+                    if half > 0.5 {
+                        if let Some(ref bl) = bloom_br {
+                            let br = map_rect(
+                                s0 - 1.3 * u,
+                                s1 + 1.3 * u,
+                                mid - half - 1.8 * u,
+                                mid + half + 1.8 * u,
+                            );
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: br, radiusX: rr_rad, radiusY: rr_rad },
+                                bl,
+                            );
+                        }
+                        if let Some(ref gr) = bar_br {
+                            let rc = map_rect(s0, s1, mid - half, mid + half);
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: rc, radiusX: rr_rad, radiusY: rr_rad },
+                                gr,
+                            );
+                        }
+                        if let Some(ref slot_br) = led_slot_br {
+                            let seg_step = (4.0 * u).max(2.6);
+                            let mut off = seg_step;
+                            while off < half - 1.0 * u {
+                                let gap_up = map_rect(s0, s1, mid + off, mid + off + 1.05 * u);
+                                let gap_dn = map_rect(s0, s1, mid - off - 1.05 * u, mid - off);
+                                rt.FillRectangle(&gap_up, slot_br);
+                                rt.FillRectangle(&gap_dn, slot_br);
+                                off += seg_step;
+                            }
+                        }
                     }
-                    if let Some(ref gr) = bar_br {
-                        let rc = map_rect(s0, s1, mid - half, mid + half);
-                        rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rc, radiusX: rr_rad, radiusY: rr_rad }, gr);
+                    if peak > amp + 0.025 && peak > 0.04 {
+                        let chosen_pk = if vu_tricolor {
+                            if peak >= 0.76 {
+                                vu_pk_red.as_ref().or(peak_br.as_ref())
+                            } else if peak >= 0.52 {
+                                vu_pk_yellow.as_ref().or(peak_br.as_ref())
+                            } else {
+                                vu_pk_green.as_ref().or(peak_br.as_ref())
+                            }
+                        } else {
+                            peak_br.as_ref()
+                        };
+                        if let Some(pk) = chosen_pk {
+                            let ph = (peak * max_reach).min(cross_len * 0.47);
+                            let prc_top = map_rect(s0, s1, mid + ph, mid + ph + 1.9 * u);
+                            let prc_bot = map_rect(s0, s1, mid - ph - 1.9 * u, mid - ph);
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: prc_top, radiusX: rr_rad * 0.6, radiusY: rr_rad * 0.6 },
+                                pk,
+                            );
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: prc_bot, radiusX: rr_rad * 0.6, radiusY: rr_rad * 0.6 },
+                                pk,
+                            );
+                        }
                     }
                 } else {
                     let base = 2.0 * u;
-                    let reach = (amp * max_reach).max(2.8 * u);
-                    if let Some(ref bl) = bloom_br {
-                        let br = map_rect(s0 - 1.4 * u, s1 + 1.4 * u, base, base + reach + 2.5 * u);
-                        rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: br, radiusX: rr_rad, radiusY: rr_rad }, bl);
+                    let reach = (amp * max_reach).max(if amp > 0.008 { 1.6 * u } else { 0.0 });
+                    if reach > 0.5 {
+                        if let Some(ref bl) = bloom_br {
+                            let br = map_rect(s0 - 1.3 * u, s1 + 1.3 * u, base, base + reach + 2.2 * u);
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: br, radiusX: rr_rad, radiusY: rr_rad },
+                                bl,
+                            );
+                        }
+                        if let Some(ref gr) = bar_br {
+                            let rc = map_rect(s0, s1, base, base + reach);
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: rc, radiusX: rr_rad, radiusY: rr_rad },
+                                gr,
+                            );
+                        }
+                        // Crisp hardware LED segment dividers for VuPeakStudio
+                        if let Some(ref slot_br) = led_slot_br {
+                            let seg_step = (4.2 * u).max(2.6);
+                            let mut c_cur = base + seg_step;
+                            while c_cur < base + reach - 1.2 * u {
+                                let gap_rc = map_rect(s0, s1, c_cur, c_cur + 1.15 * u);
+                                rt.FillRectangle(&gap_rc, slot_br);
+                                c_cur += seg_step;
+                            }
+                        }
                     }
-                    if let Some(ref gr) = bar_br {
-                        let rc = map_rect(s0, s1, base, base + reach);
-                        rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rc, radiusX: rr_rad, radiusY: rr_rad }, gr);
-                    }
-                    if peak > amp + 0.02 {
-                        if let Some(ref pk) = peak_br {
+                    if peak > amp + 0.02 && peak > 0.03 {
+                        let chosen_pk = if vu_tricolor {
+                            if peak >= 0.76 {
+                                vu_pk_red.as_ref().or(peak_br.as_ref())
+                            } else if peak >= 0.52 {
+                                vu_pk_yellow.as_ref().or(peak_br.as_ref())
+                            } else {
+                                vu_pk_green.as_ref().or(peak_br.as_ref())
+                            }
+                        } else {
+                            peak_br.as_ref()
+                        };
+                        if let Some(pk) = chosen_pk {
                             let pc = (base + peak * max_reach).min(cross_len - 3.2 * u);
                             let prc = map_rect(s0, s1, pc, pc + 2.2 * u);
-                            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: prc, radiusX: rr_rad * 0.6, radiusY: rr_rad * 0.6 }, pk);
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT { rect: prc, radiusX: rr_rad * 0.6, radiusY: rr_rad * 0.6 },
+                                pk,
+                            );
                         }
                     }
                 }
             }
         }
         TaskbarVizStyle::AuroraWave => {
-            let Some(factory) = d2d else { return };
+            if let Some(factory) = d2d {
             let pts_count = 44usize;
-            let max_reach = if mirror { cross_len * 0.46 } else { cross_len * 0.86 };
+            let max_reach = if mirror { cross_len * 0.46 } else { cross_len * 0.88 };
             let base = if mirror { cross_len * 0.5 } else { 2.0 * u };
+            let env_scale = (viz.energy * 1.45 + viz.beat_pulse * 0.45).clamp(0.0, 1.0);
+            if env_scale >= 0.008 {
 
             let mut upper = Vec::with_capacity(pts_count);
             let mut lower = Vec::with_capacity(pts_count);
@@ -4958,13 +5592,14 @@ pub unsafe fn draw_taskbar_viz_in_rect(
                 let p = i as f32 / (pts_count - 1) as f32;
                 let s_pos = pad + p * avail;
                 let taper = (p * std::f32::consts::PI).sin().max(0.0).powf(0.42);
-                let (amp, _) = sample_band(p);
-                let osc1 = 0.52 + 0.48 * (viz.phase * 1.65 - p * std::f32::consts::TAU * 2.5).sin();
-                let osc2 = 0.52 + 0.48 * (viz.phase * 1.15 + p * std::f32::consts::TAU * 3.5).cos();
-                let h = ((0.22 + amp * 0.85) * (0.45 + 0.55 * osc1) * taper * max_reach)
-                    .max(2.2 * u * taper);
-                let h2 = ((0.18 + amp * 0.72) * (0.45 + 0.55 * osc2) * taper * max_reach)
-                    .max(1.8 * u * taper);
+                let (amp, pk) = sample_band(p);
+                let osc1 = 0.62 + 0.38 * (viz.phase * 1.55 - p * std::f32::consts::TAU * 2.2).sin();
+                let osc2 = 0.62 + 0.38 * (viz.phase * 1.10 + p * std::f32::consts::TAU * 3.1).cos();
+                let sig = (amp * 0.82 + pk * 0.18 + viz.beat_pulse * 0.16).clamp(0.0, 1.0);
+                let h = (sig * (0.48 + 0.52 * osc1) * taper * max_reach)
+                    .max(1.2 * u * taper * env_scale);
+                let h2 = ((amp * 0.78 + viz.beat_pulse * 0.12) * (0.48 + 0.52 * osc2) * taper * max_reach)
+                    .max(0.9 * u * taper * env_scale);
                 if mirror {
                     upper.push(map_pt(s_pos, base + h));
                     lower.push(map_pt(s_pos, base - h2));
@@ -4985,78 +5620,122 @@ pub unsafe fn draw_taskbar_viz_in_rect(
                     }
                     sink.EndFigure(D2D1_FIGURE_END_CLOSED);
                     if sink.Close().is_ok() {
-                        let stops = [
-                            D2D1_GRADIENT_STOP { position: 0.0, color: pal.deep_col(0.38 * op) },
-                            D2D1_GRADIENT_STOP { position: 0.52, color: pal.accent_col(0.76 * op) },
-                            D2D1_GRADIENT_STOP { position: 1.0, color: pal.light_col(0.58 * op) },
-                        ];
-                        if let Some(w_br) = create_grad(
-                            rt,
-                            map_pt(span_len * 0.5, base - if mirror { max_reach } else { 0.0 }),
-                            map_pt(span_len * 0.5, base + max_reach),
-                            &stops,
-                        ) {
+                        let w_br = if mirror {
+                            let m_stops = [
+                                D2D1_GRADIENT_STOP { position: 0.00, color: pal.light_col(0.68 * op * env_scale) },
+                                D2D1_GRADIENT_STOP { position: 0.26, color: pal.accent_col(0.80 * op * env_scale) },
+                                D2D1_GRADIENT_STOP { position: 0.50, color: pal.deep_col(0.46 * op * env_scale) },
+                                D2D1_GRADIENT_STOP { position: 0.74, color: pal.accent_col(0.80 * op * env_scale) },
+                                D2D1_GRADIENT_STOP { position: 1.00, color: pal.light_col(0.68 * op * env_scale) },
+                            ];
+                            create_grad(
+                                rt,
+                                map_pt(span_len * 0.5, base - max_reach),
+                                map_pt(span_len * 0.5, base + max_reach),
+                                &m_stops,
+                            )
+                        } else {
+                            let stops = [
+                                D2D1_GRADIENT_STOP { position: 0.0, color: pal.deep_col(0.42 * op * env_scale) },
+                                D2D1_GRADIENT_STOP { position: 0.52, color: pal.accent_col(0.80 * op * env_scale) },
+                                D2D1_GRADIENT_STOP { position: 1.0, color: pal.light_col(0.66 * op * env_scale) },
+                            ];
+                            create_grad(
+                                rt,
+                                map_pt(span_len * 0.5, base),
+                                map_pt(span_len * 0.5, base + max_reach),
+                                &stops,
+                            )
+                        };
+                        if let Some(w_br) = w_br {
                             rt.FillGeometry(&geo, &w_br, None);
                         }
                     }
                 }
             }
 
-            if let Ok(harm_br) = rt.CreateSolidColorBrush(&pal.accent_col(0.75 * op), None) {
+            if let Ok(harm_br) = rt.CreateSolidColorBrush(&pal.accent_col(0.82 * op * env_scale), None) {
                 for w in harmonic.windows(2) {
-                    rt.DrawLine(w[0], w[1], &harm_br, 1.4 * u, None);
+                    rt.DrawLine(w[0], w[1], &harm_br, 1.45 * u, None);
                 }
             }
-            if let Ok(crest_br) = rt.CreateSolidColorBrush(&pal.light_col(0.98 * op), None) {
+            if let Ok(crest_br) = rt.CreateSolidColorBrush(&pal.light_col(0.98 * op * env_scale), None) {
                 for w in upper.windows(2) {
-                    rt.DrawLine(w[0], w[1], &crest_br, 2.1 * u, None);
+                    rt.DrawLine(w[0], w[1], &crest_br, 2.15 * u, None);
                 }
                 if mirror {
                     for w in lower.windows(2) {
-                        rt.DrawLine(w[0], w[1], &crest_br, 1.6 * u, None);
+                        rt.DrawLine(w[0], w[1], &crest_br, 1.65 * u, None);
                     }
                 }
             }
+            }
+            }
         }
         TaskbarVizStyle::EdgePulse => {
+            let pulse_env = (viz.energy * 0.65 + viz.beat_pulse * 0.65).clamp(0.0, 1.0);
+            if pulse_env >= 0.008 {
             let wash_stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: pal.accent_col((0.20 + 0.38 * viz.energy) * op) },
-                D2D1_GRADIENT_STOP { position: 0.55, color: pal.deep_col((0.08 + 0.18 * viz.energy) * op) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: pal.accent_col((0.12 + 0.48 * pulse_env) * op) },
+                D2D1_GRADIENT_STOP { position: 0.55, color: pal.deep_col((0.06 + 0.24 * pulse_env) * op) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: pal.accent_col(0.0) },
             ];
             if let Some(w_br) = create_grad(
                 rt,
                 map_pt(span_len * 0.5, 0.0),
-                map_pt(span_len * 0.5, cross_len * 0.65),
+                map_pt(span_len * 0.5, cross_len * 0.68),
                 &wash_stops,
             ) {
-                let wash_rc = map_rect(pad, span_len - pad, 1.5 * u, cross_len * 0.65);
+                let wash_rc = map_rect(pad, span_len - pad, 1.5 * u, cross_len * 0.68);
                 rt.FillRoundedRectangle(
                     &D2D1_ROUNDED_RECT { rect: wash_rc, radiusX: rad * 0.4, radiusY: rad * 0.4 },
                     &w_br,
                 );
+            }
+            if mirror {
+                if let Some(w_top) = create_grad(
+                    rt,
+                    map_pt(span_len * 0.5, cross_len),
+                    map_pt(span_len * 0.5, cross_len * 0.36),
+                    &wash_stops,
+                ) {
+                    let wash_rc_top = map_rect(pad, span_len - pad, cross_len * 0.36, cross_len - 1.5 * u);
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT { rect: wash_rc_top, radiusX: rad * 0.4, radiusY: rad * 0.4 },
+                        &w_top,
+                    );
+                }
             }
             let segs = 22usize;
             let step = avail / segs as f32;
             let seg_len = (step * 0.74).max(4.0 * u);
             for i in 0..segs {
                 let p = (i as f32 + 0.5) / segs as f32;
-                let (amp, _) = sample_band(p);
+                let (amp, pk) = sample_band(p);
+                let lvl = (amp * 0.85 + pk * 0.15).clamp(0.0, 1.0);
+                if lvl < 0.01 {
+                    continue;
+                }
                 let sc = pad + (i as f32 + 0.5) * step;
-                let th = (2.4 + amp * 5.8) * u;
+                let th = (1.6 + lvl * 6.4) * u;
                 let c0 = 1.6 * u;
                 let rc = map_rect(sc - seg_len * 0.5, sc + seg_len * 0.5, c0, c0 + th);
-                let col = if amp > 0.52 { pal.light_col(0.98 * op) } else { pal.accent_col((0.48 + 0.50 * amp) * op) };
+                let col = if lvl > 0.52 {
+                    pal.light_col((0.75 + 0.25 * lvl) * op)
+                } else {
+                    pal.accent_col((0.35 + 0.62 * lvl) * op)
+                };
                 if let Ok(br) = rt.CreateSolidColorBrush(&col, None) {
                     rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rc, radiusX: 1.6 * u, radiusY: 1.6 * u }, &br);
                 }
                 if mirror {
-                    let c_top = (cross_len - th * 0.75 - 1.6 * u).max(c0 + th + 2.0 * u);
-                    let rc_top = map_rect(sc - seg_len * 0.5, sc + seg_len * 0.5, c_top, c_top + th * 0.75);
-                    if let Ok(br2) = rt.CreateSolidColorBrush(&pal.accent_col((0.35 + 0.45 * amp) * op), None) {
+                    let c_top = (cross_len - th * 0.78 - 1.6 * u).max(c0 + th + 2.0 * u);
+                    let rc_top = map_rect(sc - seg_len * 0.5, sc + seg_len * 0.5, c_top, c_top + th * 0.78);
+                    if let Ok(br2) = rt.CreateSolidColorBrush(&pal.accent_col((0.28 + 0.56 * lvl) * op), None) {
                         rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rc_top, radiusX: 1.4 * u, radiusY: 1.4 * u }, &br2);
                     }
                 }
+            }
             }
         }
         TaskbarVizStyle::AmbientGlow => {
@@ -6508,8 +7187,8 @@ pub unsafe fn draw_taskbar_viz_in_rect(
             pop_capsule_clip(rt, clip_guard);
         }
     }
-    // Subtle pill-clipped cursor sheen for all non-interactive Live Ambient FX when Mouse Hover React is on
-    if !style.is_interactive() && style.is_ambient_live() && viz.hover_mix > 0.02 {
+    // Subtle pill-clipped cursor sheen for Live Ambient FX & Music Themes when Mouse Hover React is on
+    if !style.is_interactive() && (style.is_ambient_live() || is_music_style) && viz.hover_mix > 0.02 {
         let clip_guard = push_capsule_clip(rt, d2d, l, t, r, b, rad);
         if let Ok(hbr) = rt.CreateSolidColorBrush(&pal.light_col(0.24 * viz.hover_mix * op), None) {
             rt.FillEllipse(&D2D1_ELLIPSE { point: hx_px, radiusX: 28.0 * eff_u, radiusY: 28.0 * eff_u }, &hbr);
@@ -6537,8 +7216,30 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
     custom_viz: Option<&VizSnapshot>,
 ) {
     let mut cfg = base_cfg.clone();
+    if theme != base_cfg.tb_theme {
+        cfg.reset_dock_widget_overrides();
+    }
     cfg.apply_taskbar_theme_preset(theme);
+    // For the currently active theme card, reflect the user's live customizer choices;
+    // for all other cards in the gallery, showcase each theme's distinct curated native palette.
+    if theme == base_cfg.tb_theme {
+        cfg.pill_mode = base_cfg.pill_mode;
+        cfg.surface_mode = base_cfg.surface_mode;
+        cfg.tint_alpha = base_cfg.tint_alpha;
+        cfg.amber_border = base_cfg.amber_border;
+        cfg.corner_radius = base_cfg.corner_radius;
+        cfg.tb_viz_style = base_cfg.tb_viz_style;
+        cfg.tb_viz_opacity = base_cfg.tb_viz_opacity;
+        cfg.tb_viz_mirror = base_cfg.tb_viz_mirror;
+        cfg.tb_match_wallpaper = base_cfg.tb_match_wallpaper;
+        cfg.tb_viz_color_mode = base_cfg.tb_viz_color_mode;
+        cfg.tb_viz_accent_rgb = base_cfg.tb_viz_accent_rgb;
+        cfg.tb_show_backdrop = base_cfg.tb_show_backdrop;
+        cfg.tb_show_rim = base_cfg.tb_show_rim;
+        cfg.tb_show_fx = base_cfg.tb_show_fx;
+    }
     let pal = effective_taskbar_palette(&cfg);
+    let vu_tricolor = is_vu_tricolor_active(&cfg);
 
     let bg_rr = D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
@@ -6647,29 +7348,32 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         let ct_px = cap_top * u;
         let cr_px = cr * u;
         let cb_px = cap_bot * u;
-        draw_capsule_backdrop(
-            rt,
-            Some(d2d),
-            cl_px,
-            ct_px,
-            cr_px,
-            cb_px,
-            cap_rad,
-            u,
-            (x + w) * u,
-            (y + h) * u,
-            is_full_bar,
-            &cfg,
-            &pal,
-        );
+        if cfg.tb_show_backdrop {
+            draw_capsule_backdrop(
+                rt,
+                Some(d2d),
+                cl_px,
+                ct_px,
+                cr_px,
+                cb_px,
+                cap_rad,
+                u,
+                (x + w) * u,
+                (y + h) * u,
+                is_full_bar,
+                false,
+                &cfg,
+                &pal,
+            );
+        }
         // Keep visualizer bars clear of right-side tray dots in single-bar preview cards
         let viz_right = if capsules.len() == 1 && cfg.tb_viz_style == TaskbarVizStyle::EqualizerBars {
             (cr - 52.0).max(cl + 40.0) * u
         } else {
             cr_px
         };
-        if cap_idx == 0 || cfg.tb_viz_style != TaskbarVizStyle::EqualizerBars {
-            draw_taskbar_viz_in_rect(
+        if cfg.tb_show_fx && (cap_idx == 0 || cfg.tb_viz_style != TaskbarVizStyle::EqualizerBars) {
+            draw_taskbar_viz_in_rect_themed(
                 rt,
                 Some(d2d),
                 cl_px,
@@ -6684,28 +7388,31 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
                 cfg.tb_viz_style,
                 cfg.tb_viz_opacity,
                 cfg.tb_viz_mirror,
+                vu_tricolor,
                 &pal,
                 viz,
             );
         }
-        draw_capsule_rim_and_accents(
-            rt,
-            Some(d2d),
-            cl_px,
-            ct_px,
-            cr_px,
-            cb_px,
-            cap_rad,
-            u,
-            false,
-            false,
-            is_full_bar,
-            cap_idx,
-            true,
-            &cfg,
-            viz,
-            &pal,
-        );
+        if cfg.tb_show_rim {
+            draw_capsule_rim_and_accents(
+                rt,
+                Some(d2d),
+                cl_px,
+                ct_px,
+                cr_px,
+                cb_px,
+                cap_rad,
+                u,
+                false,
+                false,
+                is_full_bar,
+                cap_idx,
+                true,
+                &cfg,
+                viz,
+                &pal,
+            );
+        }
     }
 
     // Mini Taskbar Icons on top of capsule + visualizer
@@ -6809,9 +7516,247 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
 }
 
 /// Read-only check verifying whether `ALL APPLICATION PACKAGES` (`S-1-15-2-1`) has
+fn strip_win32_verbatim_prefix(raw: &str) -> PathBuf {
+    let trimmed = raw.trim_end_matches('\0');
+    if let Some(unc) = trimmed.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", unc))
+    } else if let Some(plain) = trimmed.strip_prefix(r"\\?\") {
+        PathBuf::from(plain)
+    } else {
+        PathBuf::from(trimmed)
+    }
+}
+
+pub fn resolve_physical_path(path: &std::path::Path) -> PathBuf {
+    let wide = to_wide(&path.to_string_lossy());
+    unsafe {
+        let Ok(h) = CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        ) else {
+            return path.to_path_buf();
+        };
+        let mut buf = [0u16; 1024];
+        let n = GetFinalPathNameByHandleW(h, &mut buf, FILE_NAME_NORMALIZED) as usize;
+        let _ = CloseHandle(h);
+        if n == 0 || n >= buf.len() {
+            return path.to_path_buf();
+        }
+        let s = String::from_utf16_lossy(&buf[..n]);
+        strip_win32_verbatim_prefix(&s)
+    }
+}
+
+pub fn is_packaged_windowsapps_path(path: &std::path::Path) -> bool {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    lower.contains(r"\windowsapps\") || lower.contains("/windowsapps/")
+}
+
+fn tap_staging_cache_dir(sibling_dll: &std::path::Path) -> PathBuf {
+    if is_packaged_windowsapps_path(sibling_dll) {
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            if !profile.trim().is_empty() {
+                return PathBuf::from(profile).join(".autumndeck").join("TapCache");
+            }
+        }
+    }
+    if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+        if !local_app.trim().is_empty() {
+            return PathBuf::from(local_app).join("AutumnDeck").join("TapCache");
+        }
+    }
+    std::env::temp_dir().join("AutumnDeckTap")
+}
+
+fn format_acl_summary(res: Result<bool, u32>) -> String {
+    match res {
+        Ok(true) => "OK (RX granted)".to_string(),
+        Ok(false) => "OK (RX present)".to_string(),
+        Err(code) => format!("ERROR (win32={})", code),
+    }
+}
+
+fn ensure_tap_rx_acls(path: &std::path::Path) -> Result<bool, u32> {
+    let a = sid_rx_acl_impl(path, "S-1-15-2-1", true)?;
+    let b = sid_rx_acl_impl(path, "S-1-5-32-545", true)?;
+    Ok(a || b)
+}
+
+fn stage_tap_dll_to_writable_cache(
+    sibling_dll: &std::path::Path,
+) -> Result<(PathBuf, String), String> {
+    let src_bytes =
+        std::fs::read(sibling_dll).map_err(|e| format!("read sibling dll failed: {}", e))?;
+    let cache_dir = tap_staging_cache_dir(sibling_dll);
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("create cache dir {} failed: {}", cache_dir.display(), e))?;
+    let real_dir = resolve_physical_path(&cache_dir);
+    let _ = ensure_tap_rx_acls(&real_dir);
+
+    let len = src_bytes.len();
+    let mut chosen: Option<PathBuf> = None;
+    for suffix in ["", "_v2", "_v3", "_v4"] {
+        let name = format!("AutumnXamlTap_{}{}.dll", len, suffix);
+        let cand = real_dir.join(&name);
+        if cand.exists() {
+            if let Ok(existing) = std::fs::read(&cand) {
+                if existing == src_bytes {
+                    chosen = Some(cand);
+                    break;
+                }
+            }
+            if std::fs::write(&cand, &src_bytes).is_ok() {
+                chosen = Some(cand);
+                break;
+            }
+            continue;
+        }
+        if std::fs::write(&cand, &src_bytes).is_ok() {
+            chosen = Some(cand);
+            break;
+        }
+    }
+    let staged_raw =
+        chosen.ok_or_else(|| "unable to write staged AutumnXamlTap DLL".to_string())?;
+    let real_dll = resolve_physical_path(&staged_raw);
+
+    // Best-effort cleanup of mismatched older cached copies not locked by explorer.exe
+    if let Ok(entries) = std::fs::read_dir(&real_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p != real_dll
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("dll"))
+                    .unwrap_or(false)
+            {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    let acl_status = format_acl_summary(ensure_tap_rx_acls(&real_dll));
+    Ok((real_dll, acl_status))
+}
+
+/// Returns `(path, acl_status)` for the currently staged writable TAP DLL if present.
+pub fn tap_cache_dll_diagnostics(sibling_dll: &std::path::Path) -> Option<(String, String)> {
+    let dir = resolve_physical_path(&tap_staging_cache_dir(sibling_dll));
+    let entries = std::fs::read_dir(&dir).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("dll"))
+            .unwrap_or(false)
+        {
+            let rp = resolve_physical_path(&p);
+            let acl = format_acl_summary(sid_rx_acl_impl(&rp, "S-1-15-2-1", false));
+            return Some((rp.to_string_lossy().into_owned(), acl));
+        }
+    }
+    None
+}
+
+fn build_tap_injection_candidates(sibling_dll: &std::path::Path) -> Vec<(String, PathBuf, String)> {
+    let mut out = Vec::new();
+    let is_winapps = is_packaged_windowsapps_path(sibling_dll);
+    if !is_winapps {
+        let acl_res = ensure_tap_rx_acls(sibling_dll);
+        let acl_desc = format_acl_summary(acl_res);
+        if acl_res.is_ok() {
+            out.push((
+                "sibling".to_string(),
+                resolve_physical_path(sibling_dll),
+                acl_desc,
+            ));
+        }
+        if let Ok((staged, staged_acl)) = stage_tap_dll_to_writable_cache(sibling_dll) {
+            if out.iter().all(|(_, p, _)| p != &staged) {
+                out.push(("staged_cache".to_string(), staged, staged_acl));
+            }
+        }
+        if out.is_empty() {
+            out.push((
+                "sibling_fallback".to_string(),
+                resolve_physical_path(sibling_dll),
+                format_acl_summary(acl_res),
+            ));
+        }
+    } else {
+        if let Ok((staged, staged_acl)) = stage_tap_dll_to_writable_cache(sibling_dll) {
+            out.push(("staged_cache_msix".to_string(), staged, staged_acl));
+        }
+        out.push((
+            "sibling_windowsapps".to_string(),
+            resolve_physical_path(sibling_dll),
+            "WindowsApps_readonly".to_string(),
+        ));
+    }
+    out
+}
+
+fn is_generic_diag_miss(hr: HRESULT) -> bool {
+    let code = hr.0 as u32;
+    code == 0x8007_0490 || code == 0x8007_0002 || code == 0x8000_4005
+}
+
+fn try_init_xaml_diagnostics(
+    init_fn: InitializeXamlDiagnosticsExFn,
+    exp_pid: u32,
+    dll_w: &[u16],
+) -> (bool, Option<HRESULT>) {
+    let mut best_hr: Option<HRESULT> = None;
+    let passes: &[(PCWSTR, u32)] = &[
+        (w!("Windows.UI.Xaml.dll"), 16),
+        (PCWSTR::null(), 8),
+    ];
+    for &(xaml_mod_name, max_idx) in passes {
+        let mut any_connected = false;
+        for idx in 1..=max_idx {
+            let ep_w = to_wide(&format!("VisualDiagConnection{}", idx));
+            let hr = unsafe {
+                init_fn(
+                    PCWSTR(ep_w.as_ptr()),
+                    exp_pid,
+                    xaml_mod_name,
+                    PCWSTR(dll_w.as_ptr()),
+                    CLSID_AUTUMN_XAML_TAP,
+                    PCWSTR::null(),
+                )
+            };
+            if hr.is_ok() {
+                any_connected = true;
+                best_hr = Some(hr);
+                if TapBridge::find_existing_msg_wnd(exp_pid).is_some() {
+                    return (true, Some(hr));
+                }
+            } else if best_hr.map(is_generic_diag_miss).unwrap_or(true)
+                || !is_generic_diag_miss(hr)
+            {
+                best_hr = Some(hr);
+            }
+        }
+        if any_connected {
+            for _ in 0..32 {
+                if TapBridge::find_existing_msg_wnd(exp_pid).is_some() {
+                    return (true, best_hr);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+    (false, best_hr)
+}
+
 /// Read & Execute (`RX`) access on `path`.
 pub fn has_app_package_rx_acl(path: &std::path::Path) -> Result<bool, u32> {
-    app_package_rx_acl_impl(path, false)
+    sid_rx_acl_impl(path, "S-1-15-2-1", false)
 }
 
 /// Ensures `ALL APPLICATION PACKAGES` (`S-1-15-2-1`) has Read & Execute (`RX`) permissions on
@@ -6823,10 +7768,14 @@ pub fn has_app_package_rx_acl(path: &std::path::Path) -> Result<bool, u32> {
 /// - `Ok(true)` if the DACL was repaired cleanly.
 /// - `Err(win32_error)` if reading or updating the file security descriptor failed.
 pub fn ensure_app_package_rx_acl(path: &std::path::Path) -> Result<bool, u32> {
-    app_package_rx_acl_impl(path, true)
+    sid_rx_acl_impl(path, "S-1-15-2-1", true)
 }
 
-fn app_package_rx_acl_impl(path: &std::path::Path, repair_if_missing: bool) -> Result<bool, u32> {
+fn sid_rx_acl_impl(
+    path: &std::path::Path,
+    sid_ascii: &str,
+    repair_if_missing: bool,
+) -> Result<bool, u32> {
     use std::ptr::null_mut;
 
     #[repr(C)]
@@ -6946,7 +7895,7 @@ fn app_package_rx_acl_impl(path: &std::path::Path, repair_if_missing: bool) -> R
     }
 
     unsafe {
-        let sid_str = to_wide("S-1-15-2-1");
+        let sid_str = to_wide(sid_ascii);
         let mut app_pkg_sid: *mut c_void = null_mut();
         if ConvertStringSidToSidW(sid_str.as_ptr(), &mut app_pkg_sid) == 0 || app_pkg_sid.is_null()
         {
@@ -7123,5 +8072,168 @@ mod tests {
         assert_eq!(unified.len(), 1);
         assert_eq!(unified[0].left, app_pill.left);
         assert_eq!(unified[0].right, tray_pill.right);
+    }
+
+    #[test]
+    fn music_themes_have_distinct_curated_palettes_and_reactive_visualizer_physics() {
+        let music_themes = [
+            TaskbarTheme::LiveMusicBars,
+            TaskbarTheme::NeonWave,
+            TaskbarTheme::PureClearPulse,
+            TaskbarTheme::MirrorBeatPill,
+            TaskbarTheme::BassPulseSplit,
+            TaskbarTheme::VuPeakStudio,
+        ];
+        let autumn = ThemePalette::autumn();
+        let mut accents = std::collections::HashSet::new();
+        for th in music_themes {
+            let mut cfg = AppConfig::default();
+            cfg.apply_taskbar_theme_preset(th);
+            let pal = effective_taskbar_palette(&cfg);
+            assert_ne!(
+                pal.accent, autumn.accent,
+                "Music theme {:?} must not fall back to monochrome Autumn yellow",
+                th
+            );
+            assert!(
+                accents.insert(pal.accent),
+                "Music theme {:?} must have its own unique curated accent color",
+                th
+            );
+            assert_eq!(is_vu_tricolor_active(&cfg), th == TaskbarTheme::VuPeakStudio);
+        }
+
+        // Custom color override replaces native accent & disables VU tri-color
+        let mut vu_cfg = AppConfig::default();
+        vu_cfg.apply_taskbar_theme_preset(TaskbarTheme::VuPeakStudio);
+        assert!(is_vu_tricolor_active(&vu_cfg));
+        vu_cfg.set_tb_viz_color_mode(VizColorMode::CustomAccent);
+        vu_cfg.tb_viz_accent_rgb = 0xFF38A8;
+        assert!(!is_vu_tricolor_active(&vu_cfg));
+        let custom_pal = effective_taskbar_palette(&vu_cfg);
+        assert!(custom_pal.accent.0 > 200 && custom_pal.accent.2 > 110);
+
+        // Live FFT visualizer reactivity: bass does not smear into treble, peaks hold briefly,
+        // and bands decay cleanly to exact 0.0 on silence.
+        let mut viz = VizSnapshot::default();
+        let bass_only = [0.95, 0.80, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        for _ in 0..8 {
+            viz.update_from_raw(&bass_only, 0.022, false);
+        }
+        assert!(viz.bands[0] > 0.70, "Bass band must react strongly");
+        assert!(
+            viz.bands[20] < 0.05,
+            "Treble band must stay isolated from pure bass signal: {}",
+            viz.bands[20]
+        );
+        assert!(viz.peaks[0] >= viz.bands[0]);
+        assert!(viz.beat_pulse > 0.45);
+        assert!(viz.has_energy());
+
+        // Silence decays cleanly all the way to 0.0
+        for _ in 0..80 {
+            viz.update_from_raw(&[0.0; 12], 0.022, false);
+        }
+        assert!(!viz.has_energy(), "Visualizer must return to exact idle on silence");
+        assert_eq!(viz.beat_pulse, 0.0);
+    }
+
+    #[test]
+    fn fallback_overlay_mode_preserves_icon_clarity_and_tracks_tap_state() {
+        assert!(desired_overlay_is_above_taskbar(false));
+        assert!(!desired_overlay_is_above_taskbar(true));
+
+        let mut cfg = AppConfig::default();
+        cfg.surface_mode = SurfaceMode::ClearTint;
+        cfg.tint_alpha = 0;
+        assert_eq!(fallback_overlay_alpha(&cfg, 0.0, false), 0.0);
+        assert_eq!(fallback_overlay_alpha(&cfg, 0.65, true), 0.65);
+
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::HoverSnowfall);
+        let snow_alpha = fallback_overlay_alpha(&cfg, cfg.tint_alpha as f32 / 255.0, false);
+        assert!(
+            snow_alpha > 0.0 && snow_alpha <= 0.11,
+            "Fallback backdrop must stay ultralight so taskbar icons stay legible: {}",
+            snow_alpha
+        );
+
+        let dark_heavy = fallback_overlay_alpha(&cfg, 0.85, false);
+        assert!(
+            dark_heavy <= 0.11,
+            "Heavy tint must clamp down in above-taskbar fallback mode: {}",
+            dark_heavy
+        );
+
+        let pal = effective_taskbar_palette(&cfg);
+        let sig_fallback = StyleSig {
+            pill_mode: cfg.pill_mode as u8,
+            surface_mode: cfg.surface_mode as u8,
+            tint_alpha: cfg.tint_alpha,
+            tb_theme: cfg.tb_theme as u8,
+            amber_border: cfg.amber_border,
+            corner_radius: cfg.corner_radius,
+            tb_viz_style: cfg.tb_viz_style as u8,
+            tb_viz_opacity: cfg.tb_viz_opacity,
+            tb_viz_mirror: cfg.tb_viz_mirror,
+            tb_viz_color_mode: cfg.tb_viz_color_mode as u8,
+            tb_viz_accent_rgb: cfg.tb_viz_accent_rgb,
+            tb_show_backdrop: cfg.tb_show_backdrop,
+            tb_show_rim: cfg.tb_show_rim,
+            tb_show_fx: cfg.tb_show_fx,
+            accent: pal.accent,
+            accent_deep: pal.accent_deep,
+            tap_connected: false,
+        };
+        let mut sig_connected = sig_fallback;
+        sig_connected.tap_connected = true;
+        assert_ne!(
+            sig_fallback, sig_connected,
+            "TAP false -> true transition must invalidate StyleSig cache immediately"
+        );
+    }
+
+    #[test]
+    fn resolve_physical_path_and_windowsapps_detection() {
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"\\?\C:\Users\Demo\AutumnXamlTap.dll"),
+            PathBuf::from(r"C:\Users\Demo\AutumnXamlTap.dll")
+        );
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"\\?\UNC\server\share\AutumnXamlTap.dll"),
+            PathBuf::from(r"\\server\share\AutumnXamlTap.dll")
+        );
+        assert!(is_packaged_windowsapps_path(std::path::Path::new(
+            r"C:\Program Files\WindowsApps\Shreyas123g.AutumnDeck_2.0.2.0_x64__abc\AutumnXamlTap.dll"
+        )));
+        assert!(!is_packaged_windowsapps_path(std::path::Path::new(
+            r"C:\Users\Demo\Downloads\AutumnDeck\AutumnXamlTap.dll"
+        )));
+
+        let tmp = std::env::temp_dir().join(format!(
+            "autumn_phys_test_{}.tmp",
+            std::process::id()
+        ));
+        let _ = std::fs::write(&tmp, b"phys_probe");
+        let resolved = resolve_physical_path(&tmp);
+        assert!(resolved.exists());
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn ensure_tap_rx_acls_grants_app_package_and_users_sids() {
+        let tmp = std::env::temp_dir().join(format!(
+            "autumn_dual_acl_test_{}.tmp",
+            std::process::id()
+        ));
+        let _ = std::fs::write(&tmp, b"dual_acl_probe");
+
+        let res = ensure_tap_rx_acls(&tmp);
+        assert!(res.is_ok(), "ensure_tap_rx_acls failed: {:?}", res);
+        assert_eq!(has_app_package_rx_acl(&tmp), Ok(true));
+        assert_eq!(sid_rx_acl_impl(&tmp, "S-1-5-32-545", false), Ok(true));
+        assert_eq!(ensure_tap_rx_acls(&tmp), Ok(false));
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }

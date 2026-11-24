@@ -356,7 +356,7 @@ impl TaskbarHider {
         mi.rcMonitor
     }
 
-    pub fn hide(&mut self, expand_workarea: bool) {
+    pub fn hide(&mut self, expand_workarea: bool) -> bool {
         let detected = Self::detect_all_geometries();
         if !detected.is_empty() {
             self.last_geom = detected.first().copied();
@@ -366,13 +366,14 @@ impl TaskbarHider {
         }
         self.is_hidden = true;
         self.peek_visible = false;
+        let mut wa_changed = false;
         unsafe {
             let cls = to_wide("Shell_TrayWnd");
             let Ok(main_hw) = FindWindowW(PCWSTR(cls.as_ptr()), PCWSTR::null()) else {
-                return;
+                return false;
             };
             if main_hw.0.is_null() {
-                return;
+                return false;
             }
 
             let bar_rects = Self::collect_bar_rects();
@@ -414,17 +415,22 @@ impl TaskbarHider {
                             Some((&mut full as *mut RECT) as *mut c_void),
                             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
                         );
+                        wa_changed = true;
                     }
                 }
-                Self::refit_maximized_windows();
+                if wa_changed {
+                    Self::refit_maximized_windows();
+                }
             }
         }
+        wa_changed
     }
 
-    pub fn settle_hidden(&mut self, expand_workarea: bool) {
+    pub fn settle_hidden(&mut self, expand_workarea: bool) -> bool {
         if !self.is_hidden || self.peek_visible {
-            return;
+            return false;
         }
+        let mut wa_changed = false;
         unsafe {
             for hw in Self::collect_taskbar_hwnds() {
                 if IsWindowVisible(hw).as_bool() {
@@ -441,11 +447,15 @@ impl TaskbarHider {
                             Some((&mut full as *mut RECT) as *mut c_void),
                             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
                         );
+                        wa_changed = true;
                     }
                 }
-                Self::refit_maximized_windows();
+                if wa_changed {
+                    Self::refit_maximized_windows();
+                }
             }
         }
+        wa_changed
     }
 
     /// Reserves (or releases, if None / thickness <= 0) WorkArea on the primary monitor for
@@ -472,7 +482,7 @@ impl TaskbarHider {
     }
 
     /// Always-Visible Interactive Docks so maximized windows never extend behind any monitor's dock.
-    pub fn apply_dock_work_area(reserves: &[(RECT, TaskbarEdge, i32)]) {
+    pub fn apply_dock_work_area(reserves: &[(RECT, TaskbarEdge, i32)]) -> bool {
         unsafe {
             let mut changed = false;
             for mi in Self::query_all_monitors() {
@@ -497,6 +507,7 @@ impl TaskbarHider {
             if changed {
                 Self::refit_maximized_windows();
             }
+            changed
         }
     }
 
@@ -704,9 +715,10 @@ impl TaskbarHider {
         Self::refit_maximized_windows();
     }
 
-    pub fn show(&mut self, restore_workarea: bool) {
+    pub fn show(&mut self, restore_workarea: bool) -> bool {
         self.is_hidden = false;
         self.peek_visible = false;
+        let mut wa_changed = false;
         unsafe {
             Self::reveal_taskbar_windows();
             if restore_workarea {
@@ -720,11 +732,15 @@ impl TaskbarHider {
                             Some((&mut rest as *mut RECT) as *mut c_void),
                             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
                         );
+                        wa_changed = true;
                     }
                 }
-                Self::finalize_restore_workarea();
+                if wa_changed {
+                    Self::finalize_restore_workarea();
+                }
             }
         }
+        wa_changed
     }
 
     pub fn emergency_restore_windows_taskbar() {

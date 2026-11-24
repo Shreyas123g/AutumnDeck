@@ -676,7 +676,7 @@ impl ExtWidgetConfig {
     pub fn default_for(id: ExtWidgetId) -> Self {
         let (x, y) = id.default_pos();
         Self {
-            enabled: true,
+            enabled: false,
             x,
             y,
             theme: ExtWidgetTheme::AutumnCrystal,

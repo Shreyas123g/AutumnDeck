@@ -56,19 +56,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::config::{
-    apply_win_explorer_pref, apply_win_explorer_pref_checked, backup_config_before_import,
-    default_apps, default_dock_pinned, discover_video_wallpapers, discover_wallpapers_fast_local,
-    export_setup_to_path, import_setup_from_path, is_startup_enabled,
-    is_static_image_wallpaper_path, open_app_data_folder, pick_export_setup_file,
-    pick_import_setup_file, read_win_taskbar_prefs, set_startup_enabled, AppConfig, AppShortcut,
-    CanvasStylePreset,
+    apply_win_explorer_pref, apply_win_explorer_pref_checked, default_apps, default_dock_pinned,
+    discover_video_wallpapers, discover_wallpapers_fast_local, is_startup_enabled,
+    is_static_image_wallpaper_path, open_app_data_folder, read_win_taskbar_prefs,
+    set_startup_enabled, AppConfig, AppShortcut, CanvasStylePreset,
     ClockAlign, ClockElemId, ClockElemTransform, ClockStyle, ClockThemeFolder, DockArtLayer,
     DockClockEngine, DockClockWheelAction, DockIndicatorStyle, DockLayoutKind, DockShelfShape,
     DockSlotCardStyle, HudTelemetryContent, HudWingMode, MacDockEdge, MacDockHideMode, MusicStyle,
     MusicThemeFolder, PillMode, StartBadgeStyle, SurfaceMode, TaskbarMode, TaskbarTheme,
     TaskbarThemeFolder, TaskbarVizStyle, TaskbarWidgetTab, TrayAudioMeterStyle,
-    TrayBatteryMeterStyle, TrayNetMeterStyle, VideoWallpaperPreset, WidgetCanvasTarget,
-    WinTaskbarPrefs,
+    TrayBatteryMeterStyle, TrayNetMeterStyle, VideoWallpaperPreset, VizColorMode,
+    WidgetCanvasTarget, WinTaskbarPrefs,
 };
 use crate::taskbar_styler::{draw_taskbar_preview_card_with_viz, VizSnapshot};
 use crate::suites::{
@@ -468,6 +466,7 @@ struct CanvasDragState {
 enum SliderKind {
     TaskbarOpacity,
     TbVizOpacity,
+    TbVizHue,
     DtScale,
     DtGlass,
     DtRim,
@@ -652,6 +651,67 @@ impl MusicStyleProfile {
         cfg.music_accent_rgb = self.music_accent_rgb;
         cfg.music_text_rgb = self.music_text_rgb;
         cfg.music_bg_rgb = self.music_bg_rgb;
+    }
+}
+
+fn dock_widget_elem_toggles(tab: TaskbarWidgetTab, cfg: &AppConfig) -> Vec<(&'static str, bool, u8)> {
+    match tab {
+        TaskbarWidgetTab::ShelfFrame => vec![
+            ("Plate Backdrop", cfg.w_shelf.show_plate, 0),
+            ("Border Rim", cfg.w_shelf.show_rim, 1),
+            ("Theme Art / FX", cfg.w_shelf.show_art, 2),
+        ],
+        TaskbarWidgetTab::AppDock => vec![
+            ("App Icons", cfg.w_apps.show_icons, 0),
+            ("Slot Cards", cfg.w_apps.show_cards, 1),
+            ("Running Dots", cfg.w_apps.show_indicators && cfg.mac_dock_dots, 2),
+            ("Dividers", cfg.w_apps.show_separators, 3),
+        ],
+        TaskbarWidgetTab::Clock => vec![
+            ("Clock Time", cfg.w_clock.show_time, 0),
+            ("Date Line", cfg.w_clock.show_date, 1),
+        ],
+        TaskbarWidgetTab::SystemTray => vec![
+            ("Wi-Fi / Net", cfg.w_tray.show_net, 0),
+            ("Audio Meter", cfg.w_tray.show_audio, 1),
+            ("Battery Gauge", cfg.w_tray.show_battery, 2),
+        ],
+        TaskbarWidgetTab::HudWing => vec![
+            ("Telemetry Wing", cfg.w_hud.show_telemetry, 0),
+            ("Active App Chip", cfg.w_hud.show_active_app, 1),
+        ],
+        TaskbarWidgetTab::Utilities => vec![
+            ("Start", cfg.w_util.show_start, 0),
+            ("Search", cfg.w_util.show_search, 1),
+            ("Task View", cfg.w_util.show_taskview, 2),
+            ("Trash", cfg.w_util.show_trash, 3),
+            ("Studio", cfg.w_util.show_studio, 4),
+        ],
+    }
+}
+
+fn dock_widget_elem_pill_rect(idx: usize, total: usize) -> (f32, f32, f32, f32) {
+    let n = total.max(1) as f32;
+    let gap = 6.0;
+    let avail = 722.0 - 38.0;
+    let w = (avail - gap * (n - 1.0)) / n;
+    let x0 = 38.0 + (idx as f32) * (w + gap);
+    (x0, 525.0, x0 + w, 547.0)
+}
+
+fn native_tb_elem_toggles(cfg: &AppConfig) -> [(&'static str, bool, u8); 3] {
+    [
+        ("Backdrop", cfg.tb_show_backdrop, 0),
+        ("Rim", cfg.tb_show_rim, 1),
+        ("Live FX", cfg.tb_show_fx, 2),
+    ]
+}
+
+fn native_tb_elem_pill_rect(idx: usize) -> (f32, f32, f32, f32) {
+    match idx {
+        0 => (344.0, 101.0, 418.0, 129.0),
+        1 => (424.0, 101.0, 480.0, 129.0),
+        _ => (486.0, 101.0, 558.0, 129.0),
     }
 }
 
@@ -937,11 +997,14 @@ enum HitZone {
     OpenCustomizeTaskbar,
     BtnBackTaskbarThemes,
     TbVizStyleBtn(TaskbarVizStyle),
+    SetTbVizColorMode(VizColorMode),
+    SetTbVizSwatch(usize),
     ToggleTbFxPage,
     ToggleTbVizMirror,
     ToggleTbHoverReact,
     ToggleTbAmbientAnim,
     ToggleVizEcoFps,
+    SetAnimFpsPreset(u8),
     ToggleWallpaperQuick,
     ModeCard(TaskbarMode),
     PillBtn(PillMode),
@@ -973,8 +1036,10 @@ enum HitZone {
     TbWidgetProp1,
     TbWidgetProp2,
     TbWidgetProp3,
+    TbWidgetElemToggle(u8),
     TbWidgetCycleTheme,
     TbWidgetResetAll,
+    ToggleNativeTbElem(u8),
 
     // Desktop Widgets Gallery & Theme Browser
     ToggleWidgetsMaster,
@@ -1162,8 +1227,6 @@ enum HitZone {
     // App Settings Tab
     BtnSettingsBack,
     ToggleWidgets24h,
-    BtnExportSetup,
-    BtnImportSetup,
     BtnOpenConfigFolder,
     BtnRunOnboarding,
 }
@@ -1181,6 +1244,7 @@ pub enum SettingsCommand {
     StopExternalLively,
     MacDockUpdated,
     SuiteApplied,
+    #[allow(dead_code)]
     ConfigImported,
     GameModeUpdated,
     ExportDiagnostics,
@@ -1412,6 +1476,7 @@ pub struct SettingsController {
     win_prefs: WinTaskbarPrefs,
     startup_on: bool,
     taskbar_hidden: bool,
+    tap_fallback_active: bool,
     pub active_tab: StudioTab,
     prev_non_settings_tab: StudioTab,
     setup_feedback: Option<(bool, String)>,
@@ -1666,6 +1731,7 @@ impl SettingsController {
             win_prefs: WinTaskbarPrefs::default(),
             startup_on: false,
             taskbar_hidden: false,
+            tap_fallback_active: false,
             active_tab: StudioTab::Taskbar,
             prev_non_settings_tab: StudioTab::Taskbar,
             setup_feedback: None,
@@ -2072,6 +2138,17 @@ impl SettingsController {
         }
     }
 
+    pub fn sync_tap_fallback_status(&mut self, fallback: bool) {
+        if self.tap_fallback_active != fallback {
+            self.tap_fallback_active = fallback;
+            if self.is_visible() && self.active_tab == StudioTab::Taskbar {
+                unsafe {
+                    let _ = InvalidateRect(Some(self.hwnd), None, false);
+                }
+            }
+        }
+    }
+
     /// Updates live clock & telemetry preview inside Studio once per second when visible.
     pub fn tick_preview_ext(&mut self, telemetry_ext: (f32, f32, f32, f32, f32)) {
         let prev = self.telemetry_ext;
@@ -2161,7 +2238,10 @@ impl SettingsController {
         }
         let shows_audio = match self.active_tab {
             StudioTab::Taskbar => {
-                matches!(self.taskbar_page, TaskbarPage::Folders | TaskbarPage::Themes)
+                matches!(
+                    self.taskbar_page,
+                    TaskbarPage::Folders | TaskbarPage::Themes | TaskbarPage::Customize
+                )
             }
             StudioTab::DesktopWidgets => matches!(
                 self.widget_page,
@@ -2628,7 +2708,9 @@ impl SettingsController {
     }
 
     fn step_taskbar_preview_sims(&mut self, dt: f32) {
-        let demo_bands = effective_preview_bands(&self.preview_bands);
+        // Pass raw live preview_bands (zeros when silent) so update_from_raw(..., true) runs smooth
+        // animated idle waves when silent and switches seamlessly to real WASAPI bands when audio plays!
+        let live_bands = self.preview_bands;
         let mpos = self.tb_mouse_logic;
         let u = self.u;
         let sims = self
@@ -2657,7 +2739,7 @@ impl SettingsController {
                     }
                 }
                 let sim = &mut sims[idx];
-                sim.update_from_raw(&demo_bands, 0.14, true);
+                sim.update_from_raw(&live_bands, dt, true);
                 if viz_style.is_interactive() {
                     sim.step_hover_physics(
                         viz_style,
@@ -2679,11 +2761,17 @@ impl SettingsController {
             TaskbarPage::Folders => {
                 for (i, &folder) in TaskbarThemeFolder::CURATED.iter().enumerate() {
                     let (_, _, sample_th) = folder.card_meta();
+                    let list = TaskbarTheme::in_folder(folder);
+                    let preview_th = if list.contains(&self.draft_cfg.tb_theme) {
+                        self.draft_cfg.tb_theme
+                    } else {
+                        sample_th
+                    };
                     let (x0, y0, x1, y1) = tb_folder_card_rect(i);
                     let w = x1 - x0;
                     step_one(
                         sims,
-                        sample_th,
+                        preview_th,
                         (x0, y0, w, y1 - y0),
                         (x0 + 18.0, y0 + 29.0, w - 36.0, 53.0),
                     );
@@ -2702,6 +2790,20 @@ impl SettingsController {
                 }
             }
             TaskbarPage::Customize => {}
+        }
+    }
+
+    fn sync_taskbar_folder_to_active(&mut self, theme: TaskbarTheme) {
+        if let Some(&folder) = TaskbarThemeFolder::CURATED
+            .iter()
+            .find(|&&f| TaskbarTheme::in_folder(f).contains(&theme))
+        {
+            self.tb_folder = folder;
+            self.tb_theme_page = TaskbarTheme::in_folder(folder)
+                .iter()
+                .position(|&t| t == theme)
+                .map(|idx| idx / 6)
+                .unwrap_or(0);
         }
     }
 
@@ -3596,7 +3698,9 @@ impl SettingsController {
                     }
                     let cmd = if matches!(
                         kind,
-                        SliderKind::TaskbarOpacity | SliderKind::TbVizOpacity
+                        SliderKind::TaskbarOpacity
+                            | SliderKind::TbVizOpacity
+                            | SliderKind::TbVizHue
                     ) {
                         SettingsCommand::StyleUpdated
                     } else if matches!(
@@ -4069,7 +4173,7 @@ impl SettingsController {
         match target {
             WidgetCanvasTarget::DateTime => {
                 cfg.show_datetime = src.show_datetime;
-                cfg.widgets_24h = src.widgets_24h;
+                cfg.set_clock_24h(src.widgets_24h);
                 cfg.dt_x = src.dt_x;
                 cfg.dt_y = src.dt_y;
                 cfg.dt_scale_pct = src.dt_scale_pct;
@@ -4468,6 +4572,7 @@ impl SettingsController {
             SliderKind::TaskbarOpacity => (232.0, 640.0),
             SliderKind::MacDockIconSize | SliderKind::MacDockMagPct => (232.0, 640.0),
             SliderKind::TbVizOpacity => (154.0, 314.0),
+            SliderKind::TbVizHue => (154.0, 628.0),
             SliderKind::DtScale => (136.0, 318.0),
             SliderKind::DtGlass | SliderKind::DtRadius => (154.0, 322.0),
             SliderKind::DtRim => (492.0, 662.0),
@@ -4517,6 +4622,18 @@ impl SettingsController {
             if new_op != cfg.tb_viz_opacity {
                 cfg.tb_viz_opacity = new_op;
                 self.draft_cfg.tb_viz_opacity = new_op;
+                return Some(SettingsCommand::StylePreview);
+            }
+            return None;
+        }
+        if kind == SliderKind::TbVizHue {
+            let hue = (t * 360.0).clamp(0.0, 359.5);
+            let rgb = rgb_to_u32(hsl_to_rgb(hue, 0.92, 0.56));
+            if cfg.tb_viz_color_mode != VizColorMode::CustomAccent || cfg.tb_viz_accent_rgb != rgb {
+                cfg.set_tb_viz_color_mode(VizColorMode::CustomAccent);
+                cfg.tb_viz_accent_rgb = rgb;
+                self.draft_cfg.set_tb_viz_color_mode(VizColorMode::CustomAccent);
+                self.draft_cfg.tb_viz_accent_rgb = rgb;
                 return Some(SettingsCommand::StylePreview);
             }
             return None;
@@ -4824,6 +4941,7 @@ impl SettingsController {
             }
             SliderKind::TaskbarOpacity
             | SliderKind::TbVizOpacity
+            | SliderKind::TbVizHue
             | SliderKind::MacDockIconSize
             | SliderKind::MacDockMagPct => {}
         }
@@ -4976,52 +5094,10 @@ impl SettingsController {
                 SettingsCommand::None
             }
             HitZone::ToggleWidgets24h => {
-                cfg.widgets_24h = !cfg.widgets_24h;
-                self.draft_cfg.widgets_24h = cfg.widgets_24h;
+                let next = !cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h);
+                cfg.set_clock_24h(next);
+                self.draft_cfg.set_clock_24h(next);
                 SettingsCommand::WidgetsConfigUpdated
-            }
-            HitZone::BtnExportSetup => {
-                if let Some(dest) = pick_export_setup_file(self.hwnd) {
-                    match export_setup_to_path(cfg, &dest) {
-                        Ok(()) => {
-                            let fname = dest
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("setup.autumn");
-                            self.setup_feedback =
-                                Some((true, format!("✓ Exported setup to {}", fname)));
-                        }
-                        Err(e) => {
-                            self.setup_feedback = Some((false, format!("⚠ {}", e)));
-                        }
-                    }
-                }
-                SettingsCommand::None
-            }
-            HitZone::BtnImportSetup => {
-                if let Some(src) = pick_import_setup_file(self.hwnd) {
-                    match import_setup_from_path(&src, cfg) {
-                        Ok(imported) => {
-                            backup_config_before_import(cfg);
-                            *cfg = imported.clone();
-                            self.draft_cfg = imported;
-                            self.applied_flash = true;
-                            let fname = src
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("setup.autumn");
-                            self.setup_feedback = Some((
-                                true,
-                                format!("✓ Imported {} (previous config backed up)", fname),
-                            ));
-                            return SettingsCommand::ConfigImported;
-                        }
-                        Err(e) => {
-                            self.setup_feedback = Some((false, format!("⚠ {}", e)));
-                        }
-                    }
-                }
-                SettingsCommand::None
             }
             HitZone::BtnOpenConfigFolder => {
                 open_app_data_folder();
@@ -5042,7 +5118,11 @@ impl SettingsController {
             }
             HitZone::OpenTaskbarFolder(folder) => {
                 self.tb_folder = folder;
-                self.tb_theme_page = 0;
+                self.tb_theme_page = TaskbarTheme::in_folder(folder)
+                    .iter()
+                    .position(|&t| t == cfg.tb_theme)
+                    .map(|idx| idx / 6)
+                    .unwrap_or(0);
                 self.taskbar_page = TaskbarPage::Themes;
                 SettingsCommand::None
             }
@@ -5062,28 +5142,21 @@ impl SettingsController {
             }
             HitZone::SelectTaskbarTheme(theme) => {
                 let was_active = cfg.tb_theme == theme;
-                cfg.apply_taskbar_theme_preset(theme);
-                self.draft_cfg.tb_theme = cfg.tb_theme;
-                self.draft_cfg.mode = cfg.mode;
-                self.draft_cfg.mac_dock_hide = cfg.mac_dock_hide;
-                self.draft_cfg.pill_mode = cfg.pill_mode;
-                self.draft_cfg.surface_mode = cfg.surface_mode;
-                self.draft_cfg.tint_alpha = cfg.tint_alpha;
-                self.draft_cfg.amber_border = cfg.amber_border;
-                self.draft_cfg.corner_radius = cfg.corner_radius;
-                self.draft_cfg.tb_viz_style = cfg.tb_viz_style;
-                self.draft_cfg.tb_viz_opacity = cfg.tb_viz_opacity;
-                self.draft_cfg.tb_viz_mirror = cfg.tb_viz_mirror;
-                self.draft_cfg.tb_hover_react = cfg.tb_hover_react;
-                self.draft_cfg.tb_match_wallpaper = cfg.tb_match_wallpaper;
-                self.draft_cfg.mac_dock_enabled = cfg.mac_dock_enabled;
-                self.tb_fx_page = if cfg.tb_viz_style.is_kinetic_page() { 1 } else { 0 };
-                if was_active {
+                if !was_active {
+                    // Clear previous Suite/theme dock widget overrides so the newly chosen
+                    // Dock or Taskbar theme renders with its authentic native layout & colors.
+                    cfg.reset_dock_widget_overrides();
+                    cfg.apply_taskbar_theme_preset(theme);
+                    self.draft_cfg = cfg.clone();
+                } else {
                     self.taskbar_page = TaskbarPage::Customize;
                 }
+                self.sync_taskbar_folder_to_active(cfg.tb_theme);
+                self.tb_fx_page = if cfg.tb_viz_style.is_kinetic_page() { 1 } else { 0 };
                 SettingsCommand::StyleUpdated
             }
             HitZone::OpenCustomizeTaskbar => {
+                self.sync_taskbar_folder_to_active(cfg.tb_theme);
                 self.tb_fx_page = if cfg.tb_viz_style.is_kinetic_page() { 1 } else { 0 };
                 self.taskbar_page = TaskbarPage::Customize;
                 SettingsCommand::None
@@ -5095,6 +5168,20 @@ impl SettingsController {
             HitZone::TbVizStyleBtn(st) => {
                 cfg.tb_viz_style = st;
                 self.draft_cfg.tb_viz_style = st;
+                SettingsCommand::StyleUpdated
+            }
+            HitZone::SetTbVizColorMode(mode) => {
+                cfg.set_tb_viz_color_mode(mode);
+                self.draft_cfg.set_tb_viz_color_mode(mode);
+                SettingsCommand::StyleUpdated
+            }
+            HitZone::SetTbVizSwatch(idx) => {
+                if let Some(&(rgb, _)) = VizColorMode::SWATCHES.get(idx) {
+                    cfg.set_tb_viz_color_mode(VizColorMode::CustomAccent);
+                    cfg.tb_viz_accent_rgb = rgb;
+                    self.draft_cfg.set_tb_viz_color_mode(VizColorMode::CustomAccent);
+                    self.draft_cfg.tb_viz_accent_rgb = rgb;
+                }
                 SettingsCommand::StyleUpdated
             }
             HitZone::ToggleTbFxPage => {
@@ -5117,8 +5204,31 @@ impl SettingsController {
                 SettingsCommand::StyleUpdated
             }
             HitZone::ToggleVizEcoFps => {
-                cfg.viz_eco_fps = !cfg.viz_eco_fps;
-                self.draft_cfg.viz_eco_fps = cfg.viz_eco_fps;
+                let next_fps = if cfg.viz_eco_fps {
+                    AppConfig::DEFAULT_ANIM_FPS
+                } else {
+                    24
+                };
+                cfg.set_anim_fps(next_fps);
+                self.draft_cfg.set_anim_fps(next_fps);
+                SettingsCommand::WidgetsConfigUpdated
+            }
+            HitZone::SetAnimFpsPreset(idx) => {
+                let next_fps = match idx {
+                    0 => 24,
+                    1 => 30,
+                    2 => 45,
+                    3 => 60,
+                    _ => {
+                        if cfg.anim_fps == 90 {
+                            120
+                        } else {
+                            90
+                        }
+                    }
+                };
+                cfg.set_anim_fps(next_fps);
+                self.draft_cfg.set_anim_fps(next_fps);
                 SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::ToggleWallpaperQuick => {
@@ -5225,6 +5335,7 @@ impl SettingsController {
                 if let Some(suite) = find_suite_by_id(sid) {
                     apply_suite_to_config(suite, cfg);
                     self.draft_cfg = cfg.clone();
+                    self.sync_taskbar_folder_to_active(cfg.tb_theme);
                     SettingsCommand::SuiteApplied
                 } else {
                     SettingsCommand::None
@@ -5293,7 +5404,9 @@ impl SettingsController {
             }
             HitZone::ToggleMacDockDots => {
                 cfg.mac_dock_dots = !cfg.mac_dock_dots;
+                cfg.w_apps.show_indicators = cfg.mac_dock_dots;
                 self.draft_cfg.mac_dock_dots = cfg.mac_dock_dots;
+                self.draft_cfg.w_apps.show_indicators = cfg.w_apps.show_indicators;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::BtnRescanDockPinned => {
@@ -5437,9 +5550,7 @@ impl SettingsController {
                         cfg.w_hud.content = HudTelemetryContent::ALL[(idx + 1) % HudTelemetryContent::ALL.len()];
                     }
                     TaskbarWidgetTab::Utilities => {
-                        let next = !(cfg.w_util.show_search && cfg.w_util.show_taskview);
-                        cfg.w_util.show_search = next;
-                        cfg.w_util.show_taskview = next;
+                        cfg.w_util.show_desktop_sliver = !cfg.w_util.show_desktop_sliver;
                     }
                 }
                 self.draft_cfg = cfg.clone();
@@ -5482,13 +5593,56 @@ impl SettingsController {
                         cfg.w_hud.marquee_ticker = !cfg.w_hud.marquee_ticker;
                     }
                     TaskbarWidgetTab::Utilities => {
-                        let next = !(cfg.w_util.show_trash && cfg.w_util.show_studio);
+                        let next = cfg.w_util.is_all_elements_off();
+                        cfg.w_util.show_start = next;
+                        cfg.w_util.show_search = next;
+                        cfg.w_util.show_taskview = next;
                         cfg.w_util.show_trash = next;
                         cfg.w_util.show_studio = next;
                     }
                 }
                 self.draft_cfg = cfg.clone();
                 SettingsCommand::MacDockUpdated
+            }
+            HitZone::TbWidgetElemToggle(idx) => {
+                match (self.tb_widget_tab, idx) {
+                    (TaskbarWidgetTab::ShelfFrame, 0) => cfg.w_shelf.show_plate = !cfg.w_shelf.show_plate,
+                    (TaskbarWidgetTab::ShelfFrame, 1) => cfg.w_shelf.show_rim = !cfg.w_shelf.show_rim,
+                    (TaskbarWidgetTab::ShelfFrame, 2) => cfg.w_shelf.show_art = !cfg.w_shelf.show_art,
+                    (TaskbarWidgetTab::AppDock, 0) => cfg.w_apps.show_icons = !cfg.w_apps.show_icons,
+                    (TaskbarWidgetTab::AppDock, 1) => cfg.w_apps.show_cards = !cfg.w_apps.show_cards,
+                    (TaskbarWidgetTab::AppDock, 2) => {
+                        let next = !(cfg.w_apps.show_indicators && cfg.mac_dock_dots);
+                        cfg.w_apps.show_indicators = next;
+                        cfg.mac_dock_dots = next;
+                    }
+                    (TaskbarWidgetTab::AppDock, 3) => cfg.w_apps.show_separators = !cfg.w_apps.show_separators,
+                    (TaskbarWidgetTab::Clock, 0) => cfg.w_clock.show_time = !cfg.w_clock.show_time,
+                    (TaskbarWidgetTab::Clock, 1) => cfg.w_clock.show_date = !cfg.w_clock.show_date,
+                    (TaskbarWidgetTab::SystemTray, 0) => cfg.w_tray.show_net = !cfg.w_tray.show_net,
+                    (TaskbarWidgetTab::SystemTray, 1) => cfg.w_tray.show_audio = !cfg.w_tray.show_audio,
+                    (TaskbarWidgetTab::SystemTray, 2) => cfg.w_tray.show_battery = !cfg.w_tray.show_battery,
+                    (TaskbarWidgetTab::HudWing, 0) => cfg.w_hud.show_telemetry = !cfg.w_hud.show_telemetry,
+                    (TaskbarWidgetTab::HudWing, 1) => cfg.w_hud.show_active_app = !cfg.w_hud.show_active_app,
+                    (TaskbarWidgetTab::Utilities, 0) => cfg.w_util.show_start = !cfg.w_util.show_start,
+                    (TaskbarWidgetTab::Utilities, 1) => cfg.w_util.show_search = !cfg.w_util.show_search,
+                    (TaskbarWidgetTab::Utilities, 2) => cfg.w_util.show_taskview = !cfg.w_util.show_taskview,
+                    (TaskbarWidgetTab::Utilities, 3) => cfg.w_util.show_trash = !cfg.w_util.show_trash,
+                    (TaskbarWidgetTab::Utilities, 4) => cfg.w_util.show_studio = !cfg.w_util.show_studio,
+                    _ => {}
+                }
+                self.draft_cfg = cfg.clone();
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::ToggleNativeTbElem(idx) => {
+                match idx {
+                    0 => cfg.tb_show_backdrop = !cfg.tb_show_backdrop,
+                    1 => cfg.tb_show_rim = !cfg.tb_show_rim,
+                    2 => cfg.tb_show_fx = !cfg.tb_show_fx,
+                    _ => {}
+                }
+                self.draft_cfg = cfg.clone();
+                SettingsCommand::StyleUpdated
             }
 
             // Desktop Widgets Engine actions
@@ -5792,8 +5946,9 @@ impl SettingsController {
             }
             HitZone::ToggleMatchWallpaper(target) => match target {
                 MatchTarget::Taskbar => {
-                    cfg.tb_match_wallpaper = !cfg.tb_match_wallpaper;
-                    self.draft_cfg.tb_match_wallpaper = cfg.tb_match_wallpaper;
+                    let next = !cfg.tb_match_wallpaper;
+                    cfg.set_tb_match_wallpaper(next);
+                    self.draft_cfg.set_tb_match_wallpaper(next);
                     SettingsCommand::StyleUpdated
                 }
                 _ => {
@@ -6591,7 +6746,7 @@ impl SettingsController {
                         self.draft_cfg.show_datetime = def.show_datetime;
                         self.draft_cfg.dt_x = def.dt_x;
                         self.draft_cfg.dt_y = def.dt_y;
-                        self.draft_cfg.widgets_24h = def.widgets_24h;
+                        self.draft_cfg.set_clock_24h(def.widgets_24h);
                         self.draft_cfg.dt_scale_pct = def.dt_scale_pct;
                         self.draft_cfg.dt_show_plate = def.dt_show_plate;
                         self.draft_cfg.dt_show_clock = def.dt_show_clock;
@@ -6623,7 +6778,6 @@ impl SettingsController {
                         self.clock_style_profiles.remove(&(self.draft_cfg.dt_style as u8));
                     }
                     WidgetPage::CustomizeApps => {
-                        self.draft_cfg.show_apps = def.show_apps;
                         self.draft_cfg.apps_x = def.apps_x;
                         self.draft_cfg.apps_y = def.apps_y;
                         self.draft_cfg.apps_scale_pct = def.apps_scale_pct;
@@ -6655,7 +6809,6 @@ impl SettingsController {
                         self.preview_icons.invalidate();
                     }
                     WidgetPage::CustomizeVitals => {
-                        self.draft_cfg.show_vitals = def.show_vitals;
                         self.draft_cfg.vitals_x = def.vitals_x;
                         self.draft_cfg.vitals_y = def.vitals_y;
                         self.draft_cfg.vitals_scale_pct = def.vitals_scale_pct;
@@ -6685,7 +6838,6 @@ impl SettingsController {
                     WidgetPage::CustomizeMusic
                     | WidgetPage::MusicFolders
                     | WidgetPage::MusicThemes => {
-                        self.draft_cfg.show_music = def.show_music;
                         self.draft_cfg.music_x = def.music_x;
                         self.draft_cfg.music_y = def.music_y;
                         self.draft_cfg.music_scale_pct = def.music_scale_pct;
@@ -6714,7 +6866,6 @@ impl SettingsController {
                         self.music_style_profiles.remove(&(self.draft_cfg.music_style as u8));
                     }
                     WidgetPage::CustomizeControlCenter => {
-                        self.draft_cfg.show_cc = def.show_cc;
                         self.draft_cfg.cc_x = def.cc_x;
                         self.draft_cfg.cc_y = def.cc_y;
                         self.draft_cfg.cc_scale_pct = def.cc_scale_pct;
@@ -6744,7 +6895,10 @@ impl SettingsController {
                     WidgetPage::ExtFolders(id)
                     | WidgetPage::ExtThemes(id)
                     | WidgetPage::CustomizeExt(id) => {
-                        self.draft_cfg.ext_widgets[id.idx()] = ExtWidgetConfig::default_for(id);
+                        let was_enabled = self.draft_cfg.ext_widgets[id.idx()].enabled;
+                        let mut reset = ExtWidgetConfig::default_for(id);
+                        reset.enabled = was_enabled;
+                        self.draft_cfg.ext_widgets[id.idx()] = reset;
                     }
                     WidgetPage::Gallery | WidgetPage::PickInstalledApp | WidgetPage::PickClockFont | WidgetPage::EditWidgetCanvas(_) => {}
                 }
@@ -6759,7 +6913,7 @@ impl SettingsController {
                 merged.notes_items = self.draft_cfg.notes_items.clone();
                 merged.widgets_enabled = self.draft_cfg.widgets_enabled;
                 merged.widgets_locked = self.draft_cfg.widgets_locked;
-                merged.widgets_24h = self.draft_cfg.widgets_24h;
+                merged.set_clock_24h(self.draft_cfg.widgets_24h);
                 merged.widgets_hover_react = self.draft_cfg.widgets_hover_react;
                 merged.widgets_live_material = self.draft_cfg.widgets_live_material;
                 merged.show_datetime = self.draft_cfg.show_datetime;
@@ -6916,12 +7070,12 @@ impl SettingsController {
                 SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::PillWidgets12h => {
-                self.draft_cfg.widgets_24h = false;
+                self.draft_cfg.set_clock_24h(false);
                 self.applied_flash = false;
                 SettingsCommand::None
             }
             HitZone::PillWidgets24h => {
-                self.draft_cfg.widgets_24h = true;
+                self.draft_cfg.set_clock_24h(true);
                 self.applied_flash = false;
                 SettingsCommand::None
             }
@@ -7336,6 +7490,7 @@ impl SettingsController {
                 if let Some(suite) = SUITES.get(idx) {
                     apply_suite_to_config(suite, cfg);
                     self.draft_cfg = cfg.clone();
+                    self.sync_taskbar_folder_to_active(cfg.tb_theme);
                     self.applied_flash = true;
                     SettingsCommand::SuiteApplied
                 } else {
@@ -7345,6 +7500,7 @@ impl SettingsController {
             HitZone::BtnResetDefaultSuite => {
                 apply_suite_to_config(&SUITES[0], cfg);
                 self.draft_cfg = cfg.clone();
+                self.sync_taskbar_folder_to_active(cfg.tb_theme);
                 self.applied_flash = true;
                 SettingsCommand::SuiteApplied
             }
@@ -7545,12 +7701,13 @@ impl SettingsController {
                             MacDockHideMode::SmartAutoHide,
                             MacDockHideMode::HoverReveal,
                             MacDockHideMode::AlwaysVisible,
+                            MacDockHideMode::StealthHide,
                         ]
                         .into_iter()
                         .enumerate()
                         {
-                            let x0 = 26.0 + (i as f32) * 240.0;
-                            if in_rect(x, y, x0, 200.0, x0 + 228.0, 250.0) {
+                            let x0 = 26.0 + (i as f32) * 179.0;
+                            if in_rect(x, y, x0, 200.0, x0 + 171.0, 250.0) {
                                 return HitZone::MacDockHideBtn(hm);
                             }
                         }
@@ -7583,40 +7740,71 @@ impl SettingsController {
                         }
                         for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
                             let tx0 = 38.0 + (i as f32) * 105.0;
-                            if in_rect(x, y, tx0, 470.0, tx0 + 99.0, 494.0) {
+                            if in_rect(x, y, tx0, 468.0, tx0 + 99.0, 491.0) {
                                 return HitZone::TbWidgetTabBtn(tab);
                             }
                         }
-                        if in_rect(x, y, 670.0, 470.0, 722.0, 494.0) {
+                        if in_rect(x, y, 670.0, 468.0, 722.0, 491.0) {
                             return HitZone::TbWidgetResetAll;
                         }
-                        if in_rect(x, y, 38.0, 499.0, 258.0, 531.0) {
-                            return HitZone::TbWidgetProp1;
+                        if self.tb_widget_tab == TaskbarWidgetTab::Clock {
+                            if in_rect(x, y, 38.0, 495.0, 203.0, 521.0) {
+                                return HitZone::TbWidgetProp1;
+                            }
+                            if in_rect(x, y, 211.0, 495.0, 376.0, 521.0) {
+                                return HitZone::ToggleWidgets24h;
+                            }
+                            if in_rect(x, y, 384.0, 495.0, 549.0, 521.0) {
+                                return HitZone::TbWidgetProp2;
+                            }
+                            if in_rect(x, y, 557.0, 495.0, 722.0, 521.0) {
+                                return HitZone::TbWidgetProp3;
+                            }
+                        } else {
+                            if in_rect(x, y, 38.0, 495.0, 258.0, 521.0) {
+                                return HitZone::TbWidgetProp1;
+                            }
+                            if in_rect(x, y, 266.0, 495.0, 490.0, 521.0) {
+                                return HitZone::TbWidgetProp2;
+                            }
+                            if in_rect(x, y, 498.0, 495.0, 722.0, 521.0) {
+                                return HitZone::TbWidgetProp3;
+                            }
                         }
-                        if in_rect(x, y, 266.0, 499.0, 490.0, 531.0) {
-                            return HitZone::TbWidgetProp2;
+                        let elem_toggles = dock_widget_elem_toggles(self.tb_widget_tab, &self.draft_cfg);
+                        for (idx, &(_, _, elem_id)) in elem_toggles.iter().enumerate() {
+                            let (ex0, ey0, ex1, ey1) = dock_widget_elem_pill_rect(idx, elem_toggles.len());
+                            if in_rect(x, y, ex0, ey0, ex1, ey1) {
+                                return HitZone::TbWidgetElemToggle(elem_id);
+                            }
                         }
-                        if in_rect(x, y, 498.0, 499.0, 722.0, 531.0) {
-                            return HitZone::TbWidgetProp3;
-                        }
-                        if in_rect(x, y, 38.0, 536.0, 452.0, 568.0) {
+                        if in_rect(x, y, 38.0, 551.0, 452.0, 573.0) {
                             return HitZone::TbWidgetCycleTheme;
                         }
-                        if in_rect(x, y, 460.0, 536.0, 722.0, 568.0) {
+                        if in_rect(x, y, 460.0, 551.0, 722.0, 573.0) {
                             return HitZone::BtnRescanDockPinned;
                         }
                     } else {
-                        let modes = [
-                        (TaskbarMode::SmartMaximize, 26.0, 138.0, 372.0, 190.0),
-                        (TaskbarMode::HoverReveal, 388.0, 138.0, 734.0, 190.0),
-                        (TaskbarMode::StealthHide, 26.0, 196.0, 372.0, 248.0),
-                        (TaskbarMode::AlwaysVisible, 388.0, 196.0, 734.0, 248.0),
-                    ];
-                    for (m, x0, y0, x1, y1) in modes {
-                        if in_rect(x, y, x0, y0, x1, y1) {
-                            return HitZone::ModeCard(m);
+                        for idx in 0..3usize {
+                            let (nx0, ny0, nx1, ny1) = native_tb_elem_pill_rect(idx);
+                            if in_rect(x, y, nx0, ny0, nx1, ny1) {
+                                return HitZone::ToggleNativeTbElem(idx as u8);
+                            }
                         }
-                    }
+                        for (i, m) in [
+                            TaskbarMode::SmartMaximize,
+                            TaskbarMode::HoverReveal,
+                            TaskbarMode::StealthHide,
+                            TaskbarMode::AlwaysVisible,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let x0 = 26.0 + (i as f32) * 179.0;
+                            if in_rect(x, y, x0, 138.0, x0 + 171.0, 188.0) {
+                                return HitZone::ModeCard(m);
+                            }
+                        }
 
                     for (i, p) in [
                         PillMode::SplitPills,
@@ -7629,7 +7817,7 @@ impl SettingsController {
                     {
                         let sx0 = 224.0 + (i as f32) * 124.0;
                         let sx1 = sx0 + 114.0;
-                        if in_rect(x, y, sx0, 260.0, sx1, 288.0) {
+                        if in_rect(x, y, sx0, 202.0, sx1, 228.0) {
                             return HitZone::PillBtn(p);
                         }
                     }
@@ -7645,27 +7833,48 @@ impl SettingsController {
                     {
                         let sx0 = 224.0 + (i as f32) * 124.0;
                         let sx1 = sx0 + 114.0;
-                        if in_rect(x, y, sx0, 294.0, sx1, 322.0) {
+                        if in_rect(x, y, sx0, 233.0, sx1, 259.0) {
                             return HitZone::SurfaceBtn(s);
                         }
                     }
 
-                    if in_rect(x, y, 222.0, 324.0, 650.0, 350.0) {
+                    if in_rect(x, y, 222.0, 263.0, 650.0, 287.0) {
                         return HitZone::Slider(SliderKind::TaskbarOpacity);
                     }
 
-                    if in_rect(x, y, 44.0, 383.0, 166.0, 407.0) {
+                    if in_rect(x, y, 44.0, 322.0, 166.0, 346.0) {
                         return HitZone::ToggleTbFxPage;
                     }
                     for (i, &vs) in TaskbarVizStyle::fx_page(self.tb_fx_page).iter().enumerate() {
                         let col = i % 6;
                         let row = i / 6;
                         let sx0 = 176.0 + (col as f32) * 91.0;
-                        let sy0 = 356.0 + (row as f32) * 27.0;
+                        let sy0 = 295.0 + (row as f32) * 27.0;
                         if in_rect(x, y, sx0, sy0, sx0 + 86.0, sy0 + 24.0) {
                             return HitZone::TbVizStyleBtn(vs);
                         }
                     }
+
+                    // Visualizer Color Customization strip (355..408)
+                    for (mode, mx0, mx1) in [
+                        (VizColorMode::ThemeNative, 110.0f32, 174.0f32),
+                        (VizColorMode::CustomAccent, 179.0, 243.0),
+                        (VizColorMode::MatchWallpaper, 248.0, 324.0),
+                    ] {
+                        if in_rect(x, y, mx0, 355.0, mx1, 381.0) {
+                            return HitZone::SetTbVizColorMode(mode);
+                        }
+                    }
+                    for idx in 0..VizColorMode::SWATCHES.len() {
+                        let cx = 346.0 + (idx as f32) * 30.0;
+                        if in_rect(x, y, cx - 13.0, 355.0, cx + 13.0, 381.0) {
+                            return HitZone::SetTbVizSwatch(idx);
+                        }
+                    }
+                    if in_rect(x, y, 148.0, 384.0, 634.0, 408.0) {
+                        return HitZone::Slider(SliderKind::TbVizHue);
+                    }
+
                     if in_rect(x, y, 146.0, 413.0, 326.0, 441.0) {
                         return HitZone::Slider(SliderKind::TbVizOpacity);
                     }
@@ -9338,42 +9547,34 @@ impl SettingsController {
                 }
             }
             StudioTab::Settings => {
-                // Panel 1: Startup & System Behavior (100..274)
-                if in_rect(x, y, 38.0, 132.0, 722.0, 174.0) {
+                // Panel 1: Startup & System Behavior (100..308)
+                if in_rect(x, y, 38.0, 132.0, 722.0, 176.0) {
                     return HitZone::ToggleStartup;
                 }
-                if in_rect(x, y, 38.0, 182.0, 372.0, 220.0) {
+                if in_rect(x, y, 38.0, 184.0, 260.0, 220.0) {
                     return HitZone::ToggleGameModePause;
                 }
-                if in_rect(x, y, 388.0, 182.0, 722.0, 220.0) {
-                    return HitZone::ToggleVizEcoFps;
-                }
-                if in_rect(x, y, 38.0, 228.0, 372.0, 266.0) {
+                if in_rect(x, y, 269.0, 184.0, 491.0, 220.0) {
                     return HitZone::ToggleWidgetsLock;
                 }
-                if in_rect(x, y, 388.0, 228.0, 722.0, 266.0) {
+                if in_rect(x, y, 500.0, 184.0, 722.0, 220.0) {
                     return HitZone::ToggleWidgets24h;
                 }
-
-                // Panel 2: Backup, Export & Import Setup (284..446)
-                if in_rect(x, y, 38.0, 340.0, 258.0, 392.0) {
-                    return HitZone::BtnExportSetup;
-                }
-                if in_rect(x, y, 268.0, 340.0, 490.0, 392.0) {
-                    return HitZone::BtnImportSetup;
-                }
-                if in_rect(x, y, 500.0, 340.0, 722.0, 392.0) {
-                    return HitZone::BtnResetDefaultSuite;
+                for idx in 0..5usize {
+                    let (bx0, by0, bx1, by1) = anim_fps_preset_rect(idx);
+                    if in_rect(x, y, bx0, by0, bx1, by1) {
+                        return HitZone::SetAnimFpsPreset(idx as u8);
+                    }
                 }
 
-                // Panel 3: Diagnostics & Tools (456..570)
-                if in_rect(x, y, 38.0, 490.0, 258.0, 530.0) {
+                // Panel 2: Diagnostics, Tools & About (320..570)
+                if in_rect(x, y, 38.0, 356.0, 258.0, 414.0) {
                     return HitZone::BtnExportDiagnostics;
                 }
-                if in_rect(x, y, 268.0, 490.0, 490.0, 530.0) {
+                if in_rect(x, y, 268.0, 356.0, 490.0, 414.0) {
                     return HitZone::BtnOpenConfigFolder;
                 }
-                if in_rect(x, y, 500.0, 490.0, 722.0, 530.0) {
+                if in_rect(x, y, 500.0, 356.0, 722.0, 414.0) {
                     return HitZone::BtnRunOnboarding;
                 }
 
@@ -9576,7 +9777,7 @@ impl SettingsController {
                 &r.sun_gold
             } else {
                 match self.active_tab {
-                    StudioTab::Taskbar => if self.taskbar_hidden { &r.sun_gold } else { &r.sage },
+                    StudioTab::Taskbar => if self.taskbar_hidden || (self.tap_fallback_active && !cfg.tb_theme.uses_virtual_dock()) { &r.sun_gold } else { &r.sage },
                     StudioTab::DesktopWidgets => if self.draft_cfg.widgets_enabled { &r.sage } else { &r.muted_txt },
                     StudioTab::Wallpaper => match classify_wallpaper_status(&self.wallpaper_status) {
                         WallpaperStatusKind::Active => &r.sage,
@@ -9605,6 +9806,8 @@ impl SettingsController {
                         format!("{} • {}", cfg.tb_theme.label(), cfg.mac_dock_edge.label())
                     } else if self.taskbar_hidden {
                         format!("Hidden • {}", cfg.mode.short_label())
+                    } else if self.tap_fallback_active {
+                        format!("{} • Overlay FX", cfg.tb_theme.label())
                     } else if cfg.tb_viz_style != TaskbarVizStyle::Off {
                         format!("{} • Viz: {}", cfg.tb_theme.label(), cfg.tb_viz_style.label())
                     } else {
@@ -9668,7 +9871,7 @@ impl SettingsController {
                         format!("{} Curated Desktop Suites", SUITES.len())
                     }
                 }
-                StudioTab::Settings => "App Settings & Backup".to_string(),
+                StudioTab::Settings => "App Settings & Startup".to_string(),
             }
             };
             draw_txt(rt, &st_label, &r.tf_sub, rect_f(st_x0 + 26.0, 13.0, st_x1 - 8.0, 46.0, u), &r.cream);
@@ -10127,7 +10330,7 @@ impl SettingsController {
                 let cur_hide = if cfg.mac_dock_enabled {
                     match cfg.mac_dock_hide {
                         MacDockHideMode::AlwaysVisible => 0u8,
-                        MacDockHideMode::HoverReveal => 1u8,
+                        MacDockHideMode::HoverReveal | MacDockHideMode::StealthHide => 1u8,
                         MacDockHideMode::SmartAutoHide => 2u8,
                     }
                 } else {
@@ -10559,6 +10762,7 @@ impl SettingsController {
         &self,
         rt: &ID2D1DCRenderTarget,
         r: &PaintResources,
+        cfg: &AppConfig,
         u: f32,
     ) {
         let ex_saved = self.export_flash_active();
@@ -10599,9 +10803,20 @@ impl SettingsController {
 
         let btn1_rr = rrect(364.0, 584.0, 556.0, 622.0, 9.0, u);
         rt.FillRoundedRectangle(&btn1_rr, &r.sun_gold);
+        let toggle_lbl = if cfg.mac_dock_enabled {
+            if cfg.mac_dock_hide == MacDockHideMode::StealthHide {
+                "Show Dock Now"
+            } else {
+                "Hide Dock Now"
+            }
+        } else if self.taskbar_hidden {
+            "Show Taskbar Now"
+        } else {
+            "Hide Taskbar Now"
+        };
         draw_txt(
             rt,
-            if self.taskbar_hidden { "Show Taskbar Now" } else { "Hide Taskbar Now" },
+            toggle_lbl,
             &r.tf_btn,
             btn1_rr.rect,
             &r.dark_ink,
@@ -10626,12 +10841,21 @@ impl SettingsController {
         match self.taskbar_page {
             TaskbarPage::Folders => {
                 draw_txt(rt, "TASKBAR THEME FOLDERS", &r.tf_sec, rect_f(28.0, 93.0, 290.0, 109.0, u), &r.sun_gold);
+                let folders_sub = if self.tap_fallback_active && !cfg.tb_theme.uses_virtual_dock() {
+                    "Glass blocked • Overlay FX on"
+                } else {
+                    "Pick a folder • Customize → to fine-tune"
+                };
                 draw_txt(
                     rt,
-                    "Pick a folder • Customize → to fine-tune",
+                    folders_sub,
                     &r.tf_sub,
                     rect_f(28.0, 108.0, 292.0, 126.0, u),
-                    &r.warm_sub,
+                    if self.tap_fallback_active && !cfg.tb_theme.uses_virtual_dock() {
+                        &r.sun_gold
+                    } else {
+                        &r.warm_sub
+                    },
                 );
 
                 let all_rr = rrect(296.0, 94.0, 420.0, 124.0, 8.0, u);
@@ -10675,6 +10899,13 @@ impl SettingsController {
                     let card_w = x1 - x0;
                     let pv_pad = if card_w < 260.0 { 14.0 } else { 18.0 };
                     let has_active = list.contains(&cfg.tb_theme);
+                    let preview_th = if has_active { cfg.tb_theme } else { sample_th };
+                    let active_sub = if has_active {
+                        format!("Active: {}", cfg.tb_theme.label())
+                    } else {
+                        String::new()
+                    };
+                    let eff_sub = if has_active { active_sub.as_str() } else { sub_lbl };
                     let hov = self.hovered == HitZone::OpenTaskbarFolder(folder);
 
                     let pv = self.draw_folder_card_shell(
@@ -10690,7 +10921,7 @@ impl SettingsController {
                         y0 + 86.0,
                         title,
                         &cnt_lbl,
-                        sub_lbl,
+                        eff_sub,
                         has_active,
                         hov,
                     );
@@ -10703,16 +10934,16 @@ impl SettingsController {
                         card_w - pv_pad * 2.0,
                         53.0,
                         u,
-                        sample_th,
+                        preview_th,
                         cfg,
                         &preview_bands,
                         self.tb_anim_phase,
-                        self.preview_sim_for(sample_th),
+                        self.preview_sim_for(preview_th),
                     );
                     rt.PopAxisAlignedClip();
                 }
 
-                self.draw_taskbar_footer(rt, r, u);
+                self.draw_taskbar_footer(rt, r, cfg, u);
             }
 
             TaskbarPage::Themes => {
@@ -10728,7 +10959,9 @@ impl SettingsController {
                 let title_x1 = if max_page > 0 { 324.0 } else { 420.0 };
 
                 draw_txt(rt, &self.tb_folder.label().to_uppercase(), &r.tf_sec, rect_f(138.0, 93.0, title_x1, 109.0, u), &r.sun_gold);
-                let sub_hint = if max_page > 0 {
+                let sub_hint = if self.tap_fallback_active && !cfg.tb_theme.uses_virtual_dock() {
+                    "Overlay FX • Try Virtual Docks"
+                } else if max_page > 0 {
                     "Click to apply • Hover for Customize"
                 } else {
                     "Click to apply • Hover ACTIVE for Customize →"
@@ -10738,7 +10971,11 @@ impl SettingsController {
                     sub_hint,
                     &r.tf_sub,
                     rect_f(138.0, 108.0, title_x1 + 6.0, 126.0, u),
-                    &r.warm_sub,
+                    if self.tap_fallback_active && !cfg.tb_theme.uses_virtual_dock() {
+                        &r.sun_gold
+                    } else {
+                        &r.warm_sub
+                    },
                 );
 
                 if max_page > 0 {
@@ -10833,7 +11070,7 @@ impl SettingsController {
                     draw_txt(rt, theme.subtitle(), &r.tf_sub, rect_f(x0 + 14.0, y0 + 108.0, x1 - 12.0, y1 - 4.0, u), &r.warm_sub);
                 }
 
-                self.draw_taskbar_footer(rt, r, u);
+                self.draw_taskbar_footer(rt, r, cfg, u);
             }
 
             TaskbarPage::Customize => {
@@ -10844,13 +11081,57 @@ impl SettingsController {
                 rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
                 draw_txt(rt, "← Themes", &r.tf_btn, back_rr.rect, &r.cream);
 
-                draw_txt(
-                    rt,
-                    &format!("Customize Taskbar — {}", cfg.tb_theme.label()),
-                    &r.tf_title,
-                    rect_f(138.0, 98.0, 558.0, 132.0, u),
-                    &r.cream,
-                );
+                if cfg.tb_theme.uses_virtual_dock() {
+                    draw_txt(
+                        rt,
+                        &format!("Customize Taskbar — {}", cfg.tb_theme.label()),
+                        &r.tf_title,
+                        rect_f(138.0, 98.0, 558.0, 132.0, u),
+                        &r.cream,
+                    );
+                } else {
+                    draw_txt(
+                        rt,
+                        cfg.tb_theme.label(),
+                        &r.tf_title,
+                        rect_f(136.0, 98.0, 340.0, 132.0, u),
+                        &r.cream,
+                    );
+                    for (idx, (lbl, is_on, elem_id)) in native_tb_elem_toggles(cfg).into_iter().enumerate() {
+                        let (nx0, ny0, nx1, ny1) = native_tb_elem_pill_rect(idx);
+                        let nrr = rrect(nx0, ny0, nx1, ny1, 6.0, u);
+                        let nhov = self.hovered == HitZone::ToggleNativeTbElem(elem_id);
+                        if is_on {
+                            rt.FillRoundedRectangle(&nrr, if nhov { &r.card_hover } else { &r.card_active });
+                            rt.DrawRoundedRectangle(&nrr, &r.sun_gold, 1.1 * u, None);
+                        } else {
+                            rt.FillRoundedRectangle(&nrr, if nhov { &r.card_hover } else { &r.card_bg });
+                            rt.DrawRoundedRectangle(&nrr, if nhov { &r.sun_gold } else { &r.card_border }, 0.9 * u, None);
+                        }
+                        let dot_c = if is_on {
+                            rgb_u8(102, 232, 146, 0.96)
+                        } else {
+                            rgb_u8(152, 124, 98, 0.45)
+                        };
+                        if let Some(ref db) = solid(rt, dot_c) {
+                            rt.FillEllipse(
+                                &D2D1_ELLIPSE {
+                                    point: Vector2 { X: (nx0 + 9.0) * u, Y: ((ny0 + ny1) * 0.5) * u },
+                                    radiusX: 2.8 * u,
+                                    radiusY: 2.8 * u,
+                                },
+                                db,
+                            );
+                        }
+                        draw_txt(
+                            rt,
+                            lbl,
+                            &r.tf_badge,
+                            rect_f(nx0 + 14.0, ny0, nx1 - 3.0, ny1, u),
+                            if is_on { &r.sun_gold } else { &r.muted_txt },
+                        );
+                    }
+                }
 
                 let wp_rr = rrect(568.0, 98.0, 734.0, 132.0, 8.0, u);
                 let wp_on = cfg.wallpaper_enabled;
@@ -10892,19 +11173,20 @@ impl SettingsController {
                     }
 
                     let hides = [
-                        (MacDockHideMode::SmartAutoHide, "Smart Auto-Hide", "Slides away on maximized window"),
-                        (MacDockHideMode::HoverReveal, "Edge Hover Reveal", "Hidden until cursor hits edge"),
-                        (MacDockHideMode::AlwaysVisible, "Always Visible", "Permanent floating glass dock"),
+                        (MacDockHideMode::SmartAutoHide, "Smart Auto-Hide", "Hides on maximized app"),
+                        (MacDockHideMode::HoverReveal, "Edge Hover Reveal", "Shows on screen edge"),
+                        (MacDockHideMode::AlwaysVisible, "Always Visible", "Permanent floating dock"),
+                        (MacDockHideMode::StealthHide, "Full Stealth Hide", "Hidden • Ctrl+Alt+T"),
                     ];
                     for (i, (hm, title, desc)) in hides.into_iter().enumerate() {
-                        let x0 = 26.0 + (i as f32) * 240.0;
-                        let c_rr = rrect(x0, 200.0, x0 + 228.0, 250.0, 10.0, u);
+                        let x0 = 26.0 + (i as f32) * 179.0;
+                        let c_rr = rrect(x0, 200.0, x0 + 171.0, 250.0, 10.0, u);
                         let act = cfg.mac_dock_hide == hm;
                         let hov = self.hovered == HitZone::MacDockHideBtn(hm);
                         rt.FillRoundedRectangle(&c_rr, if act { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg });
                         rt.DrawRoundedRectangle(&c_rr, if act { &r.sun_gold } else { &r.card_border }, if act { 1.3 * u } else { 1.0 * u }, None);
-                        draw_txt(rt, title, &r.tf_title, rect_f(x0 + 12.0, 206.0, x0 + 216.0, 226.0, u), if act { &r.sun_gold } else { &r.cream });
-                        draw_txt(rt, desc, &r.tf_sub, rect_f(x0 + 12.0, 227.0, x0 + 216.0, 245.0, u), &r.warm_sub);
+                        draw_txt(rt, title, &r.tf_title, rect_f(x0 + 10.0, 206.0, x0 + 161.0, 226.0, u), if act { &r.sun_gold } else { &r.cream });
+                        draw_txt(rt, desc, &r.tf_sub, rect_f(x0 + 10.0, 227.0, x0 + 161.0, 245.0, u), &r.warm_sub);
                     }
 
                     let phys_rr = rrect(26.0, 260.0, 734.0, 458.0, 12.0, u);
@@ -11033,11 +11315,11 @@ impl SettingsController {
                         self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Taskbar),
                     );
 
-                    let pin_rr = rrect(26.0, 464.0, 734.0, 574.0, 12.0, u);
+                    let pin_rr = rrect(26.0, 464.0, 734.0, 576.0, 12.0, u);
                     if let Some(ref g) = create_grad(
                         rt,
                         Vector2 { X: 26.0 * u, Y: 464.0 * u },
-                        Vector2 { X: 734.0 * u, Y: 574.0 * u },
+                        Vector2 { X: 734.0 * u, Y: 576.0 * u },
                         &[
                             D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(46, 32, 20, 0.95) },
                             D2D1_GRADIENT_STOP { position: 0.45, color: rgb_u8(28, 20, 14, 0.97) },
@@ -11086,7 +11368,7 @@ impl SettingsController {
 
                     for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
                         let tx0 = 38.0 + (i as f32) * 105.0;
-                        let trr = rrect(tx0, 470.0, tx0 + 99.0, 494.0, 7.0, u);
+                        let trr = rrect(tx0, 468.0, tx0 + 99.0, 491.0, 7.0, u);
                         let act = self.tb_widget_tab == tab;
                         let hov = self.hovered == HitZone::TbWidgetTabBtn(tab);
                         let pill_stops = if act {
@@ -11107,8 +11389,8 @@ impl SettingsController {
                         };
                         if let Some(ref g) = create_grad(
                             rt,
-                            Vector2 { X: tx0 * u, Y: 470.0 * u },
-                            Vector2 { X: tx0 * u, Y: 494.0 * u },
+                            Vector2 { X: tx0 * u, Y: 468.0 * u },
+                            Vector2 { X: tx0 * u, Y: 491.0 * u },
                             &pill_stops,
                         ) {
                             rt.FillRoundedRectangle(&trr, g);
@@ -11128,7 +11410,7 @@ impl SettingsController {
                             if let Some(ref b) = solid(rt, rgb_u8(255, 234, 180, 0.72)) {
                                 rt.DrawRoundedRectangle(&trr, b, 1.0 * u, None);
                             }
-                            let bar = rrect(tx0 + 22.0, 491.5, tx0 + 77.0, 494.0, 1.2, u);
+                            let bar = rrect(tx0 + 22.0, 488.5, tx0 + 77.0, 491.0, 1.2, u);
                             if let Some(ref glow) = solid(rt, rgb_u8(255, 244, 214, 0.95)) {
                                 rt.FillRoundedRectangle(&bar, glow);
                             }
@@ -11150,12 +11432,12 @@ impl SettingsController {
                             if act { &r.dark_ink } else { &r.cream },
                         );
                     }
-                    let rst_rr = rrect(670.0, 470.0, 722.0, 494.0, 7.0, u);
+                    let rst_rr = rrect(670.0, 468.0, 722.0, 491.0, 7.0, u);
                     let rst_hov = self.hovered == HitZone::TbWidgetResetAll;
                     if let Some(ref g) = create_grad(
                         rt,
-                        Vector2 { X: 670.0 * u, Y: 470.0 * u },
-                        Vector2 { X: 670.0 * u, Y: 494.0 * u },
+                        Vector2 { X: 670.0 * u, Y: 468.0 * u },
+                        Vector2 { X: 670.0 * u, Y: 491.0 * u },
                         &if rst_hov {
                             [
                                 D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(245, 114, 102, 1.0) },
@@ -11257,34 +11539,46 @@ impl SettingsController {
                         TaskbarWidgetTab::Utilities => (
                             format!("Start: {}", cfg.w_util.start_style.label()),
                             format!(
-                                "Search+View: {}",
-                                if cfg.w_util.show_search && cfg.w_util.show_taskview {
-                                    "ON"
-                                } else {
-                                    "OFF"
-                                }
+                                "Edge Sliver: {}",
+                                if cfg.w_util.show_desktop_sliver { "ON" } else { "OFF" }
                             ),
                             format!(
-                                "Trash+Studio: {}",
-                                if cfg.w_util.show_trash && cfg.w_util.show_studio {
-                                    "ON"
-                                } else {
-                                    "OFF"
-                                }
+                                "Utilities: {}",
+                                if !cfg.w_util.is_all_elements_off() { "ON" } else { "OFF" }
                             ),
                             cfg.w_util.theme_override,
                         ),
                     };
 
-                    for (bx0, bx1, hz, txt) in [
-                        (38.0f32, 258.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
-                        (266.0f32, 490.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
-                        (498.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
-                    ] {
-                        let brr = rrect(bx0, 499.0, bx1, 531.0, 8.0, u);
+                    let clock_24h_lbl = format!(
+                        "Format: {}",
+                        if cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h) {
+                            "24-Hour"
+                        } else {
+                            "12-Hour"
+                        }
+                    );
+                    let prop_cards: Vec<(f32, f32, HitZone, &str)> =
+                        if self.tb_widget_tab == TaskbarWidgetTab::Clock {
+                            vec![
+                                (38.0f32, 203.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
+                                (211.0f32, 376.0f32, HitZone::ToggleWidgets24h, clock_24h_lbl.as_str()),
+                                (384.0f32, 549.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
+                                (557.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
+                            ]
+                        } else {
+                            vec![
+                                (38.0f32, 258.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
+                                (266.0f32, 490.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
+                                (498.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
+                            ]
+                        };
+
+                    for (bx0, bx1, hz, txt) in prop_cards {
+                        let brr = rrect(bx0, 495.0, bx1, 521.0, 7.0, u);
                         let bhov = self.hovered == hz;
-                        let (lbl_key, lbl_val) = txt.split_once(": ").unwrap_or(("Option", txt));
-                        let is_default = matches!(lbl_val, "Theme" | "OFF" | "Inherit");
+                        let (_lbl_key, lbl_val) = txt.split_once(": ").unwrap_or(("Option", txt));
+                        let is_default = matches!(lbl_val, "Theme" | "OFF" | "Inherit" | "12-Hour");
                         let card_stops = if bhov {
                             [
                                 D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(74, 52, 34, 0.96) },
@@ -11303,8 +11597,8 @@ impl SettingsController {
                         };
                         if let Some(ref g) = create_grad(
                             rt,
-                            Vector2 { X: bx0 * u, Y: 499.0 * u },
-                            Vector2 { X: bx0 * u, Y: 531.0 * u },
+                            Vector2 { X: bx0 * u, Y: 495.0 * u },
+                            Vector2 { X: bx0 * u, Y: 521.0 * u },
                             &card_stops,
                         ) {
                             rt.FillRoundedRectangle(&brr, g);
@@ -11323,7 +11617,7 @@ impl SettingsController {
                         ) {
                             rt.DrawRoundedRectangle(&brr, b, 1.0 * u, None);
                         }
-                        let bar_rr = rrect(bx0 + 7.0, 505.0, bx0 + 10.0, 525.0, 1.5, u);
+                        let bar_rr = rrect(bx0 + 6.0, 500.0, bx0 + 9.0, 516.0, 1.5, u);
                         let bar_col = if bhov || !is_default {
                             if lbl_val == "ON" {
                                 rgb_u8(116, 204, 144, 0.95)
@@ -11338,16 +11632,9 @@ impl SettingsController {
                         }
                         draw_txt(
                             rt,
-                            &lbl_key.to_ascii_uppercase(),
+                            txt,
                             &r.tf_badge,
-                            rect_f(bx0 + 15.0, 500.0, bx1 - 18.0, 514.5, u),
-                            &r.warm_sub,
-                        );
-                        draw_txt(
-                            rt,
-                            lbl_val,
-                            &r.tf_badge,
-                            rect_f(bx0 + 15.0, 513.5, bx1 - 18.0, 530.5, u),
+                            rect_f(bx0 + 13.0, 495.0, bx1 - 16.0, 521.0, u),
                             if !is_default {
                                 &r.sun_gold
                             } else {
@@ -11358,8 +11645,66 @@ impl SettingsController {
                             rt,
                             "›",
                             &r.tf_sub,
-                            rect_f(bx1 - 18.0, 499.0, bx1 - 4.0, 531.0, u),
+                            rect_f(bx1 - 16.0, 495.0, bx1 - 3.0, 521.0, u),
                             if bhov { &r.sun_gold } else { &r.muted_txt },
+                        );
+                    }
+
+                    // Granular Per-Element Visibility Toggle Strip (Row 3: y = 525..547)
+                    let elem_toggles = dock_widget_elem_toggles(self.tb_widget_tab, cfg);
+                    for (idx, &(el_lbl, is_on, elem_id)) in elem_toggles.iter().enumerate() {
+                        let (ex0, ey0, ex1, ey1) = dock_widget_elem_pill_rect(idx, elem_toggles.len());
+                        let err = rrect(ex0, ey0, ex1, ey1, 6.0, u);
+                        let ehov = self.hovered == HitZone::TbWidgetElemToggle(elem_id);
+                        if is_on {
+                            rt.FillRoundedRectangle(&err, if ehov { &r.card_hover } else { &r.card_active });
+                            if let Some(ref b) = solid(
+                                rt,
+                                if ehov {
+                                    rgb_u8(255, 206, 118, 0.90)
+                                } else {
+                                    rgb_u8(116, 208, 148, 0.56)
+                                },
+                            ) {
+                                rt.DrawRoundedRectangle(&err, b, 1.0 * u, None);
+                            }
+                        } else {
+                            rt.FillRoundedRectangle(&err, if ehov { &r.card_hover } else { &r.card_bg });
+                            if let Some(ref b) = solid(
+                                rt,
+                                if ehov {
+                                    rgb_u8(245, 178, 86, 0.65)
+                                } else {
+                                    rgb_u8(168, 126, 84, 0.18)
+                                },
+                            ) {
+                                rt.DrawRoundedRectangle(&err, b, 0.9 * u, None);
+                            }
+                        }
+                        let dot_col = if is_on {
+                            rgb_u8(104, 232, 148, 0.96)
+                        } else {
+                            rgb_u8(148, 118, 92, 0.42)
+                        };
+                        if let Some(ref dbr) = solid(rt, dot_col) {
+                            rt.FillEllipse(
+                                &D2D1_ELLIPSE {
+                                    point: Vector2 {
+                                        X: (ex0 + 9.5) * u,
+                                        Y: ((ey0 + ey1) * 0.5) * u,
+                                    },
+                                    radiusX: 2.8 * u,
+                                    radiusY: 2.8 * u,
+                                },
+                                dbr,
+                            );
+                        }
+                        draw_txt(
+                            rt,
+                            el_lbl,
+                            &r.tf_badge,
+                            rect_f(ex0 + 15.0, ey0, ex1 - 4.0, ey1, u),
+                            if is_on { &r.cream } else { &r.muted_txt },
                         );
                     }
 
@@ -11380,12 +11725,12 @@ impl SettingsController {
                         Some(th) => format!("Widget Palette: {} (Click to cycle)", th.label()),
                         None => "Widget Palette: Inherit Global Theme (Click to mix)".to_string(),
                     };
-                    let th_rr = rrect(38.0, 536.0, 452.0, 568.0, 8.0, u);
+                    let th_rr = rrect(38.0, 551.0, 452.0, 573.0, 7.0, u);
                     let th_hov = self.hovered == HitZone::TbWidgetCycleTheme;
                     if let Some(ref g) = create_grad(
                         rt,
-                        Vector2 { X: 38.0 * u, Y: 536.0 * u },
-                        Vector2 { X: 452.0 * u, Y: 568.0 * u },
+                        Vector2 { X: 38.0 * u, Y: 551.0 * u },
+                        Vector2 { X: 452.0 * u, Y: 573.0 * u },
                         &if th_hov {
                             [
                                 D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(74, 52, 34, 0.96) },
@@ -11420,12 +11765,12 @@ impl SettingsController {
                         rt.DrawRoundedRectangle(&th_rr, b, 1.0 * u, None);
                     }
                     for (si, &scol) in mix_cols.iter().enumerate() {
-                        let cx = (52.0 + (si as f32) * 14.0) * u;
-                        let cy = 552.0 * u;
+                        let cx = (52.0 + (si as f32) * 13.0) * u;
+                        let cy = 562.0 * u;
                         let ell = D2D1_ELLIPSE {
                             point: Vector2 { X: cx, Y: cy },
-                            radiusX: 5.5 * u,
-                            radiusY: 5.5 * u,
+                            radiusX: 4.8 * u,
+                            radiusY: 4.8 * u,
                         };
                         let sw_col = rgb_u8(scol.0, scol.1, scol.2, 0.95);
                         if let Some(ref sbr) = solid(rt, sw_col) {
@@ -11439,16 +11784,16 @@ impl SettingsController {
                         rt,
                         &th_lbl,
                         &r.tf_badge,
-                        rect_f(106.0, 536.0, 446.0, 568.0, u),
+                        rect_f(102.0, 551.0, 446.0, 573.0, u),
                         if th_ovr.is_some() { &r.sun_gold } else { &r.cream },
                     );
 
-                    let rescan_rr = rrect(460.0, 536.0, 722.0, 568.0, 8.0, u);
+                    let rescan_rr = rrect(460.0, 551.0, 722.0, 573.0, 7.0, u);
                     let rs_hov = self.hovered == HitZone::BtnRescanDockPinned;
                     if let Some(ref g) = create_grad(
                         rt,
-                        Vector2 { X: 460.0 * u, Y: 536.0 * u },
-                        Vector2 { X: 722.0 * u, Y: 568.0 * u },
+                        Vector2 { X: 460.0 * u, Y: 551.0 * u },
+                        Vector2 { X: 722.0 * u, Y: 573.0 * u },
                         &if rs_hov {
                             [
                                 D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(74, 52, 34, 0.96) },
@@ -11479,10 +11824,10 @@ impl SettingsController {
                         rt,
                         "↻  Rescan Pinned Apps",
                         &r.tf_badge,
-                        rect_f(470.0, 536.0, 672.0, 568.0, u),
+                        rect_f(470.0, 551.0, 672.0, 573.0, u),
                         &r.cream,
                     );
-                    let cnt_rr = rrect(676.0, 542.0, 712.0, 562.0, 6.0, u);
+                    let cnt_rr = rrect(676.0, 554.0, 712.0, 570.0, 5.0, u);
                     if let Some(ref cbg) = solid(rt, rgb_u8(245, 166, 62, 0.20)) {
                         rt.FillRoundedRectangle(&cnt_rr, cbg);
                     }
@@ -11498,51 +11843,54 @@ impl SettingsController {
                     );
                 } else {
                 let mode_cards = [
-                    (TaskbarMode::SmartMaximize, 26.0f32, 138.0f32, "Smart Auto-Hide", "Visible on desktop; hides when maximized"),
-                    (TaskbarMode::HoverReveal, 388.0, 138.0, "Edge Hover Reveal", "Hidden until cursor hits edge"),
-                    (TaskbarMode::StealthHide, 26.0, 196.0, "Full Stealth Hide", "Completely hidden; toggle via Ctrl + Alt + T"),
-                    (TaskbarMode::AlwaysVisible, 388.0, 196.0, "Always Visible", "Keep taskbar docked with custom crystal look"),
+                    (TaskbarMode::SmartMaximize, "Smart Auto-Hide", "Hides on maximized app"),
+                    (TaskbarMode::HoverReveal, "Edge Hover Reveal", "Shows on screen edge"),
+                    (TaskbarMode::StealthHide, "Full Stealth Hide", "Hidden • Ctrl+Alt+T"),
+                    (TaskbarMode::AlwaysVisible, "Always Visible", "Permanent glass bar"),
                 ];
-                for (mode, x0, y0, title, desc) in mode_cards {
-                    let x1 = x0 + 346.0;
-                    let y1 = y0 + 52.0;
+                for (i, (mode, title, desc)) in mode_cards.into_iter().enumerate() {
+                    let x0 = 26.0 + (i as f32) * 179.0;
+                    let c_rr = rrect(x0, 138.0, x0 + 171.0, 188.0, 10.0, u);
                     let active = cfg.mode == mode;
                     let hov = self.hovered == HitZone::ModeCard(mode);
-                    let c_rr = rrect(x0, y0, x1, y1, 11.0, u);
-                    let fill = if active { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg };
-                    rt.FillRoundedRectangle(&c_rr, fill);
-                    rt.DrawRoundedRectangle(&c_rr, if active { &r.sun_gold } else { &r.card_border }, if active { 1.4 * u } else { 1.0 * u }, None);
-
-                    let rcx = (x1 - 20.0) * u;
-                    let rcy = (y0 + 18.0) * u;
-                    if active {
-                        rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: rcx, Y: rcy }, radiusX: 6.5 * u, radiusY: 6.5 * u }, &r.sun_gold);
-                        rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: rcx, Y: rcy }, radiusX: 2.5 * u, radiusY: 2.5 * u }, &r.dark_ink);
-                    } else {
-                        rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: rcx, Y: rcy }, radiusX: 6.2 * u, radiusY: 6.2 * u }, &r.muted_txt, 1.2 * u, None);
-                    }
-
-                    let ib = rrect(x0 + 12.0, y0 + 12.0, x0 + 36.0, y0 + 36.0, 6.0, u);
-                    rt.FillRoundedRectangle(&ib, if active { &r.amber_dim } else { &r.card_hover });
-                    let ico_br = if active { &r.sun_gold } else { &r.warm_sub };
-                    rt.DrawRoundedRectangle(&rrect(x0 + 16.0, y0 + 16.0, x0 + 32.0, y0 + 32.0, 3.0, u), ico_br, 1.2 * u, None);
-
-                    draw_txt(rt, title, &r.tf_title, rect_f(x0 + 44.0, y0 + 4.0, x1 - 34.0, y0 + 25.0, u), &r.cream);
-                    draw_txt(rt, desc, &r.tf_sub, rect_f(x0 + 44.0, y0 + 25.0, x1 - 12.0, y0 + 48.0, u), &r.warm_sub);
+                    rt.FillRoundedRectangle(
+                        &c_rr,
+                        if active { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg },
+                    );
+                    rt.DrawRoundedRectangle(
+                        &c_rr,
+                        if active { &r.sun_gold } else { &r.card_border },
+                        if active { 1.3 * u } else { 1.0 * u },
+                        None,
+                    );
+                    draw_txt(
+                        rt,
+                        title,
+                        &r.tf_title,
+                        rect_f(x0 + 10.0, 144.0, x0 + 161.0, 164.0, u),
+                        if active { &r.sun_gold } else { &r.cream },
+                    );
+                    draw_txt(
+                        rt,
+                        desc,
+                        &r.tf_sub,
+                        rect_f(x0 + 10.0, 165.0, x0 + 161.0, 183.0, u),
+                        &r.warm_sub,
+                    );
                 }
 
-                // Style & Live Visualizer Panel (256..484)
-                let studio_rr = rrect(26.0, 256.0, 734.0, 484.0, 12.0, u);
+                // Style & Live Visualizer Panel (196..484)
+                let studio_rr = rrect(26.0, 196.0, 734.0, 484.0, 12.0, u);
                 rt.FillRoundedRectangle(&studio_rr, &r.card_bg);
                 rt.DrawRoundedRectangle(&studio_rr, &r.card_border, 1.0 * u, None);
 
-                draw_txt(rt, "Capsule Shape", &r.tf_title, rect_f(44.0, 260.0, 214.0, 288.0, u), &r.cream);
+                draw_txt(rt, "Capsule Shape", &r.tf_title, rect_f(44.0, 202.0, 214.0, 228.0, u), &r.cream);
                 for (i, p) in [PillMode::SplitPills, PillMode::UnifiedPill, PillMode::FullBar, PillMode::NativeDefault].into_iter().enumerate() {
                     let sx0 = 224.0 + (i as f32) * 124.0;
                     let sx1 = sx0 + 114.0;
                     let active = cfg.pill_mode == p;
                     let hov = self.hovered == HitZone::PillBtn(p);
-                    let p_rr = rrect(sx0, 260.0, sx1, 288.0, 8.0, u);
+                    let p_rr = rrect(sx0, 202.0, sx1, 228.0, 7.0, u);
                     if active {
                         rt.FillRoundedRectangle(&p_rr, &r.sun_gold);
                         draw_txt(rt, p.label(), &r.tf_btn, p_rr.rect, &r.dark_ink);
@@ -11553,13 +11901,13 @@ impl SettingsController {
                     }
                 }
 
-                draw_txt(rt, "Taskbar Glass Style", &r.tf_title, rect_f(44.0, 294.0, 214.0, 322.0, u), &r.cream);
+                draw_txt(rt, "Taskbar Glass Style", &r.tf_title, rect_f(44.0, 233.0, 214.0, 259.0, u), &r.cream);
                 for (i, s) in [SurfaceMode::ClearTint, SurfaceMode::Acrylic, SurfaceMode::Blur, SurfaceMode::SystemDefault].into_iter().enumerate() {
                     let sx0 = 224.0 + (i as f32) * 124.0;
                     let sx1 = sx0 + 114.0;
                     let active = cfg.surface_mode == s;
                     let hov = self.hovered == HitZone::SurfaceBtn(s);
-                    let p_rr = rrect(sx0, 294.0, sx1, 322.0, 8.0, u);
+                    let p_rr = rrect(sx0, 233.0, sx1, 259.0, 7.0, u);
                     if active {
                         rt.FillRoundedRectangle(&p_rr, &r.sun_gold);
                         draw_txt(rt, s.label(), &r.tf_btn, p_rr.rect, &r.dark_ink);
@@ -11580,7 +11928,7 @@ impl SettingsController {
                     44.0,
                     232.0,
                     640.0,
-                    337.0,
+                    275.0,
                     pct,
                     &pct_label,
                     self.dragging_slider == Some(SliderKind::TaskbarOpacity)
@@ -11588,15 +11936,15 @@ impl SettingsController {
                 );
 
                 rt.DrawLine(
-                    Vector2 { X: 44.0 * u, Y: 351.0 * u },
-                    Vector2 { X: 716.0 * u, Y: 351.0 * u },
+                    Vector2 { X: 44.0 * u, Y: 290.0 * u },
+                    Vector2 { X: 716.0 * u, Y: 290.0 * u },
                     &r.card_border,
                     1.0 * u,
                     None,
                 );
 
-                draw_txt(rt, "Live Taskbar FX", &r.tf_title, rect_f(44.0, 355.0, 170.0, 381.0, u), &r.sun_gold);
-                let fxp_rr = rrect(44.0, 383.0, 166.0, 407.0, 6.0, u);
+                draw_txt(rt, "Live Taskbar FX", &r.tf_title, rect_f(44.0, 294.0, 170.0, 320.0, u), &r.sun_gold);
+                let fxp_rr = rrect(44.0, 322.0, 166.0, 346.0, 6.0, u);
                 let fxp_hov = self.hovered == HitZone::ToggleTbFxPage;
                 rt.FillRoundedRectangle(&fxp_rr, if fxp_hov { &r.card_active } else { &r.amber_dim });
                 rt.DrawRoundedRectangle(&fxp_rr, if fxp_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
@@ -11612,7 +11960,7 @@ impl SettingsController {
                     let row = i / 6;
                     let sx0 = 176.0 + (col as f32) * 91.0;
                     let sx1 = sx0 + 86.0;
-                    let sy0 = 356.0 + (row as f32) * 27.0;
+                    let sy0 = 295.0 + (row as f32) * 27.0;
                     let sy1 = sy0 + 24.0;
                     let act = cfg.tb_viz_style == vs;
                     let hov = self.hovered == HitZone::TbVizStyleBtn(vs);
@@ -11626,6 +11974,173 @@ impl SettingsController {
                         draw_txt(rt, vs.label(), &r.tf_badge, rr.rect, &r.cream);
                     }
                 }
+
+                // Visualizer Color Customization strip (355..408)
+                rt.DrawLine(
+                    Vector2 { X: 44.0 * u, Y: 350.0 * u },
+                    Vector2 { X: 716.0 * u, Y: 350.0 * u },
+                    &r.card_border,
+                    1.0 * u,
+                    None,
+                );
+                draw_txt(rt, "Viz Color", &r.tf_toggle, rect_f(44.0, 355.0, 108.0, 381.0, u), &r.cream);
+                let eff_mode = if cfg.tb_match_wallpaper {
+                    VizColorMode::MatchWallpaper
+                } else {
+                    cfg.tb_viz_color_mode
+                };
+                for (mode, mx0, mx1) in [
+                    (VizColorMode::ThemeNative, 110.0f32, 174.0f32),
+                    (VizColorMode::CustomAccent, 179.0, 243.0),
+                    (VizColorMode::MatchWallpaper, 248.0, 324.0),
+                ] {
+                    let act = eff_mode == mode;
+                    let hov = self.hovered == HitZone::SetTbVizColorMode(mode);
+                    let rr = rrect(mx0, 355.0, mx1, 381.0, 6.0, u);
+                    if act {
+                        rt.FillRoundedRectangle(&rr, &r.sun_gold);
+                        draw_txt(rt, mode.label(), &r.tf_badge, rr.rect, &r.dark_ink);
+                    } else {
+                        rt.FillRoundedRectangle(&rr, if hov { &r.card_active } else { &r.card_hover });
+                        rt.DrawRoundedRectangle(&rr, if hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                        draw_txt(rt, mode.label(), &r.tf_badge, rr.rect, &r.cream);
+                    }
+                }
+                for (idx, &(sw_rgb, _)) in VizColorMode::SWATCHES.iter().enumerate() {
+                    let cx = 346.0 + (idx as f32) * 30.0;
+                    let cy = 368.0;
+                    let sel = eff_mode == VizColorMode::CustomAccent
+                        && (cfg.tb_viz_accent_rgb & 0x00FF_FFFF) == sw_rgb;
+                    let hov = self.hovered == HitZone::SetTbVizSwatch(idx);
+                    let (sr, sg, sb) = u32_to_rgb(sw_rgb);
+                    if let Some(ref sw_br) = solid(rt, rgb_u8(sr, sg, sb, 1.0)) {
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 { X: cx * u, Y: cy * u },
+                                radiusX: (if sel || hov { 9.8 } else { 8.6 }) * u,
+                                radiusY: (if sel || hov { 9.8 } else { 8.6 }) * u,
+                            },
+                            sw_br,
+                        );
+                    }
+                    if sel || hov {
+                        rt.DrawEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 { X: cx * u, Y: cy * u },
+                                radiusX: 11.4 * u,
+                                radiusY: 11.4 * u,
+                            },
+                            if sel { &r.cream } else { &r.sun_gold },
+                            1.4 * u,
+                            None,
+                        );
+                    }
+                }
+
+                // Live Visualizer Color Status Chip (578..720, 355..381)
+                let chip_rr = rrect(578.0, 355.0, 720.0, 381.0, 6.0, u);
+                rt.FillRoundedRectangle(&chip_rr, &r.card_active);
+                rt.DrawRoundedRectangle(&chip_rr, &r.card_border, 1.0 * u, None);
+                let live_pal = crate::taskbar_styler::effective_taskbar_palette(cfg);
+                let vu_tri = crate::taskbar_styler::is_vu_tricolor_active(cfg);
+                if vu_tri {
+                    for (ci, (cr, cg, cb)) in [(36u8, 226u8, 102u8), (255, 214, 52), (255, 58, 66)]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if let Some(ref db) = solid(rt, rgb_u8(cr, cg, cb, 1.0)) {
+                            rt.FillEllipse(
+                                &D2D1_ELLIPSE {
+                                    point: Vector2 {
+                                        X: (588.0 + ci as f32 * 7.5) * u,
+                                        Y: 368.0 * u,
+                                    },
+                                    radiusX: 3.1 * u,
+                                    radiusY: 3.1 * u,
+                                },
+                                db,
+                            );
+                        }
+                    }
+                    draw_txt(rt, "Tri-Color LED", &r.tf_badge, rect_f(610.0, 355.0, 718.0, 381.0, u), &r.cream);
+                } else {
+                    if let Some(ref db) = solid(rt, rgb_u8(live_pal.accent.0, live_pal.accent.1, live_pal.accent.2, 1.0)) {
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 { X: 591.0 * u, Y: 368.0 * u },
+                                radiusX: 5.0 * u,
+                                radiusY: 5.0 * u,
+                            },
+                            db,
+                        );
+                    }
+                    let chip_txt = match eff_mode {
+                        VizColorMode::CustomAccent => format!("#{:06X}", cfg.tb_viz_accent_rgb & 0x00FF_FFFF),
+                        VizColorMode::MatchWallpaper => "Wallpaper".to_string(),
+                        VizColorMode::ThemeNative => "Theme Native".to_string(),
+                    };
+                    draw_txt(rt, &chip_txt, &r.tf_badge, rect_f(602.0, 355.0, 718.0, 381.0, u), &r.cream);
+                }
+
+                // Rainbow Custom Hue Slider (44..720, 385..407)
+                let (cur_hue, _, _) = rgb_to_hsl(if eff_mode == VizColorMode::CustomAccent {
+                    u32_to_rgb(cfg.tb_viz_accent_rgb)
+                } else {
+                    live_pal.accent
+                });
+                let t_hue = (cur_hue / 360.0).clamp(0.0, 1.0);
+                draw_txt(rt, "Custom Hue", &r.tf_sub, rect_f(44.0, 385.0, 146.0, 407.0, u), &r.warm_sub);
+                let hue_tr = rrect(154.0, 392.5, 628.0, 399.5, 3.5, u);
+                let hue_stops = [
+                    D2D1_GRADIENT_STOP { position: 0.00, color: rgb_u8(255, 58, 74, 0.95) },
+                    D2D1_GRADIENT_STOP { position: 0.17, color: rgb_u8(255, 198, 48, 0.95) },
+                    D2D1_GRADIENT_STOP { position: 0.33, color: rgb_u8(78, 240, 96, 0.95) },
+                    D2D1_GRADIENT_STOP { position: 0.50, color: rgb_u8(0, 232, 255, 0.95) },
+                    D2D1_GRADIENT_STOP { position: 0.67, color: rgb_u8(116, 122, 255, 0.95) },
+                    D2D1_GRADIENT_STOP { position: 0.83, color: rgb_u8(255, 56, 178, 0.95) },
+                    D2D1_GRADIENT_STOP { position: 1.00, color: rgb_u8(255, 58, 74, 0.95) },
+                ];
+                if let Some(ref hg) = create_grad(
+                    rt,
+                    Vector2 { X: 154.0 * u, Y: 396.0 * u },
+                    Vector2 { X: 628.0 * u, Y: 396.0 * u },
+                    &hue_stops,
+                ) {
+                    rt.FillRoundedRectangle(&hue_tr, hg);
+                } else {
+                    rt.FillRoundedRectangle(&hue_tr, &r.card_hover);
+                }
+                let hue_act = self.dragging_slider == Some(SliderKind::TbVizHue)
+                    || self.hovered == HitZone::Slider(SliderKind::TbVizHue);
+                let hx = 154.0 + t_hue * (628.0 - 154.0);
+                let thumb_rgb = hsl_to_rgb(cur_hue, 0.92, 0.58);
+                if let Some(ref th_br) = solid(rt, rgb_u8(thumb_rgb.0, thumb_rgb.1, thumb_rgb.2, 1.0)) {
+                    rt.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: Vector2 { X: hx * u, Y: 396.0 * u },
+                            radiusX: (if hue_act { 7.5 } else { 6.2 }) * u,
+                            radiusY: (if hue_act { 7.5 } else { 6.2 }) * u,
+                        },
+                        th_br,
+                    );
+                }
+                rt.DrawEllipse(
+                    &D2D1_ELLIPSE {
+                        point: Vector2 { X: hx * u, Y: 396.0 * u },
+                        radiusX: (if hue_act { 7.5 } else { 6.2 }) * u,
+                        radiusY: (if hue_act { 7.5 } else { 6.2 }) * u,
+                    },
+                    &r.cream,
+                    1.4 * u,
+                    None,
+                );
+                draw_txt(
+                    rt,
+                    &format!("{}°", cur_hue.round() as i32),
+                    &r.tf_right,
+                    rect_f(634.0, 385.0, 720.0, 407.0, u),
+                    if eff_mode == VizColorMode::CustomAccent { &r.sun_gold } else { &r.warm_sub },
+                );
 
                 let t_viz = ((cfg.tb_viz_opacity as f32 - 20.0) / 80.0).clamp(0.0, 1.0);
                 draw_compact_slider(
@@ -11797,7 +12312,7 @@ impl SettingsController {
                 );
                 draw_txt(
                     rt,
-                    "App Settings, Startup & Backup",
+                    "App Settings & Startup",
                     &r.tf_title,
                     rect_f(404.0, 536.0, 676.0, 574.0, u),
                     if set_hov { &r.sun_gold } else { &r.cream },
@@ -11843,9 +12358,20 @@ impl SettingsController {
 
                 let btn1_rr = rrect(364.0, 584.0, 556.0, 622.0, 9.0, u);
                 rt.FillRoundedRectangle(&btn1_rr, &r.sun_gold);
+                let toggle_lbl = if cfg.mac_dock_enabled {
+                    if cfg.mac_dock_hide == MacDockHideMode::StealthHide {
+                        "Show Dock Now"
+                    } else {
+                        "Hide Dock Now"
+                    }
+                } else if self.taskbar_hidden {
+                    "Show Taskbar Now"
+                } else {
+                    "Hide Taskbar Now"
+                };
                 draw_txt(
                     rt,
-                    if self.taskbar_hidden { "Show Taskbar Now" } else { "Hide Taskbar Now" },
+                    toggle_lbl,
                     &r.tf_btn,
                     btn1_rr.rect,
                     &r.dark_ink,
@@ -17319,12 +17845,12 @@ impl SettingsController {
         cfg: &AppConfig,
         u: f32,
     ) {
-        // Panel 1: Startup & System Behavior (26..734, 100..274)
-        let p1 = rrect(26.0, 100.0, 734.0, 274.0, 12.0, u);
+        // Panel 1: Startup, Performance & System Behavior (26..734, 100..308)
+        let p1 = rrect(26.0, 100.0, 734.0, 308.0, 12.0, u);
         if let Some(ref g) = create_grad(
             rt,
             Vector2 { X: 26.0 * u, Y: 100.0 * u },
-            Vector2 { X: 734.0 * u, Y: 274.0 * u },
+            Vector2 { X: 734.0 * u, Y: 308.0 * u },
             &[
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(44, 31, 20, 0.96) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(22, 16, 11, 0.99) },
@@ -17340,7 +17866,7 @@ impl SettingsController {
             rt,
             "STARTUP & SYSTEM BEHAVIOR",
             &r.tf_sec,
-            rect_f(40.0, 107.0, 420.0, 126.0, u),
+            rect_f(40.0, 106.0, 420.0, 126.0, u),
             &r.sun_gold,
         );
         draw_txt(
@@ -17351,8 +17877,8 @@ impl SettingsController {
             &r.warm_sub,
         );
 
-        // Featured Row: Launch at Windows Login (38..722, 132..174)
-        let st_rr = rrect(38.0, 132.0, 722.0, 174.0, 9.0, u);
+        // Featured Row: Launch at Windows Login (38..722, 132..176)
+        let st_rr = rrect(38.0, 132.0, 722.0, 176.0, 9.0, u);
         let st_hov = self.hovered == HitZone::ToggleStartup;
         rt.FillRoundedRectangle(
             &st_rr,
@@ -17368,73 +17894,122 @@ impl SettingsController {
             rt,
             "Launch AutumnDeck at Windows Login",
             &r.tf_title,
-            rect_f(52.0, 134.0, 646.0, 155.0, u),
+            rect_f(52.0, 135.0, 646.0, 155.0, u),
             &r.cream,
         );
         draw_txt(
             rt,
             "Registers a fast logon task so your taskbar, widgets & wallpaper load smoothly after Explorer settles.",
             &r.tf_sub,
-            rect_f(52.0, 153.0, 646.0, 172.0, u),
+            rect_f(52.0, 154.0, 646.0, 172.0, u),
             &r.warm_sub,
         );
-        draw_switch_r(rt, r, 666.0, 141.0, u, self.startup_on);
+        draw_switch_r(rt, r, 666.0, 142.0, u, self.startup_on);
 
-        draw_inline_toggle(
+        draw_compact_toggle(
             rt,
             r,
             u,
             38.0,
-            182.0,
-            372.0,
+            184.0,
+            260.0,
             220.0,
-            "Fullscreen Game Safe Mode",
+            "Game Safe Mode",
             cfg.game_mode_pause,
             self.hovered == HitZone::ToggleGameModePause,
         );
-        draw_inline_toggle(
+        draw_compact_toggle(
             rt,
             r,
             u,
-            388.0,
-            182.0,
-            722.0,
+            269.0,
+            184.0,
+            491.0,
             220.0,
-            "Eco Visualizer (24 FPS)",
-            cfg.viz_eco_fps,
-            self.hovered == HitZone::ToggleVizEcoFps,
-        );
-        draw_inline_toggle(
-            rt,
-            r,
-            u,
-            38.0,
-            228.0,
-            372.0,
-            266.0,
-            "Lock Desktop Widget Positions",
+            "Lock Widget Positions",
             cfg.widgets_locked,
             self.hovered == HitZone::ToggleWidgetsLock,
         );
-        draw_inline_toggle(
+        draw_compact_toggle(
             rt,
             r,
             u,
-            388.0,
-            228.0,
+            500.0,
+            184.0,
             722.0,
-            266.0,
-            "24-Hour Clock Format",
-            cfg.widgets_24h,
+            220.0,
+            "24-Hour Clock",
+            cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h),
             self.hovered == HitZone::ToggleWidgets24h,
         );
 
-        // Panel 2: Backup, Export & Import Setup (26..734, 284..446)
-        let p2 = rrect(26.0, 284.0, 734.0, 446.0, 12.0, u);
+        // Animation FPS Preset Strip (Widgets & Taskbar) (38..722, 228..296)
+        let fps_box = rrect(38.0, 228.0, 722.0, 296.0, 9.0, u);
+        rt.FillRoundedRectangle(&fps_box, &r.card_bg);
+        rt.DrawRoundedRectangle(&fps_box, &r.card_border, 1.0 * u, None);
+        draw_txt(
+            rt,
+            "Animation FPS (Widgets & Taskbar)",
+            &r.tf_toggle,
+            rect_f(48.0, 233.0, 430.0, 251.0, u),
+            &r.cream,
+        );
+        draw_txt(
+            rt,
+            &format!("Active: {} FPS ({} ms)", cfg.anim_fps, cfg.anim_frame_ms()),
+            &r.tf_right,
+            rect_f(430.0, 233.0, 712.0, 251.0, u),
+            &r.sun_gold,
+        );
+        let high_hz_lbl = if cfg.anim_fps == 90 {
+            "90 High-Hz"
+        } else if cfg.anim_fps == 120 {
+            "120 High-Hz"
+        } else {
+            "90/120 High-Hz"
+        };
+        let fps_presets: [(usize, &str, bool); 5] = [
+            (0, "24 Eco", cfg.anim_fps <= 24),
+            (1, "30 Standard", (25..=37).contains(&cfg.anim_fps)),
+            (2, "45 Default", (38..=52).contains(&cfg.anim_fps)),
+            (3, "60 Smooth", (53..=75).contains(&cfg.anim_fps)),
+            (4, high_hz_lbl, cfg.anim_fps >= 76),
+        ];
+        for (idx, lbl, active) in fps_presets {
+            let (bx0, by0, bx1, by1) = anim_fps_preset_rect(idx);
+            let rr = rrect(bx0, by0, bx1, by1, 7.0, u);
+            let hov = self.hovered == HitZone::SetAnimFpsPreset(idx as u8);
+            rt.FillRoundedRectangle(
+                &rr,
+                if active {
+                    &r.sun_gold
+                } else if hov {
+                    &r.card_hover
+                } else {
+                    &r.card_active
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &rr,
+                if active || hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            draw_txt(
+                rt,
+                lbl,
+                &r.tf_badge,
+                rr.rect,
+                if active { &r.dark_ink } else { &r.cream },
+            );
+        }
+
+        // Panel 2: Tools, Diagnostics & About (26..734, 320..570)
+        let p2 = rrect(26.0, 320.0, 734.0, 570.0, 12.0, u);
         if let Some(ref g) = create_grad(
             rt,
-            Vector2 { X: 26.0 * u, Y: 284.0 * u },
-            Vector2 { X: 734.0 * u, Y: 446.0 * u },
+            Vector2 { X: 26.0 * u, Y: 320.0 * u },
+            Vector2 { X: 734.0 * u, Y: 570.0 * u },
             &[
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(40, 28, 18, 0.95) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(22, 16, 11, 0.99) },
@@ -17445,101 +18020,19 @@ impl SettingsController {
             rt.FillRoundedRectangle(&p2, &r.card_bg);
         }
         rt.DrawRoundedRectangle(&p2, &r.card_border, 1.0 * u, None);
-
-        draw_txt(
-            rt,
-            "BACKUP, EXPORT & IMPORT SETUP",
-            &r.tf_sec,
-            rect_f(40.0, 291.0, 420.0, 310.0, u),
-            &r.sun_gold,
-        );
-        draw_txt(
-            rt,
-            "Save or load your full desktop theme, dock, widgets & custom layout as a portable .autumn file.",
-            &r.tf_sub,
-            rect_f(40.0, 310.0, 720.0, 332.0, u),
-            &r.warm_sub,
-        );
-
-        let setup_cards = [
-            (
-                38.0f32,
-                258.0f32,
-                HitZone::BtnExportSetup,
-                "Export Setup…",
-                "Save .autumn backup",
-                true,
-            ),
-            (
-                268.0,
-                490.0,
-                HitZone::BtnImportSetup,
-                "Import Setup…",
-                "Load & auto-backup",
-                false,
-            ),
-            (
-                500.0,
-                722.0,
-                HitZone::BtnResetDefaultSuite,
-                "Reset Default Suite",
-                "Restore Sanctuary look",
-                false,
-            ),
-        ];
-        for (x0, x1, hz, title, sub, accent) in setup_cards {
-            let hov = self.hovered == hz;
-            let rr = rrect(x0, 340.0, x1, 392.0, 9.0, u);
-            if accent && hov {
-                rt.FillRoundedRectangle(&rr, &r.sun_gold);
-            } else {
-                rt.FillRoundedRectangle(
-                    &rr,
-                    if hov { &r.card_hover } else if accent { &r.amber_dim } else { &r.card_active },
-                );
-            }
-            rt.DrawRoundedRectangle(
-                &rr,
-                if accent || hov { &r.sun_gold } else { &r.card_border },
-                1.0 * u,
-                None,
-            );
-            let fg_t = if accent && hov {
-                &r.dark_ink
-            } else if accent {
-                &r.sun_gold
-            } else {
-                &r.cream
-            };
-            let fg_s = if accent && hov { &r.dark_ink } else { &r.warm_sub };
-            draw_txt(rt, title, &r.tf_toggle, rect_f(x0 + 14.0, 344.0, x1 - 26.0, 368.0, u), fg_t);
-            draw_txt(rt, sub, &r.tf_sub, rect_f(x0 + 14.0, 366.0, x1 - 12.0, 388.0, u), fg_s);
-            draw_txt(rt, "›", &r.tf_right, rect_f(x1 - 26.0, 344.0, x1 - 12.0, 388.0, u), fg_t);
-        }
-
-        let fb_rr = rrect(38.0, 402.0, 722.0, 434.0, 8.0, u);
-        rt.FillRoundedRectangle(&fb_rr, &r.card_bg);
-        rt.DrawRoundedRectangle(&fb_rr, &r.card_border, 1.0 * u, None);
-        let (fb_txt, fb_br) = match &self.setup_feedback {
-            Some((true, msg)) => (msg.as_str(), &r.sage),
-            Some((false, msg)) => (msg.as_str(), &r.coral),
-            None => (
-                "Config location: %APPDATA%\\AutumnDeck\\config.ini (auto-backed up on import)",
-                &r.warm_sub,
-            ),
-        };
-        draw_txt(rt, fb_txt, &r.tf_sub, rect_f(50.0, 404.0, 712.0, 432.0, u), fb_br);
-
-        // Panel 3: Tools, Diagnostics & About (26..734, 456..570)
-        let p3 = rrect(26.0, 456.0, 734.0, 570.0, 12.0, u);
-        rt.FillRoundedRectangle(&p3, &r.card_bg);
-        rt.DrawRoundedRectangle(&p3, &r.card_border, 1.0 * u, None);
         draw_txt(
             rt,
             "DIAGNOSTICS, TOOLS & ABOUT",
             &r.tf_sec,
-            rect_f(40.0, 463.0, 420.0, 482.0, u),
+            rect_f(40.0, 328.0, 420.0, 348.0, u),
             &r.sun_gold,
+        );
+        draw_txt(
+            rt,
+            "Support utilities & runtime details",
+            &r.tf_right,
+            rect_f(420.0, 328.0, 720.0, 348.0, u),
+            &r.warm_sub,
         );
 
         let ex_saved = self.export_flash_active();
@@ -17549,14 +18042,29 @@ impl SettingsController {
                 258.0f32,
                 HitZone::BtnExportDiagnostics,
                 if ex_saved { "Logs Saved ✓" } else { "Export Support Logs" },
+                "Save diagnostics report",
                 ex_saved,
             ),
-            (268.0, 490.0, HitZone::BtnOpenConfigFolder, "Open Data Folder", false),
-            (500.0, 722.0, HitZone::BtnRunOnboarding, "Run Welcome Wizard", false),
+            (
+                268.0,
+                490.0,
+                HitZone::BtnOpenConfigFolder,
+                "Open Data Folder",
+                "%APPDATA%\\AutumnDeck",
+                false,
+            ),
+            (
+                500.0,
+                722.0,
+                HitZone::BtnRunOnboarding,
+                "Run Welcome Wizard",
+                "Revisit quick setup",
+                false,
+            ),
         ];
-        for (x0, x1, hz, lbl, ok_hi) in tool_btns {
+        for (x0, x1, hz, title, sub, ok_hi) in tool_btns {
             let hov = self.hovered == hz;
-            let rr = rrect(x0, 490.0, x1, 530.0, 8.0, u);
+            let rr = rrect(x0, 356.0, x1, 414.0, 9.0, u);
             rt.FillRoundedRectangle(&rr, if hov { &r.card_hover } else { &r.card_active });
             rt.DrawRoundedRectangle(
                 &rr,
@@ -17572,18 +18080,63 @@ impl SettingsController {
             );
             draw_txt(
                 rt,
-                lbl,
-                &r.tf_btn,
-                rr.rect,
+                title,
+                &r.tf_toggle,
+                rect_f(x0 + 14.0, 362.0, x1 - 24.0, 386.0, u),
                 if ok_hi { &r.sage } else { &r.cream },
             );
+            draw_txt(
+                rt,
+                sub,
+                &r.tf_sub,
+                rect_f(x0 + 14.0, 386.0, x1 - 14.0, 408.0, u),
+                &r.warm_sub,
+            );
+            draw_txt(
+                rt,
+                "›",
+                &r.tf_right,
+                rect_f(x1 - 24.0, 362.0, x1 - 10.0, 408.0, u),
+                if ok_hi { &r.sage } else if hov { &r.sun_gold } else { &r.warm_sub },
+            );
         }
+
+        let fb_rr = rrect(38.0, 426.0, 722.0, 460.0, 8.0, u);
+        rt.FillRoundedRectangle(&fb_rr, &r.card_bg);
+        rt.DrawRoundedRectangle(&fb_rr, &r.card_border, 1.0 * u, None);
+        let (fb_txt, fb_br) = match &self.setup_feedback {
+            Some((true, msg)) => (msg.as_str(), &r.sage),
+            Some((false, msg)) => (msg.as_str(), &r.coral),
+            None => (
+                "Config location: %APPDATA%\\AutumnDeck\\config.ini",
+                &r.warm_sub,
+            ),
+        };
+        draw_txt(rt, fb_txt, &r.tf_sub, rect_f(50.0, 428.0, 712.0, 458.0, u), fb_br);
+
+        let tips_rr = rrect(38.0, 470.0, 722.0, 526.0, 9.0, u);
+        rt.FillRoundedRectangle(&tips_rr, &r.card_bg);
+        rt.DrawRoundedRectangle(&tips_rr, &r.card_border, 1.0 * u, None);
+        draw_txt(
+            rt,
+            "Quick Hotkey  •  Ctrl + Alt + T toggles Full Stealth Hide on Taskbar & Custom Dock",
+            &r.tf_sub,
+            rect_f(50.0, 476.0, 712.0, 498.0, u),
+            &r.cream,
+        );
+        draw_txt(
+            rt,
+            "Right-click any Dock slot or Desktop Widget for quick 12h/24h clock, style & hide toggles",
+            &r.tf_sub,
+            rect_f(50.0, 498.0, 712.0, 520.0, u),
+            &r.warm_sub,
+        );
 
         draw_txt(
             rt,
             "AutumnDeck Studio v2.0.0 • Native Win32 + Direct2D + DirectComposition • Hotkey: Ctrl + Alt + T",
             &r.tf_sub,
-            rect_f(40.0, 538.0, 720.0, 564.0, u),
+            rect_f(40.0, 536.0, 720.0, 562.0, u),
             &r.muted_txt,
         );
 
@@ -18479,6 +19032,13 @@ fn tb_folder_card_rect(i: usize) -> (f32, f32, f32, f32) {
         let y0 = 424.0;
         (x0, y0, x0 + 228.0, y0 + 138.0)
     }
+}
+
+fn anim_fps_preset_rect(idx: usize) -> (f32, f32, f32, f32) {
+    let w = 129.6f32;
+    let gap = 6.0f32;
+    let x0 = 44.0 + (idx as f32) * (w + gap);
+    (x0, 256.0, x0 + w, 288.0)
 }
 
 fn suite_card_rect(slot: usize) -> (f32, f32, f32, f32) {
@@ -21123,7 +21683,8 @@ mod tests {
         sc.ensure_graphics_init();
         assert!(sc.backbuf.ensure_size(760, 640));
         let mut cfg = AppConfig::default();
-        assert!(cfg.viz_eco_fps, "Eco 24 FPS visualizer cap defaults ON");
+        assert_eq!(cfg.anim_fps, 45, "Animation FPS defaults to 45 FPS");
+        assert!(!cfg.viz_eco_fps, "45 FPS default is above 24 FPS Eco");
 
         // 1. Music Customize -> Layout & Elements exposes Eco Visualizer toggle for visualizer-capable styles
         cfg.music_style = MusicStyle::DynamicIslandCapsule;
@@ -21143,8 +21704,9 @@ mod tests {
         );
         let cmd = sc.activate_zone(HitZone::ToggleVizEcoFps, &mut cfg);
         assert!(matches!(cmd, SettingsCommand::WidgetsConfigUpdated));
-        assert!(!cfg.viz_eco_fps);
-        assert!(!sc.draft_cfg.viz_eco_fps);
+        assert!(cfg.viz_eco_fps);
+        assert_eq!(cfg.anim_fps, 24);
+        assert!(sc.draft_cfg.viz_eco_fps);
 
         // CassetteDeck has no spectrum visualizer so Eco Visualizer toggle stays hidden there
         sc.draft_cfg.music_style = MusicStyle::CassetteDeck;
@@ -21165,8 +21727,9 @@ mod tests {
         );
         let cmd2 = sc.activate_zone(HitZone::ToggleVizEcoFps, &mut cfg);
         assert!(matches!(cmd2, SettingsCommand::WidgetsConfigUpdated));
-        assert!(cfg.viz_eco_fps);
-        assert!(sc.draft_cfg.viz_eco_fps);
+        assert!(!cfg.viz_eco_fps);
+        assert_eq!(cfg.anim_fps, 45);
+        assert!(!sc.draft_cfg.viz_eco_fps);
     }
 
     #[test]
@@ -21254,25 +21817,38 @@ mod tests {
         assert_eq!(sc.prev_non_settings_tab, StudioTab::Wallpaper);
         assert!(sc.render_d2d(&cfg), "Settings tab must render cleanly in Direct2D");
 
-        // 2. Verify all App Settings controls hit-test accurately
-        assert_eq!(sc.hit_test(200.0, 152.0), HitZone::ToggleStartup);
-        assert_eq!(sc.hit_test(200.0, 200.0), HitZone::ToggleGameModePause);
-        assert_eq!(sc.hit_test(520.0, 200.0), HitZone::ToggleVizEcoFps);
-        assert_eq!(sc.hit_test(200.0, 246.0), HitZone::ToggleWidgetsLock);
-        assert_eq!(sc.hit_test(520.0, 246.0), HitZone::ToggleWidgets24h);
-        assert_eq!(sc.hit_test(140.0, 365.0), HitZone::BtnExportSetup);
-        assert_eq!(sc.hit_test(380.0, 365.0), HitZone::BtnImportSetup);
-        assert_eq!(sc.hit_test(600.0, 365.0), HitZone::BtnResetDefaultSuite);
-        assert_eq!(sc.hit_test(140.0, 510.0), HitZone::BtnExportDiagnostics);
-        assert_eq!(sc.hit_test(380.0, 510.0), HitZone::BtnOpenConfigFolder);
-        assert_eq!(sc.hit_test(600.0, 510.0), HitZone::BtnRunOnboarding);
+        // 2. Verify all App Settings controls hit-test accurately (Backup/Export/Import removed)
+        assert_eq!(sc.hit_test(200.0, 154.0), HitZone::ToggleStartup);
+        assert_eq!(sc.hit_test(150.0, 202.0), HitZone::ToggleGameModePause);
+        assert_eq!(sc.hit_test(380.0, 202.0), HitZone::ToggleWidgetsLock);
+        assert_eq!(sc.hit_test(610.0, 202.0), HitZone::ToggleWidgets24h);
+        for (idx, expected_fps) in [(0u8, 24u32), (1, 30), (2, 45), (3, 60), (4, 90)] {
+            let (bx0, by0, bx1, by1) = anim_fps_preset_rect(idx as usize);
+            assert_eq!(
+                sc.hit_test((bx0 + bx1) * 0.5, (by0 + by1) * 0.5),
+                HitZone::SetAnimFpsPreset(idx)
+            );
+            let cf = sc.activate_zone(HitZone::SetAnimFpsPreset(idx), &mut cfg);
+            assert!(matches!(cf, SettingsCommand::WidgetsConfigUpdated));
+            assert_eq!(cfg.anim_fps, expected_fps);
+        }
+        // Clicking High-Hz preset again toggles 90 -> 120 -> 90
+        let _ = sc.activate_zone(HitZone::SetAnimFpsPreset(4), &mut cfg);
+        assert_eq!(cfg.anim_fps, 120);
+        let _ = sc.activate_zone(HitZone::SetAnimFpsPreset(2), &mut cfg);
+        assert_eq!(cfg.anim_fps, 45);
+        assert_eq!(sc.hit_test(140.0, 385.0), HitZone::BtnExportDiagnostics);
+        assert_eq!(sc.hit_test(380.0, 385.0), HitZone::BtnOpenConfigFolder);
+        assert_eq!(sc.hit_test(600.0, 385.0), HitZone::BtnRunOnboarding);
+        assert_eq!(sc.hit_test(140.0, 445.0), HitZone::None);
         assert_eq!(sc.hit_test(100.0, 603.0), HitZone::BtnSettingsBack);
         assert_eq!(sc.hit_test(640.0, 603.0), HitZone::BtnQuitApp);
 
-        // 3. Toggles update cfg cleanly
+        // 3. Toggles update cfg cleanly and sync 24h clock format across widgets & dock
         let c24 = sc.activate_zone(HitZone::ToggleWidgets24h, &mut cfg);
         assert!(matches!(c24, SettingsCommand::WidgetsConfigUpdated));
         assert!(cfg.widgets_24h);
+        assert_eq!(cfg.w_clock.use_24h, Some(true));
         let cgm = sc.activate_zone(HitZone::ToggleGameModePause, &mut cfg);
         assert!(matches!(cgm, SettingsCommand::GameModeUpdated));
         assert!(!cfg.game_mode_pause);
@@ -21285,6 +21861,26 @@ mod tests {
         cfg.tb_theme = TaskbarTheme::AutumnCrystal;
         assert_eq!(sc.hit_test(520.0, 555.0), HitZone::TabSettings);
         assert!(sc.render_d2d(&cfg), "Taskbar Customize with Settings quick link must render cleanly");
+
+        // 5. Dock Customize: 4th visibility card (Full Stealth Hide) + Clock tab 12h/24h toggle
+        cfg.tb_theme = TaskbarTheme::RealisticWaterDock;
+        cfg.mac_dock_enabled = true;
+        sc.draft_cfg = cfg.clone();
+        assert_eq!(sc.hit_test(110.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::SmartAutoHide));
+        assert_eq!(sc.hit_test(290.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::HoverReveal));
+        assert_eq!(sc.hit_test(470.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::AlwaysVisible));
+        assert_eq!(sc.hit_test(648.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::StealthHide));
+        let cmd_stealth = sc.activate_zone(HitZone::MacDockHideBtn(MacDockHideMode::StealthHide), &mut cfg);
+        assert!(matches!(cmd_stealth, SettingsCommand::MacDockUpdated));
+        assert_eq!(cfg.mac_dock_hide, MacDockHideMode::StealthHide);
+        assert_eq!(cfg.mode, TaskbarMode::StealthHide);
+        sc.tb_widget_tab = TaskbarWidgetTab::Clock;
+        assert_eq!(sc.hit_test(293.0, 515.0), HitZone::ToggleWidgets24h);
+        let cmd_clk = sc.activate_zone(HitZone::ToggleWidgets24h, &mut cfg);
+        assert!(matches!(cmd_clk, SettingsCommand::WidgetsConfigUpdated));
+        assert!(!cfg.widgets_24h);
+        assert_eq!(cfg.w_clock.use_24h, Some(false));
+        assert!(sc.render_d2d(&cfg), "Dock Customize with Stealth Hide and Clock 24h toggle must render cleanly");
 
         sc.release_idle_resources();
         unsafe {
@@ -21628,8 +22224,8 @@ mod tests {
         cfg.cc_show_dividers = false;
         cfg.ext_widgets[ExtWidgetId::Weather.idx()].show_primary = false;
         let tmp_ini = std::env::temp_dir().join("autumn_bug5_roundtrip.autumn");
-        export_setup_to_path(&cfg, &tmp_ini).expect("export setup");
-        let parsed = import_setup_from_path(&tmp_ini, &AppConfig::default()).expect("import setup");
+        crate::config::export_setup_to_path(&cfg, &tmp_ini).expect("export setup");
+        let parsed = crate::config::import_setup_from_path(&tmp_ini, &AppConfig::default()).expect("import setup");
         let _ = std::fs::remove_file(&tmp_ini);
         assert!(!parsed.dt_show_clock);
         assert!(!parsed.apps_show_tiles);
@@ -21891,6 +22487,419 @@ mod tests {
         }
 
         buf.release();
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn music_themes_gallery_and_viz_color_customizer_d2d_verify() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.win_w = 760;
+        sc.win_h = 640;
+        sc.u = 1.0;
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(760, 640));
+
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::VuPeakStudio);
+        sc.draft_cfg = cfg.clone();
+        sc.active_tab = StudioTab::Taskbar;
+        sc.tb_folder = TaskbarThemeFolder::MusicThemes;
+        sc.taskbar_page = TaskbarPage::Themes;
+        assert!(
+            sc.render_d2d(&cfg),
+            "Music Themes gallery with 6 curated palettes must render cleanly in Direct2D"
+        );
+
+        // Customize page exposes Mode pills, 8 color swatches, and continuous Hue slider
+        sc.taskbar_page = TaskbarPage::Customize;
+        assert_eq!(
+            sc.hit_test(140.0, 368.0),
+            HitZone::SetTbVizColorMode(VizColorMode::ThemeNative)
+        );
+        assert_eq!(
+            sc.hit_test(210.0, 368.0),
+            HitZone::SetTbVizColorMode(VizColorMode::CustomAccent)
+        );
+        assert_eq!(
+            sc.hit_test(286.0, 368.0),
+            HitZone::SetTbVizColorMode(VizColorMode::MatchWallpaper)
+        );
+        assert_eq!(sc.hit_test(346.0, 368.0), HitZone::SetTbVizSwatch(0));
+        assert_eq!(sc.hit_test(376.0, 368.0), HitZone::SetTbVizSwatch(1));
+        assert_eq!(sc.hit_test(300.0, 396.0), HitZone::Slider(SliderKind::TbVizHue));
+
+        // Clicking swatch #1 (Synth Magenta) switches to CustomAccent and sets exact RGB
+        let cmd_sw = sc.activate_zone(HitZone::SetTbVizSwatch(1), &mut cfg);
+        assert!(matches!(cmd_sw, SettingsCommand::StyleUpdated));
+        assert_eq!(cfg.tb_viz_color_mode, VizColorMode::CustomAccent);
+        assert_eq!(cfg.tb_viz_accent_rgb, VizColorMode::SWATCHES[1].0);
+        assert!(!cfg.tb_match_wallpaper);
+        assert!(sc.render_d2d(&cfg), "Customize page with custom visualizer swatch must render cleanly");
+
+        // Dragging Hue slider updates accent RGB live
+        let cmd_hue = sc.update_slider_from_x(SliderKind::TbVizHue, 391.0, &mut cfg);
+        assert!(matches!(cmd_hue, Some(SettingsCommand::StylePreview)));
+        assert_eq!(cfg.tb_viz_color_mode, VizColorMode::CustomAccent);
+        assert_ne!(cfg.tb_viz_accent_rgb, VizColorMode::SWATCHES[1].0);
+
+        // Switching to MatchWallpaper keeps tb_match_wallpaper synced
+        let cmd_wp = sc.activate_zone(
+            HitZone::SetTbVizColorMode(VizColorMode::MatchWallpaper),
+            &mut cfg,
+        );
+        assert!(matches!(cmd_wp, SettingsCommand::StyleUpdated));
+        assert!(cfg.tb_match_wallpaper);
+
+        // Returning to ThemeNative restores VuPeakStudio's Tri-Color LED mode
+        let _ = sc.activate_zone(
+            HitZone::SetTbVizColorMode(VizColorMode::ThemeNative),
+            &mut cfg,
+        );
+        assert!(!cfg.tb_match_wallpaper);
+        assert!(crate::taskbar_styler::is_vu_tricolor_active(&cfg));
+        assert!(sc.render_d2d(&cfg), "Customize page with VuPeakStudio Tri-Color LED must render cleanly");
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn bug7_taskbar_and_dock_per_element_toggles_and_all_off_zero_pixels() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.win_w = 760;
+        sc.win_h = 640;
+        sc.u = 1.0;
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(760, 640));
+
+        // 1. Verify Dock customization UI element toggles across all 6 tabs
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::RealisticWaterDock);
+        sc.draft_cfg = cfg.clone();
+        sc.active_tab = StudioTab::Taskbar;
+        sc.taskbar_page = TaskbarPage::Customize;
+
+        for tab in TaskbarWidgetTab::ALL {
+            sc.tb_widget_tab = tab;
+            assert!(
+                sc.render_d2d(&cfg),
+                "Dock Customize tab {:?} must render cleanly with per-element pills",
+                tab
+            );
+            let elems = dock_widget_elem_toggles(tab, &sc.draft_cfg);
+            let total = elems.len();
+            assert!(total >= 2, "Tab {:?} must expose at least 2 element toggles", tab);
+            for (idx, &(_, initial_on, k)) in elems.iter().enumerate() {
+                assert!(initial_on, "Element {} on tab {:?} must default to ON", k, tab);
+                let (x0, y0, x1, y1) = dock_widget_elem_pill_rect(idx, total);
+                let cx = (x0 + x1) * 0.5;
+                let cy = (y0 + y1) * 0.5;
+                assert_eq!(
+                    sc.hit_test(cx, cy),
+                    HitZone::TbWidgetElemToggle(k),
+                    "Hit-test failed for element pill {} on tab {:?}",
+                    k,
+                    tab
+                );
+                let cmd = sc.activate_zone(HitZone::TbWidgetElemToggle(k), &mut cfg);
+                assert!(matches!(cmd, SettingsCommand::MacDockUpdated));
+            }
+            let elems_after = dock_widget_elem_toggles(tab, &sc.draft_cfg);
+            for &(_, now_on, k) in &elems_after {
+                assert!(!now_on, "Element {} on tab {:?} must be OFF after toggle", k, tab);
+            }
+        }
+
+        // All 6 dock tabs now have all element toggles OFF -> is_dock_all_elements_off() must be true!
+        assert!(cfg.w_shelf.is_all_elements_off());
+        assert!(cfg.w_apps.is_all_elements_off());
+        assert!(cfg.w_clock.is_all_elements_off());
+        assert!(cfg.w_tray.is_all_elements_off());
+        assert!(cfg.w_hud.is_all_elements_off());
+        assert!(cfg.w_util.is_all_elements_off());
+        assert!(cfg.is_dock_all_elements_off());
+        assert!(!crate::dock_themes::is_ambient_animated_cfg(&cfg));
+
+        // 2. Verify Native Taskbar Customize UI element toggles (Backdrop, Border Rim, Live FX)
+        let mut native_cfg = AppConfig::default();
+        native_cfg.apply_taskbar_theme_preset(TaskbarTheme::LiveMusicBars);
+        sc.draft_cfg = native_cfg.clone();
+        assert!(sc.render_d2d(&native_cfg));
+        for idx in 0..3usize {
+            let (x0, y0, x1, y1) = native_tb_elem_pill_rect(idx);
+            let cx = (x0 + x1) * 0.5;
+            let cy = (y0 + y1) * 0.5;
+            assert_eq!(
+                sc.hit_test(cx, cy),
+                HitZone::ToggleNativeTbElem(idx as u8)
+            );
+            let cmd = sc.activate_zone(HitZone::ToggleNativeTbElem(idx as u8), &mut native_cfg);
+            assert!(matches!(cmd, SettingsCommand::StyleUpdated));
+        }
+        assert!(!native_cfg.tb_show_backdrop);
+        assert!(!native_cfg.tb_show_rim);
+        assert!(!native_cfg.tb_show_fx);
+        assert!(native_cfg.is_native_tb_all_elements_off());
+
+        // 3. Verify INI persistence round-trip for all new Dock & Native Taskbar flags
+        cfg.tb_show_backdrop = false;
+        cfg.tb_show_rim = false;
+        cfg.tb_show_fx = false;
+        let tmp_ini = std::env::temp_dir().join("autumn_bug7_roundtrip.autumn");
+        crate::config::export_setup_to_path(&cfg, &tmp_ini).expect("export setup");
+        let parsed = crate::config::import_setup_from_path(&tmp_ini, &AppConfig::default()).expect("import setup");
+        let _ = std::fs::remove_file(&tmp_ini);
+        assert!(!parsed.tb_show_backdrop);
+        assert!(!parsed.tb_show_rim);
+        assert!(!parsed.tb_show_fx);
+        assert!(parsed.is_native_tb_all_elements_off());
+        assert!(parsed.w_shelf.is_all_elements_off());
+        assert!(parsed.w_apps.is_all_elements_off());
+        assert!(parsed.w_clock.is_all_elements_off());
+        assert!(parsed.w_tray.is_all_elements_off());
+        assert!(parsed.w_hud.is_all_elements_off());
+        assert!(parsed.w_util.is_all_elements_off());
+        assert!(parsed.is_dock_all_elements_off());
+
+        // 4. Direct2D pixel verification: "All OFF = Show Nothing" (0 pixels rendered)
+        let mut buf = DibBuffer::new();
+        assert!(buf.ensure_size(500, 120));
+        let d2d = sc.d2d_factory.as_ref().unwrap().clone();
+        let dc_rt = sc.dc_rt.as_ref().unwrap().clone();
+        let rc = RECT {
+            left: 0,
+            top: 0,
+            right: 500,
+            bottom: 120,
+        };
+        unsafe {
+            let _ = dc_rt.BindDC(buf.mem_dc, &rc);
+        }
+        let brush = unsafe {
+            dc_rt
+                .CreateSolidColorBrush(&D2D1_COLOR_F {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                }, None)
+                .unwrap()
+        };
+
+        let clear_buf = |rt: &ID2D1DCRenderTarget| unsafe {
+            rt.BeginDraw();
+            rt.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }));
+            let _ = rt.EndDraw(None, None);
+        };
+        let count_drawn_pixels = |b: &DibBuffer| -> usize {
+            let total = (b.width * b.height * 4) as usize;
+            let slice = unsafe { std::slice::from_raw_parts(b.bits, total) };
+            slice
+                .chunks_exact(4)
+                .filter(|px| px[0] != 0 || px[1] != 0 || px[2] != 0 || px[3] != 0)
+                .count()
+        };
+
+        let shelf_r = D2D_RECT_F {
+            left: 20.0,
+            top: 20.0,
+            right: 460.0,
+            bottom: 90.0,
+        };
+        let slot_r = D2D_RECT_F {
+            left: 138.0,
+            top: 33.0,
+            right: 182.0,
+            bottom: 77.0,
+        };
+        let pal = crate::theme::ThemePalette::autumn();
+        let tf_body = sc.res.as_ref().map(|r| &r.tf_title);
+        clear_buf(&dc_rt);
+        unsafe {
+            dc_rt.BeginDraw();
+            crate::dock_themes::draw_dock_shelf_and_art_with_ripple(
+                &dc_rt,
+                Some(&d2d),
+                &brush,
+                shelf_r,
+                &cfg,
+                &pal,
+                0.0,
+                1.0,
+                0.5,
+                false,
+                1.0,
+                false,
+                None,
+            );
+            crate::dock_themes::draw_dock_divider_styled(
+                &dc_rt,
+                &brush,
+                120.0,
+                55.0,
+                shelf_r,
+                &cfg,
+                false,
+                1.0,
+            );
+            crate::dock_themes::draw_dock_slot_fx_styled(
+                &dc_rt,
+                Some(&d2d),
+                &brush,
+                slot_r,
+                160.0,
+                55.0,
+                44.0,
+                shelf_r,
+                &cfg,
+                crate::dock_themes::TaskbarWidgetId::AppDock,
+                None,
+                true,
+                true,
+                true,
+                false,
+                false,
+                0.0,
+                0,
+                1.0,
+            );
+            crate::dock_themes::draw_dock_indicator_styled(
+                &dc_rt,
+                &brush,
+                &cfg,
+                None,
+                0,
+                160.0,
+                84.0,
+                slot_r,
+                shelf_r,
+                crate::config::MacDockEdge::Bottom,
+                2,
+                true,
+                1.0,
+            );
+            crate::dock_themes::draw_dock_clock_module(
+                &dc_rt,
+                &brush,
+                tf_body,
+                D2D_RECT_F {
+                    left: 320.0,
+                    top: 30.0,
+                    right: 400.0,
+                    bottom: 80.0,
+                },
+                &cfg,
+                &pal,
+                "14:30",
+                "Mon 23 Nov",
+                14,
+                30,
+                0,
+                0.0,
+                false,
+                1.0,
+            );
+            let _ = dc_rt.EndDraw(None, None);
+        }
+        assert_eq!(
+            count_drawn_pixels(&buf),
+            0,
+            "Dock shelf, divider, slot FX, indicator, and clock module with all element toggles OFF must draw 0 pixels"
+        );
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn suite_gallery_dock_syncs_taskbar_studio_folder_page_and_clears_overrides_on_switch() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.win_w = 760;
+        sc.win_h = 640;
+        sc.u = 1.0;
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(760, 640));
+
+        assert_eq!(
+            TaskbarThemeFolder::InteractiveDocks.label(),
+            "Interactive Docks (20)"
+        );
+        assert_eq!(TaskbarThemeFolder::All.label(), "All Themes (70)");
+
+        // 1. Apply a Suite with Deep-Space Telemetry (StarfieldWarpDock, Page 4/4 of Interactive Docks)
+        let suite_idx = crate::suites::SUITES
+            .iter()
+            .position(|s| s.id == "cosmic_eclipse")
+            .expect("cosmic_eclipse suite");
+        let mut cfg = AppConfig::default();
+        let cmd = sc.activate_zone(HitZone::ApplySuite(suite_idx), &mut cfg);
+        assert!(matches!(cmd, SettingsCommand::SuiteApplied));
+        assert_eq!(cfg.tb_theme, TaskbarTheme::StarfieldWarpDock);
+        assert!(cfg.w_apps.custom_glow_rgb.is_some());
+        assert_eq!(sc.tb_folder, TaskbarThemeFolder::InteractiveDocks);
+        assert_eq!(sc.tb_theme_page, 3, "StarfieldWarpDock is on page 4/4 (index 3)");
+
+        // 2. Switching to Taskbar Studio Folders and opening Interactive Docks auto-jumps to Page 4/4
+        let _ = sc.activate_zone(HitZone::TabTaskbar, &mut cfg);
+        assert_eq!(sc.taskbar_page, TaskbarPage::Folders);
+        assert!(sc.render_d2d(&cfg), "Taskbar Folders must render active Suite dock preview cleanly");
+
+        let _ = sc.activate_zone(
+            HitZone::OpenTaskbarFolder(TaskbarThemeFolder::InteractiveDocks),
+            &mut cfg,
+        );
+        assert_eq!(sc.taskbar_page, TaskbarPage::Themes);
+        assert_eq!(
+            sc.tb_theme_page, 3,
+            "Opening Interactive Docks must auto-jump to the page showing active Deep-Space Telemetry"
+        );
+        assert!(sc.render_d2d(&cfg));
+
+        // 3. Selecting a DIFFERENT Dock theme resets old Suite overrides and updates cleanly
+        let cmd2 = sc.activate_zone(
+            HitZone::SelectTaskbarTheme(TaskbarTheme::CyberpunkHudDock),
+            &mut cfg,
+        );
+        assert!(matches!(cmd2, SettingsCommand::StyleUpdated));
+        assert_eq!(cfg.tb_theme, TaskbarTheme::CyberpunkHudDock);
+        assert_eq!(sc.draft_cfg.tb_theme, TaskbarTheme::CyberpunkHudDock);
+        assert_eq!(cfg.w_apps.custom_glow_rgb, None);
+        assert_eq!(cfg.w_clock.custom_accent_rgb, None);
+        assert_eq!(cfg.w_tray.custom_accent_rgb, None);
+        assert_eq!(cfg.w_apps.card_style, DockSlotCardStyle::InheritTheme);
+        assert_eq!(cfg.w_clock.engine, DockClockEngine::InheritTheme);
+        assert_eq!(sc.tb_theme_page, 0);
+
+        // 4. Clicking the ALREADY-active Dock theme opens Customize without wiping user tweaks
+        cfg.w_clock.show_seconds = true;
+        let _ = sc.activate_zone(
+            HitZone::SelectTaskbarTheme(TaskbarTheme::CyberpunkHudDock),
+            &mut cfg,
+        );
+        assert_eq!(sc.taskbar_page, TaskbarPage::Customize);
+        assert!(cfg.w_clock.show_seconds);
+
         sc.release_idle_resources();
         unsafe {
             CoUninitialize();

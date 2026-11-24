@@ -12,13 +12,16 @@ use windows::Win32::Foundation::{
     SIZE, SYSTEMTIME, WPARAM,
 };
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW,
+    D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap, ID2D1DCRenderTarget, ID2D1Factory, ID2D1SolidColorBrush,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-    D2D1_BITMAP_PROPERTIES, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
+    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_BITMAP_PROPERTIES,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
     D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE, D2D1_ROUNDED_RECT,
+    D2D1_SWEEP_DIRECTION_CLOCKWISE,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
@@ -152,6 +155,7 @@ const IDM_DOCK_EDGE_RIGHT: usize = 4122;
 const IDM_DOCK_HIDE_SMART: usize = 4123;
 const IDM_DOCK_HIDE_HOVER: usize = 4124;
 const IDM_DOCK_HIDE_ALWAYS: usize = 4125;
+const IDM_DOCK_HIDE_STEALTH: usize = 4134;
 const IDM_DOCK_DATETIME: usize = 4127;
 const IDM_DOCK_TRAY_VOL_MIXER: usize = 4128;
 const IDM_DOCK_TRAY_SOUND: usize = 4129;
@@ -1490,9 +1494,13 @@ pub struct MacDockEngine {
     tray_vol_muted: bool,
     tray_wifi_on: bool,
     tray_wifi_name: String,
+    tray_wifi_signal: u8,
     tray_bat_pct: Option<u8>,
     tray_bat_charging: bool,
     tray_bat_saver: bool,
+    tray_snapshot_inited: bool,
+    tray_bat_inited: bool,
+    tray_anim: TrayAnimState,
     vol_osd_until: Option<Instant>,
     wheel_accum: i32,
     wheel_last_at: Option<Instant>,
@@ -1521,21 +1529,246 @@ pub struct MacDockEngine {
     dirty_windows: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TrayAnimState {
+    pub vol_display: f32,
+    pub vol_target: f32,
+    pub vol_pulse_t: f32,
+    pub vol_dir: i8,
+    pub vol_badge_ttl: f32,
+    pub mute_mix: f32,
+    pub audio_vu: [f32; 4],
+
+    pub net_pulse_t: f32,
+    pub net_signal_display: f32,
+    pub net_signal_target: f32,
+    pub net_wave_phase: f32,
+
+    pub bat_display: f32,
+    pub bat_target: f32,
+    pub bat_pulse_t: f32,
+    pub bat_charge_phase: f32,
+}
+
+impl Default for TrayAnimState {
+    fn default() -> Self {
+        Self {
+            vol_display: 0.5,
+            vol_target: 0.5,
+            vol_pulse_t: 1.0,
+            vol_dir: 0,
+            vol_badge_ttl: 0.0,
+            mute_mix: 0.0,
+            audio_vu: [0.0; 4],
+            net_pulse_t: 1.0,
+            net_signal_display: 0.85,
+            net_signal_target: 0.85,
+            net_wave_phase: 0.0,
+            bat_display: 1.0,
+            bat_target: 1.0,
+            bat_pulse_t: 1.0,
+            bat_charge_phase: 0.0,
+        }
+    }
+}
+
+impl TrayAnimState {
+    pub fn seed_volume(&mut self, vol_pct: u8, muted: bool) {
+        let lvl = if muted { 0.0 } else { (vol_pct as f32 / 100.0).clamp(0.0, 1.0) };
+        self.vol_display = lvl;
+        self.vol_target = lvl;
+        self.mute_mix = if muted { 1.0 } else { 0.0 };
+    }
+
+    pub fn on_volume_change(
+        &mut self,
+        prev_pct: u8,
+        new_pct: u8,
+        prev_muted: bool,
+        new_muted: bool,
+        show_badge: bool,
+    ) {
+        self.vol_target = if new_muted {
+            0.0
+        } else {
+            (new_pct as f32 / 100.0).clamp(0.0, 1.0)
+        };
+        self.vol_dir = if prev_muted != new_muted {
+            0
+        } else if new_pct > prev_pct {
+            1
+        } else {
+            -1
+        };
+        self.vol_pulse_t = 0.0;
+        if show_badge {
+            self.vol_badge_ttl = 1.45;
+        }
+    }
+
+    pub fn seed_net(&mut self, wifi_on: bool, signal_pct: u8) {
+        let tgt = if wifi_on {
+            (signal_pct as f32 / 100.0).clamp(0.18, 1.0)
+        } else {
+            0.0
+        };
+        self.net_signal_display = tgt;
+        self.net_signal_target = tgt;
+    }
+
+    pub fn on_net_change(&mut self, wifi_on: bool, signal_pct: u8, trigger_pulse: bool) {
+        self.net_signal_target = if wifi_on {
+            (signal_pct as f32 / 100.0).clamp(0.18, 1.0)
+        } else {
+            0.0
+        };
+        if trigger_pulse {
+            self.net_pulse_t = 0.0;
+        }
+    }
+
+    pub fn seed_battery(&mut self, bat_pct: Option<u8>) {
+        let lvl = bat_pct
+            .map(|p| (p as f32 / 100.0).clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+        self.bat_display = lvl;
+        self.bat_target = lvl;
+    }
+
+    pub fn on_battery_change(&mut self, bat_pct: Option<u8>, trigger_pulse: bool) {
+        self.bat_target = bat_pct
+            .map(|p| (p as f32 / 100.0).clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+        if trigger_pulse {
+            self.bat_pulse_t = 0.0;
+        }
+    }
+
+    pub fn update_audio_vu(&mut self, raw_bands: &[f32; 12]) {
+        for g in 0..4 {
+            let base = g * 3;
+            let avg = (raw_bands[base].max(0.0)
+                + raw_bands[base + 1].max(0.0)
+                + raw_bands[base + 2].max(0.0))
+                / 3.0;
+            let tgt = avg.clamp(0.0, 1.0);
+            if tgt > self.audio_vu[g] {
+                self.audio_vu[g] = self.audio_vu[g] * 0.30 + tgt * 0.70;
+            } else {
+                let next = self.audio_vu[g] * 0.72 + tgt * 0.28;
+                self.audio_vu[g] = if next < 0.008 { 0.0 } else { next };
+            }
+        }
+    }
+
+    pub fn has_audio_vu_energy(&self) -> bool {
+        self.audio_vu.iter().any(|&v| v > 0.012)
+    }
+
+    pub fn is_active(
+        &self,
+        cfg: &AppConfig,
+        muted: bool,
+        bat_charging: bool,
+        bat_low: bool,
+    ) -> bool {
+        let target_mute = if muted { 1.0 } else { 0.0 };
+        let transient = self.vol_pulse_t < 0.995
+            || self.vol_badge_ttl > 0.005
+            || (self.vol_display - self.vol_target).abs() > 0.004
+            || (self.mute_mix - target_mute).abs() > 0.004
+            || self.net_pulse_t < 0.995
+            || (self.net_signal_display - self.net_signal_target).abs() > 0.004
+            || self.bat_pulse_t < 0.995
+            || (self.bat_display - self.bat_target).abs() > 0.004;
+        if transient {
+            return true;
+        }
+        if cfg.w_tray.audio_style == TrayAudioMeterStyle::LiveVuEqualizer
+            && self.has_audio_vu_energy()
+        {
+            return true;
+        }
+        cfg.tb_ambient_anim
+            && cfg.w_tray.battery_style != TrayBatteryMeterStyle::Hidden
+            && (bat_charging || bat_low)
+    }
+
+    pub fn step(
+        &mut self,
+        dt_raw: f32,
+        muted: bool,
+        bat_charging: bool,
+        bat_low: bool,
+        allow_ambient: bool,
+    ) -> bool {
+        let dt = dt_raw.clamp(0.004, 0.06);
+        let lerp_fast = 1.0 - (-dt * 16.0).exp();
+        let lerp_med = 1.0 - (-dt * 10.0).exp();
+        let target_mute = if muted { 1.0 } else { 0.0 };
+        let mut changed = false;
+
+        let step_f = |cur: &mut f32, tgt: f32, k: f32| -> bool {
+            let diff = tgt - *cur;
+            if diff.abs() > 0.002 {
+                *cur += diff * k;
+                if (tgt - *cur).abs() <= 0.002 {
+                    *cur = tgt;
+                }
+                true
+            } else if (*cur - tgt).abs() > 0.0 {
+                *cur = tgt;
+                false
+            } else {
+                false
+            }
+        };
+
+        changed |= step_f(&mut self.vol_display, self.vol_target, lerp_fast);
+        changed |= step_f(&mut self.mute_mix, target_mute, lerp_fast);
+        changed |= step_f(&mut self.net_signal_display, self.net_signal_target, lerp_med);
+        changed |= step_f(&mut self.bat_display, self.bat_target, lerp_med);
+
+        if self.vol_pulse_t < 1.0 {
+            self.vol_pulse_t = (self.vol_pulse_t + dt * 2.15).min(1.0);
+            changed = true;
+        }
+        if self.vol_badge_ttl > 0.0 {
+            self.vol_badge_ttl = (self.vol_badge_ttl - dt).max(0.0);
+            changed = true;
+        }
+        if self.net_pulse_t < 1.0 {
+            self.net_pulse_t = (self.net_pulse_t + dt * 1.65).min(1.0);
+            self.net_wave_phase = (self.net_wave_phase + dt * 6.0) % 628.3185;
+            changed = true;
+        }
+        if self.bat_pulse_t < 1.0 {
+            self.bat_pulse_t = (self.bat_pulse_t + dt * 1.65).min(1.0);
+            changed = true;
+        }
+        if allow_ambient && (bat_charging || bat_low) {
+            self.bat_charge_phase = (self.bat_charge_phase + dt * 2.8) % 628.3185;
+            changed = true;
+        }
+        if self.has_audio_vu_energy() {
+            changed = true;
+        }
+        changed
+    }
+}
+
 fn compute_dock_timer_ms(
-    fast_16: bool,
-    slow_33: bool,
+    fast_active: bool,
+    hover_active: bool,
     thumb_vis: bool,
     ambient_idle: bool,
-    eco_fps: bool,
+    anim_fps: u32,
 ) -> u32 {
-    if fast_16 {
-        16
-    } else if slow_33 {
-        33
+    let frame_ms = AppConfig::anim_frame_ms_for(anim_fps);
+    if fast_active || hover_active || ambient_idle {
+        frame_ms
     } else if thumb_vis {
-        80
-    } else if ambient_idle {
-        if eco_fps { 140 } else { 110 }
+        (frame_ms * 2).clamp(40, 80)
     } else {
         0
     }
@@ -1578,9 +1811,13 @@ impl MacDockEngine {
             tray_vol_muted: false,
             tray_wifi_on: true,
             tray_wifi_name: "Wi-Fi".to_string(),
+            tray_wifi_signal: 85,
             tray_bat_pct: None,
             tray_bat_charging: false,
             tray_bat_saver: false,
+            tray_snapshot_inited: false,
+            tray_bat_inited: false,
+            tray_anim: TrayAnimState::default(),
             vol_osd_until: None,
             wheel_accum: 0,
             wheel_last_at: None,
@@ -1634,7 +1871,10 @@ impl MacDockEngine {
         &mut self,
         cfg: &AppConfig,
     ) -> Vec<(RECT, crate::taskbar_hide::TaskbarEdge, i32)> {
-        if !cfg.mac_dock_enabled || cfg.mac_dock_hide != MacDockHideMode::AlwaysVisible {
+        if !cfg.mac_dock_enabled
+            || cfg.mac_dock_hide != MacDockHideMode::AlwaysVisible
+            || cfg.is_dock_all_elements_off()
+        {
             return Vec::new();
         }
         self.reconcile_monitors(true);
@@ -1760,18 +2000,57 @@ impl MacDockEngine {
             .vol_osd_until
             .map(|t| t > Instant::now())
             .unwrap_or(false);
+        let prev_vol = self.tray_vol_pct;
+        let prev_muted = self.tray_vol_muted;
+        let prev_wifi = self.tray_wifi_on;
+        let prev_sig = self.tray_wifi_signal;
         let next_pct = if osd_active { self.tray_vol_pct } else { cc.vol_pct };
-        let changed = self.tray_vol_pct != next_pct
-            || self.tray_vol_muted != cc.vol_muted
-            || self.tray_wifi_on != cc.wifi_on
+        let vol_changed = prev_vol != next_pct || prev_muted != cc.vol_muted;
+        let net_changed = prev_wifi != cc.wifi_on
             || self.tray_wifi_name != cc.wifi_name
+            || (prev_sig as i16 - cc.wifi_signal as i16).abs() >= 12;
+        let changed = vol_changed
+            || net_changed
+            || self.tray_wifi_signal != cc.wifi_signal
             || self.tray_bat_saver != cc.saver_on;
         self.tray_vol_pct = next_pct;
         self.tray_vol_muted = cc.vol_muted;
         self.tray_wifi_on = cc.wifi_on;
         self.tray_wifi_name = cc.wifi_name.clone();
+        self.tray_wifi_signal = cc.wifi_signal;
         self.tray_bat_saver = cc.saver_on;
+
+        if !self.tray_snapshot_inited {
+            self.tray_snapshot_inited = true;
+            self.tray_anim.seed_volume(self.tray_vol_pct, self.tray_vol_muted);
+            self.tray_anim.seed_net(self.tray_wifi_on, self.tray_wifi_signal);
+        } else {
+            if vol_changed {
+                self.tray_anim.on_volume_change(
+                    prev_vol,
+                    self.tray_vol_pct,
+                    prev_muted,
+                    self.tray_vol_muted,
+                    true,
+                );
+            }
+            if net_changed || self.tray_wifi_signal != prev_sig {
+                self.tray_anim.on_net_change(
+                    self.tray_wifi_on,
+                    self.tray_wifi_signal,
+                    net_changed,
+                );
+            }
+        }
         if changed {
+            self.mark_dirty_paint();
+        }
+    }
+
+    pub fn sync_audio_bands(&mut self, raw_bands: &[f32; 12]) {
+        let had = self.tray_anim.has_audio_vu_energy();
+        self.tray_anim.update_audio_vu(raw_bands);
+        if had || self.tray_anim.has_audio_vu_energy() {
             self.mark_dirty_paint();
         }
     }
@@ -1793,6 +2072,10 @@ impl MacDockEngine {
             return;
         }
         let now = Instant::now();
+        let bat_low = self.tray_bat_pct.map(|p| p <= 20).unwrap_or(false) && !self.tray_bat_charging;
+        let tray_anim_active =
+            self.tray_anim
+                .is_active(cfg, self.tray_vol_muted, self.tray_bat_charging, bat_low);
         if self.panes.is_empty()
             || self.dirty_windows
             || self.menu_open
@@ -1801,6 +2084,7 @@ impl MacDockEngine {
             || !self.pop_until.is_empty()
             || !self.flashing_hwnds.is_empty()
             || self.vol_osd_until.is_some()
+            || tray_anim_active
             || self.panes
                 .iter()
                 .any(|p| p.dirty_paint || p.motion_active || p.cursor_in_dock || !p.dock_inited)
@@ -1811,6 +2095,13 @@ impl MacDockEngine {
         let cur_bucket = clock_bucket(cfg);
         let clock_changed = cur_bucket != self.last_clock_bucket;
         let full_due = now.duration_since(self.last_full_sync) >= Duration::from_millis(4000);
+
+        if cfg.mac_dock_hide == MacDockHideMode::StealthHide {
+            if self.panes.iter().any(|p| p.window_shown || p.slide_t > 0.005) {
+                self.tick(cfg);
+            }
+            return;
+        }
 
         if cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible {
             if self.panes.iter().all(|p| p.window_shown) {
@@ -1848,6 +2139,14 @@ impl MacDockEngine {
             self.last_idle_check = now;
             self.tick(cfg);
         }
+    }
+
+    pub fn force_clock_refresh(&mut self, cfg: &AppConfig) {
+        if !self.is_active() {
+            return;
+        }
+        let bucket = clock_bucket(cfg);
+        self.update_clock_slot_only(cfg, bucket);
     }
 
     fn update_clock_slot_only(&mut self, cfg: &AppConfig, bucket: u32) {
@@ -1933,12 +2232,20 @@ impl MacDockEngine {
         let bouncing = self.bounce_until.values().any(|&t| t > now)
             || self.pop_until.values().any(|&t| t > now);
         let osd_active = self.vol_osd_until.map(|t| t > now).unwrap_or(false);
-        let mut fast_16 = bouncing || osd_active;
+        let any_shown = self.panes.iter().any(|p| p.window_shown && p.slide_t > 0.25);
+        let bat_low = self.tray_bat_pct.map(|p| p <= 20).unwrap_or(false) && !self.tray_bat_charging;
+        let tray_reactive = any_shown
+            && self.tray_anim.is_active(
+                cfg,
+                self.tray_vol_muted,
+                self.tray_bat_charging,
+                bat_low,
+            );
+        let mut fast_16 = bouncing || osd_active || tray_reactive;
         let mut slow_33 = self.hover_dwell_since.is_some()
             && cfg.tb_hover_react
             && !self.thumb_popup.visible;
         let ambient_live = is_ambient_animated_cfg(cfg);
-        let any_shown = self.panes.iter().any(|p| p.window_shown && p.slide_t > 0.25);
         let ambient_idle = any_shown && (ambient_live || !self.flashing_hwnds.is_empty());
         for p in &self.panes {
             if p.motion_active
@@ -1958,7 +2265,7 @@ impl MacDockEngine {
             slow_33,
             self.thumb_popup.visible,
             ambient_idle,
-            cfg.viz_eco_fps,
+            cfg.anim_fps,
         )
     }
 
@@ -2228,12 +2535,21 @@ impl MacDockEngine {
 
         let mut pwr = SYSTEM_POWER_STATUS::default();
         if unsafe { GetSystemPowerStatus(&mut pwr).is_ok() } {
+            let prev_bat = self.tray_bat_pct;
+            let prev_chg = self.tray_bat_charging;
             if pwr.BatteryFlag != 128 && pwr.BatteryLifePercent <= 100 {
                 self.tray_bat_pct = Some(pwr.BatteryLifePercent);
                 self.tray_bat_charging = pwr.ACLineStatus == 1;
             } else {
                 self.tray_bat_pct = None;
                 self.tray_bat_charging = false;
+            }
+            if !self.tray_bat_inited {
+                self.tray_bat_inited = true;
+                self.tray_anim.seed_battery(self.tray_bat_pct);
+            } else if prev_bat != self.tray_bat_pct || prev_chg != self.tray_bat_charging {
+                self.tray_anim.on_battery_change(self.tray_bat_pct, true);
+                self.mark_dirty_paint();
             }
             if pwr.SystemStatusFlag > 0 {
                 self.tray_bat_saver = true;
@@ -2357,6 +2673,11 @@ impl MacDockEngine {
             }
         }
 
+        if !cfg.w_apps.show_icons && !cfg.w_apps.show_cards && !cfg.w_apps.show_indicators {
+            pinned_slots.clear();
+            running_slots.clear();
+        }
+
         let spec = resolve_shelf_spec(cfg);
         let (time_str, date_str, hour24, minute, second) = format_dock_clock(cfg);
         let clock_slot = DockSlotKind::ClockModule {
@@ -2367,6 +2688,15 @@ impl MacDockEngine {
             second,
         };
         let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
+        let show_div = cfg.w_apps.show_separators;
+        let show_clock = !cfg.w_clock.is_all_elements_off();
+        let show_tray = !cfg.w_tray.is_all_elements_off();
+        let show_sliver = cfg.w_util.show_desktop_sliver && !cfg.w_util.is_all_elements_off();
+        let has_right_cluster = show_tray
+            || show_clock
+            || cfg.w_util.show_trash
+            || cfg.w_util.show_studio
+            || show_sliver;
         let mut new_slots: Vec<DockSlotKind> =
             Vec::with_capacity(pinned_slots.len() + running_slots.len() + 10);
 
@@ -2382,32 +2712,45 @@ impl MacDockEngine {
                 if cfg.w_util.show_taskview {
                     new_slots.push(DockSlotKind::TaskViewButton);
                 }
-                if !is_vertical {
+                if !is_vertical && cfg.w_hud.show_active_app {
                     new_slots.push(DockSlotKind::ActiveAppChip {
                         title: truncate_title(&self.fg_app_title, 15),
                     });
                 }
                 if !pinned_slots.is_empty() || !running_slots.is_empty() {
-                    new_slots.push(DockSlotKind::IslandGap);
+                    if !new_slots.is_empty() {
+                        new_slots.push(DockSlotKind::IslandGap);
+                    }
                     // Island 2: Pinned & Active Windows Hub
+                    let has_pinned = !pinned_slots.is_empty();
                     new_slots.extend(pinned_slots);
                     if !running_slots.is_empty() {
-                        new_slots.push(DockSlotKind::Divider);
+                        if show_div && has_pinned {
+                            new_slots.push(DockSlotKind::Divider);
+                        }
                         new_slots.extend(running_slots);
                     }
                 }
-                new_slots.push(DockSlotKind::IslandGap);
-                // Island 3: Hidden Tray Chevron + Windows Tray + Clock + Trash + Studio
-                new_slots.push(DockSlotKind::HiddenTrayChevron);
-                new_slots.push(DockSlotKind::TrayStatusCluster);
-                new_slots.push(clock_slot);
-                if cfg.w_util.show_trash {
-                    new_slots.push(DockSlotKind::TrashBin {
-                        items: self.trash_items,
-                    });
-                }
-                if cfg.w_util.show_studio {
-                    new_slots.push(DockSlotKind::StudioLauncher);
+                if show_tray || show_clock || cfg.w_util.show_trash || cfg.w_util.show_studio {
+                    if !new_slots.is_empty() {
+                        new_slots.push(DockSlotKind::IslandGap);
+                    }
+                    // Island 3: Hidden Tray Chevron + Windows Tray + Clock + Trash + Studio
+                    if show_tray {
+                        new_slots.push(DockSlotKind::HiddenTrayChevron);
+                        new_slots.push(DockSlotKind::TrayStatusCluster);
+                    }
+                    if show_clock {
+                        new_slots.push(clock_slot);
+                    }
+                    if cfg.w_util.show_trash {
+                        new_slots.push(DockSlotKind::TrashBin {
+                            items: self.trash_items,
+                        });
+                    }
+                    if cfg.w_util.show_studio {
+                        new_slots.push(DockSlotKind::StudioLauncher);
+                    }
                 }
             }
             DockLayoutKind::FullEdgeTaskbar => {
@@ -2421,13 +2764,20 @@ impl MacDockEngine {
                 if cfg.w_util.show_taskview {
                     new_slots.push(DockSlotKind::TaskViewButton);
                 }
+                let has_pinned = !pinned_slots.is_empty();
                 new_slots.extend(pinned_slots);
                 if !running_slots.is_empty() {
-                    new_slots.push(DockSlotKind::Divider);
+                    if show_div && has_pinned {
+                        new_slots.push(DockSlotKind::Divider);
+                    }
                     new_slots.extend(running_slots);
                 }
-                new_slots.push(DockSlotKind::FlexSpacer);
-                new_slots.push(DockSlotKind::EndDivider);
+                if !new_slots.is_empty() && has_right_cluster {
+                    new_slots.push(DockSlotKind::FlexSpacer);
+                    if show_div {
+                        new_slots.push(DockSlotKind::EndDivider);
+                    }
+                }
                 if cfg.w_util.show_trash {
                     new_slots.push(DockSlotKind::TrashBin {
                         items: self.trash_items,
@@ -2436,10 +2786,14 @@ impl MacDockEngine {
                 if cfg.w_util.show_studio {
                     new_slots.push(DockSlotKind::StudioLauncher);
                 }
-                new_slots.push(DockSlotKind::HiddenTrayChevron);
-                new_slots.push(DockSlotKind::TrayStatusCluster);
-                new_slots.push(clock_slot);
-                if cfg.w_util.show_desktop_sliver {
+                if show_tray {
+                    new_slots.push(DockSlotKind::HiddenTrayChevron);
+                    new_slots.push(DockSlotKind::TrayStatusCluster);
+                }
+                if show_clock {
+                    new_slots.push(clock_slot);
+                }
+                if show_sliver {
                     new_slots.push(DockSlotKind::ShowDesktopSliver);
                 }
             }
@@ -2448,15 +2802,24 @@ impl MacDockEngine {
                 if cfg.w_util.show_start {
                     new_slots.push(DockSlotKind::StartLauncher);
                 }
+                let has_pinned = !pinned_slots.is_empty();
                 new_slots.extend(pinned_slots);
                 if !running_slots.is_empty() {
-                    new_slots.push(DockSlotKind::Divider);
+                    if show_div && has_pinned {
+                        new_slots.push(DockSlotKind::Divider);
+                    }
                     new_slots.extend(running_slots);
                 }
-                new_slots.push(DockSlotKind::EndDivider);
-                new_slots.push(DockSlotKind::HiddenTrayChevron);
-                new_slots.push(DockSlotKind::TrayStatusCluster);
-                new_slots.push(clock_slot);
+                if show_div && !new_slots.is_empty() && has_right_cluster {
+                    new_slots.push(DockSlotKind::EndDivider);
+                }
+                if show_tray {
+                    new_slots.push(DockSlotKind::HiddenTrayChevron);
+                    new_slots.push(DockSlotKind::TrayStatusCluster);
+                }
+                if show_clock {
+                    new_slots.push(clock_slot);
+                }
                 if cfg.w_util.show_trash {
                     new_slots.push(DockSlotKind::TrashBin {
                         items: self.trash_items,
@@ -2473,15 +2836,24 @@ impl MacDockEngine {
                 if cfg.w_util.show_search {
                     new_slots.push(DockSlotKind::SearchButton);
                 }
+                let has_pinned = !pinned_slots.is_empty();
                 new_slots.extend(pinned_slots);
                 if !running_slots.is_empty() {
-                    new_slots.push(DockSlotKind::Divider);
+                    if show_div && has_pinned {
+                        new_slots.push(DockSlotKind::Divider);
+                    }
                     new_slots.extend(running_slots);
                 }
-                new_slots.push(DockSlotKind::EndDivider);
-                new_slots.push(DockSlotKind::HiddenTrayChevron);
-                new_slots.push(DockSlotKind::TrayStatusCluster);
-                new_slots.push(clock_slot);
+                if show_div && !new_slots.is_empty() && has_right_cluster {
+                    new_slots.push(DockSlotKind::EndDivider);
+                }
+                if show_tray {
+                    new_slots.push(DockSlotKind::HiddenTrayChevron);
+                    new_slots.push(DockSlotKind::TrayStatusCluster);
+                }
+                if show_clock {
+                    new_slots.push(clock_slot);
+                }
                 if cfg.w_util.show_trash {
                     new_slots.push(DockSlotKind::TrashBin {
                         items: self.trash_items,
@@ -2501,15 +2873,24 @@ impl MacDockEngine {
                 if cfg.w_util.show_taskview {
                     new_slots.push(DockSlotKind::TaskViewButton);
                 }
+                let has_pinned = !pinned_slots.is_empty();
                 new_slots.extend(pinned_slots);
                 if !running_slots.is_empty() {
-                    new_slots.push(DockSlotKind::Divider);
+                    if show_div && has_pinned {
+                        new_slots.push(DockSlotKind::Divider);
+                    }
                     new_slots.extend(running_slots);
                 }
-                new_slots.push(DockSlotKind::EndDivider);
-                new_slots.push(DockSlotKind::HiddenTrayChevron);
-                new_slots.push(DockSlotKind::TrayStatusCluster);
-                new_slots.push(clock_slot);
+                if show_div && !new_slots.is_empty() && has_right_cluster {
+                    new_slots.push(DockSlotKind::EndDivider);
+                }
+                if show_tray {
+                    new_slots.push(DockSlotKind::HiddenTrayChevron);
+                    new_slots.push(DockSlotKind::TrayStatusCluster);
+                }
+                if show_clock {
+                    new_slots.push(clock_slot);
+                }
                 if cfg.w_util.show_trash {
                     new_slots.push(DockSlotKind::TrashBin {
                         items: self.trash_items,
@@ -2518,7 +2899,7 @@ impl MacDockEngine {
                 if cfg.w_util.show_studio {
                     new_slots.push(DockSlotKind::StudioLauncher);
                 }
-                if cfg.w_util.show_desktop_sliver {
+                if show_sliver {
                     new_slots.push(DockSlotKind::ShowDesktopSliver);
                 }
             }
@@ -2526,15 +2907,24 @@ impl MacDockEngine {
                 if cfg.w_util.show_start {
                     new_slots.push(DockSlotKind::StartLauncher);
                 }
+                let has_pinned = !pinned_slots.is_empty();
                 new_slots.extend(pinned_slots);
                 if !running_slots.is_empty() {
-                    new_slots.push(DockSlotKind::Divider);
+                    if show_div && has_pinned {
+                        new_slots.push(DockSlotKind::Divider);
+                    }
                     new_slots.extend(running_slots);
                 }
-                new_slots.push(DockSlotKind::EndDivider);
-                new_slots.push(DockSlotKind::HiddenTrayChevron);
-                new_slots.push(DockSlotKind::TrayStatusCluster);
-                new_slots.push(clock_slot);
+                if show_div && !new_slots.is_empty() && has_right_cluster {
+                    new_slots.push(DockSlotKind::EndDivider);
+                }
+                if show_tray {
+                    new_slots.push(DockSlotKind::HiddenTrayChevron);
+                    new_slots.push(DockSlotKind::TrayStatusCluster);
+                }
+                if show_clock {
+                    new_slots.push(clock_slot);
+                }
                 if cfg.w_util.show_trash {
                     new_slots.push(DockSlotKind::TrashBin {
                         items: self.trash_items,
@@ -2576,13 +2966,9 @@ impl MacDockEngine {
         if any_hover || ambient_live || has_flashes {
             self.dock_anim_phase = (self.dock_anim_phase + dt * 1.45) % 628.3185;
             if ambient_live || has_flashes {
-                let min_gap = Duration::from_millis(if any_hover {
-                    28
-                } else if cfg.viz_eco_fps {
-                    130
-                } else {
-                    100
-                });
+                let min_gap = Duration::from_millis(
+                    cfg.anim_frame_ms().saturating_sub(2).max(6) as u64,
+                );
                 if now.duration_since(self.last_ambient_paint) >= min_gap {
                     self.last_ambient_paint = now;
                     for pane in &mut self.panes {
@@ -2597,6 +2983,20 @@ impl MacDockEngine {
             if until <= now {
                 self.vol_osd_until = None;
                 self.mark_dirty_paint();
+            }
+        }
+        let bat_low = self.tray_bat_pct.map(|p| p <= 20).unwrap_or(false) && !self.tray_bat_charging;
+        if self.tray_anim.step(
+            dt,
+            self.tray_vol_muted,
+            self.tray_bat_charging,
+            bat_low,
+            cfg.tb_ambient_anim && cfg.w_tray.battery_style != TrayBatteryMeterStyle::Hidden,
+        ) {
+            for pane in &mut self.panes {
+                if pane.window_shown && pane.slide_t > 0.25 {
+                    pane.dirty_paint = true;
+                }
             }
         }
 
@@ -2720,6 +3120,7 @@ impl MacDockEngine {
         } else {
             match cfg.mac_dock_hide {
                 MacDockHideMode::AlwaysVisible => true,
+                MacDockHideMode::StealthHide => false,
                 MacDockHideMode::HoverReveal => {
                     self.menu_open || on_edge || (docked_open && (in_band || in_thumb || in_bridge))
                 }
@@ -2833,12 +3234,11 @@ impl MacDockEngine {
                     }
                 }
                 DockSlotKind::TrayStatusCluster => {
-                    let span = tray_cluster_slot_span(
+                    let span = tray_cluster_slot_span_cfg(
                         is_vertical,
                         base_sz,
                         self.tray_bat_pct.is_some(),
-                        cfg.w_tray.net_style,
-                        cfg.w_tray.battery_style,
+                        cfg,
                         u,
                     );
                     (span, false, false)
@@ -3438,7 +3838,7 @@ impl MacDockEngine {
                     let bat_txt = match self.tray_bat_pct {
                         Some(p) => {
                             if self.tray_bat_charging {
-                                format!(" • Bat {}% AC", p)
+                                format!(" • Bat {}% ⚡", p)
                             } else {
                                 format!(" • Bat {}%", p)
                             }
@@ -3451,9 +3851,9 @@ impl MacDockEngine {
                         format!("Vol {}%", self.tray_vol_pct)
                     };
                     let net_txt = if self.tray_wifi_on {
-                        self.tray_wifi_name.as_str()
+                        format!("{} ({}%)", self.tray_wifi_name, self.tray_wifi_signal)
                     } else {
-                        "Wi-Fi Off"
+                        "Wi-Fi Off".to_string()
                     };
                     (format!("{} • {}{} (Scroll: Vol)", net_txt, vol_txt, bat_txt), 0, false)
                 }
@@ -3578,7 +3978,7 @@ impl MacDockEngine {
                     bottom: first.bottom.max(last.bottom),
                 };
             }
-        } else if spec.layout != DockLayoutKind::IndependentOrbs {
+        } else if spec.layout != DockLayoutKind::IndependentOrbs && !cfg.w_shelf.is_all_elements_off() {
             pane.island_rects_local.push(shelf_rect_f);
         }
 
@@ -4379,8 +4779,16 @@ impl MacDockEngine {
                 MacDockAction::None
             }
             DockSlotKind::TrayStatusCluster => {
+                let prev_muted = self.tray_vol_muted;
                 self.tray_vol_muted = !self.tray_vol_muted;
-                self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1500));
+                self.tray_anim.on_volume_change(
+                    self.tray_vol_pct,
+                    self.tray_vol_pct,
+                    prev_muted,
+                    self.tray_vol_muted,
+                    true,
+                );
+                self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1450));
                 self.mark_dirty_paint();
                 MacDockAction::TrayToggleMute
             }
@@ -4429,13 +4837,22 @@ impl MacDockEngine {
         match slot {
             DockSlotKind::TrayStatusCluster => {
                 let unit = cfg.w_tray.wheel_step_pct.clamp(1, 10) as i32;
+                let prev_v = self.tray_vol_pct;
+                let prev_m = self.tray_vol_muted;
                 let next_v = (self.tray_vol_pct as i32 + notches * unit).clamp(0, 100) as u8;
                 self.tray_vol_pct = next_v;
                 if next_v > 0 {
                     self.tray_vol_muted = false;
                 }
+                self.tray_anim.on_volume_change(
+                    prev_v,
+                    next_v,
+                    prev_m,
+                    self.tray_vol_muted,
+                    cfg.w_tray.show_osd_on_scroll,
+                );
                 if cfg.w_tray.show_osd_on_scroll {
-                    self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1600));
+                    self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1450));
                 }
                 self.mark_dirty_paint();
                 return MacDockAction::TraySetVolume(next_v);
@@ -4443,13 +4860,22 @@ impl MacDockEngine {
             DockSlotKind::ClockModule { .. } => match cfg.w_clock.wheel_action {
                 DockClockWheelAction::AdjustVolume => {
                     let unit = cfg.w_tray.wheel_step_pct.clamp(1, 10) as i32;
+                    let prev_v = self.tray_vol_pct;
+                    let prev_m = self.tray_vol_muted;
                     let next_v = (self.tray_vol_pct as i32 + notches * unit).clamp(0, 100) as u8;
                     self.tray_vol_pct = next_v;
                     if next_v > 0 {
                         self.tray_vol_muted = false;
                     }
+                    self.tray_anim.on_volume_change(
+                        prev_v,
+                        next_v,
+                        prev_m,
+                        self.tray_vol_muted,
+                        cfg.w_tray.show_osd_on_scroll,
+                    );
                     if cfg.w_tray.show_osd_on_scroll {
-                        self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1600));
+                        self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1450));
                     }
                     self.mark_dirty_paint();
                     return MacDockAction::TraySetVolume(next_v);
@@ -4690,6 +5116,7 @@ impl MacDockEngine {
                     add_checked_item(hide_sub, IDM_DOCK_HIDE_SMART, "Smart Auto-Hide", cfg.mac_dock_hide == MacDockHideMode::SmartAutoHide);
                     add_checked_item(hide_sub, IDM_DOCK_HIDE_HOVER, "Edge Hover Reveal", cfg.mac_dock_hide == MacDockHideMode::HoverReveal);
                     add_checked_item(hide_sub, IDM_DOCK_HIDE_ALWAYS, "Always Visible", cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible);
+                    add_checked_item(hide_sub, IDM_DOCK_HIDE_STEALTH, "Full Stealth Hide (Ctrl+Alt+T)", cfg.mac_dock_hide == MacDockHideMode::StealthHide);
                     let lbl = to_wide("Auto-Hide Behavior");
                     let _ = AppendMenuW(hmenu, MF_POPUP, hide_sub.0 as usize, PCWSTR(lbl.as_ptr()));
                 }
@@ -4736,16 +5163,25 @@ impl MacDockEngine {
                     }
                     IDM_DOCK_HIDE_SMART => {
                         cfg.mac_dock_hide = MacDockHideMode::SmartAutoHide;
+                        cfg.sync_hide_mode_from_dock();
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
                     IDM_DOCK_HIDE_HOVER => {
                         cfg.mac_dock_hide = MacDockHideMode::HoverReveal;
+                        cfg.sync_hide_mode_from_dock();
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
                     IDM_DOCK_HIDE_ALWAYS => {
                         cfg.mac_dock_hide = MacDockHideMode::AlwaysVisible;
+                        cfg.sync_hide_mode_from_dock();
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
+                    IDM_DOCK_HIDE_STEALTH => {
+                        cfg.mac_dock_hide = MacDockHideMode::StealthHide;
+                        cfg.sync_hide_mode_from_dock();
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
@@ -4816,8 +5252,16 @@ impl MacDockEngine {
                 } else {
                 match cmd {
                     IDM_DOCK_TRAY_MUTE => {
+                        let prev_m = self.tray_vol_muted;
                         self.tray_vol_muted = !self.tray_vol_muted;
-                        self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1400));
+                        self.tray_anim.on_volume_change(
+                            self.tray_vol_pct,
+                            self.tray_vol_pct,
+                            prev_m,
+                            self.tray_vol_muted,
+                            true,
+                        );
+                        self.vol_osd_until = Some(Instant::now() + Duration::from_millis(1450));
                         action = MacDockAction::TrayToggleMute;
                     }
                     IDM_DOCK_TRAY_VOL_MIXER => {
@@ -5281,7 +5725,7 @@ impl MacDockEngine {
             IDM_W_CLOCK_DATE => cfg.w_clock.show_date = !cfg.w_clock.show_date,
             IDM_W_CLOCK_24H_TOGGLE => {
                 let cur = cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h);
-                cfg.w_clock.use_24h = Some(!cur);
+                cfg.set_clock_24h(!cur);
             }
             c if (IDM_W_CLOCK_WHEEL_BASE..IDM_W_CLOCK_WHEEL_BASE + DockClockWheelAction::ALL.len()).contains(&c) => {
                 cfg.w_clock.wheel_action = DockClockWheelAction::ALL[c - IDM_W_CLOCK_WHEEL_BASE];
@@ -5654,6 +6098,9 @@ impl MacDockEngine {
             b: 0.0,
             a: 0.0,
         }));
+        if cfg.is_dock_all_elements_off() {
+            return rt.EndDraw(None, None).is_ok();
+        }
 
         let br_opt = self
             .solid_brush
@@ -5943,24 +6390,28 @@ impl MacDockEngine {
                         let show_osd = self
                             .vol_osd_until
                             .map(|t| t > Instant::now())
-                            .unwrap_or(false);
+                            .unwrap_or(false)
+                            || self.tray_anim.vol_badge_ttl > 0.01;
                         draw_tray_cluster(
                             rt,
+                            self.d2d.as_ref(),
                             &br,
                             self.tf_mono.as_ref(),
                             item.slot_rect,
                             self.tray_vol_pct,
                             self.tray_vol_muted,
                             self.tray_wifi_on,
+                            self.tray_wifi_signal,
                             self.tray_bat_pct,
                             self.tray_bat_charging,
                             show_osd,
+                            is_hov,
                             pal.text_primary,
                             pal.text_muted,
                             tray_spec.dot_active,
                             cfg,
+                            &self.tray_anim,
                             self.dock_anim_phase,
-                            self.cpu_pct,
                             is_vertical,
                             u,
                         );
@@ -6051,25 +6502,27 @@ impl MacDockEngine {
                         }
                     }
                     DockSlotKind::PinnedApp { .. } | DockSlotKind::RunningApp { .. } => {
-                        if let Some(Some(bmp)) = bitmaps.get(item.slot_idx) {
-                            let pad_i = sz * 0.08;
-                            let ico_r = D2D_RECT_F {
-                                left: dest.left + pad_i,
-                                top: dest.top + pad_i,
-                                right: dest.right - pad_i,
-                                bottom: dest.bottom - pad_i,
-                            };
-                            rt.DrawBitmap(
-                                bmp,
-                                Some(&ico_r),
-                                1.0,
-                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                                None,
-                            );
-                        } else {
-                            draw_fallback_badge(rt, &br, dest, u);
+                        if cfg.w_apps.show_icons {
+                            if let Some(Some(bmp)) = bitmaps.get(item.slot_idx) {
+                                let pad_i = sz * 0.08;
+                                let ico_r = D2D_RECT_F {
+                                    left: dest.left + pad_i,
+                                    top: dest.top + pad_i,
+                                    right: dest.right - pad_i,
+                                    bottom: dest.bottom - pad_i,
+                                };
+                                rt.DrawBitmap(
+                                    bmp,
+                                    Some(&ico_r),
+                                    1.0,
+                                    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                                    None,
+                                );
+                            } else {
+                                draw_fallback_badge(rt, &br, dest, u);
+                            }
+                            draw_inline_text(&item.inline_text, item.inline_alpha);
                         }
-                        draw_inline_text(&item.inline_text, item.inline_alpha);
                     }
                     DockSlotKind::Divider
                     | DockSlotKind::EndDivider
@@ -6078,6 +6531,7 @@ impl MacDockEngine {
                 }
 
                 if cfg.mac_dock_dots
+                    && cfg.w_apps.show_indicators
                     && item.dot_count > 0
                     && !matches!(slot, DockSlotKind::ActiveAppChip { .. })
                 {
@@ -7199,6 +7653,7 @@ fn dock_cross_metrics(cfg: &AppConfig, u: f32) -> (DockVisualSpec, bool, f32, f3
         _ => 6.0 * u,
     };
     let want_hud_wing = !is_vertical
+        && cfg.w_hud.show_telemetry
         && match cfg.w_hud.mode {
             HudWingMode::AlwaysEnabled => true,
             HudWingMode::Hidden => false,
@@ -8738,106 +9193,347 @@ unsafe fn draw_hidden_tray_chevron_badge(
     rt.DrawLine(apex, p1, br, w_st, None);
 }
 
+unsafe fn draw_d2d_arc(
+    rt: &ID2D1DCRenderTarget,
+    d2d: Option<&ID2D1Factory>,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    start_deg: f32,
+    sweep_deg: f32,
+    stroke_w: f32,
+    br: &ID2D1SolidColorBrush,
+) {
+    if r <= 0.5 || sweep_deg <= 1.0 {
+        return;
+    }
+    if sweep_deg >= 359.0 {
+        rt.DrawEllipse(
+            &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                point: Vector2 { X: cx, Y: cy },
+                radiusX: r,
+                radiusY: r,
+            },
+            br,
+            stroke_w,
+            None,
+        );
+        return;
+    }
+    if let Some(factory) = d2d {
+        let a0 = (start_deg - 90.0).to_radians();
+        let a1 = (start_deg + sweep_deg - 90.0).to_radians();
+        let p0 = Vector2 { X: cx + r * a0.cos(), Y: cy + r * a0.sin() };
+        let p1 = Vector2 { X: cx + r * a1.cos(), Y: cy + r * a1.sin() };
+        if let Ok(geo) = factory.CreatePathGeometry() {
+            if let Ok(sink) = geo.Open() {
+                sink.BeginFigure(p0, D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddArc(&D2D1_ARC_SEGMENT {
+                    point: p1,
+                    size: D2D_SIZE_F { width: r, height: r },
+                    rotationAngle: 0.0,
+                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    arcSize: if sweep_deg > 180.0 {
+                        D2D1_ARC_SIZE_LARGE
+                    } else {
+                        D2D1_ARC_SIZE_SMALL
+                    },
+                });
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                if sink.Close().is_ok() {
+                    rt.DrawGeometry(&geo, br, stroke_w, None);
+                    return;
+                }
+            }
+        }
+    }
+    // Segmented polyline fallback when factory is absent
+    let steps = ((sweep_deg / 18.0).ceil() as usize).clamp(4, 24);
+    let mut prev = {
+        let a0 = (start_deg - 90.0).to_radians();
+        Vector2 { X: cx + r * a0.cos(), Y: cy + r * a0.sin() }
+    };
+    for s in 1..=steps {
+        let a = (start_deg + sweep_deg * (s as f32 / steps as f32) - 90.0).to_radians();
+        let cur = Vector2 { X: cx + r * a.cos(), Y: cy + r * a.sin() };
+        rt.DrawLine(prev, cur, br, stroke_w, None);
+        prev = cur;
+    }
+}
+
+unsafe fn draw_charge_bolt(
+    rt: &ID2D1DCRenderTarget,
+    cx: f32,
+    cy: f32,
+    scale: f32,
+    br: &ID2D1SolidColorBrush,
+) {
+    let p0 = Vector2 { X: cx + 0.9 * scale, Y: cy - 3.6 * scale };
+    let p1 = Vector2 { X: cx - 1.5 * scale, Y: cy + 0.2 * scale };
+    let p2 = Vector2 { X: cx + 1.3 * scale, Y: cy + 0.2 * scale };
+    let p3 = Vector2 { X: cx - 0.9 * scale, Y: cy + 3.6 * scale };
+    let sw = (1.15 * scale).max(1.0);
+    rt.DrawLine(p0, p1, br, sw, None);
+    rt.DrawLine(p1, p2, br, sw, None);
+    rt.DrawLine(p2, p3, br, sw, None);
+}
+
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_tray_cluster(
     rt: &ID2D1DCRenderTarget,
+    d2d: Option<&ID2D1Factory>,
     br: &ID2D1SolidColorBrush,
     tf_mono: Option<&IDWriteTextFormat>,
     rect: D2D_RECT_F,
     vol_pct: u8,
     vol_muted: bool,
     wifi_on: bool,
+    wifi_signal: u8,
     bat_pct: Option<u8>,
     bat_charging: bool,
     show_vol_osd: bool,
+    hovered: bool,
     fg_col: (u8, u8, u8),
     muted_col: (u8, u8, u8),
     accent_col: (u8, u8, u8),
     cfg: &AppConfig,
+    anim: &TrayAnimState,
     anim_phase: f32,
-    cpu_pct: u8,
     is_vertical: bool,
     u: f32,
 ) {
-    if show_vol_osd {
-        if let Some(tfm) = tf_mono {
-            let txt = if vol_muted {
-                "MUTE".to_string()
-            } else if is_vertical {
-                format!("{}%", vol_pct)
+    // Dynamic audio color reflects mute / low / normal / high volume cleanly
+    let vol_ratio = anim.vol_display.clamp(0.0, 1.0);
+    let audio_col: (u8, u8, u8) = if vol_muted || vol_pct == 0 {
+        (238, 86, 86)
+    } else if vol_pct <= 30 {
+        (110, 212, 245)
+    } else if vol_pct >= 80 {
+        (255, 186, 72)
+    } else {
+        accent_col
+    };
+
+    // Reactive directional pulse helper for volume up/down/mute across ALL audio styles
+    let draw_vol_pulse_ring = |vx: f32, vy: f32| {
+        if anim.vol_pulse_t < 0.995 {
+            let t = anim.vol_pulse_t.clamp(0.0, 1.0);
+            let ease = 1.0 - (1.0 - t).powi(3);
+            let fade = (1.0 - t).powf(1.35);
+            let (rad, pcol) = if anim.vol_dir > 0 {
+                // Volume Up: expanding bright outward pulse ring
+                ((4.6 + ease * 7.8) * u, audio_col)
+            } else if anim.vol_dir < 0 {
+                // Volume Down: contracting inward ripple ring to visually signal reduction
+                ((12.4 - ease * 7.6) * u, (124, 218, 255))
             } else {
-                format!("VOL {}%", vol_pct)
+                // Mute toggle: sharp burst ring
+                ((4.2 + ease * 8.2) * u, if vol_muted { (242, 84, 84) } else { accent_col })
             };
-            br.SetColor(&rgba(fg_col.0, fg_col.1, fg_col.2, 0.96));
-            let tr = D2D_RECT_F {
-                left: rect.left + 2.0 * u,
-                top: rect.top,
-                right: rect.right - 2.0 * u,
-                bottom: rect.bottom - 5.0 * u,
-            };
-            draw_d2d_text(rt, &txt, tfm, &tr, br);
-            let bar_bg = D2D_RECT_F {
-                left: rect.left + 6.0 * u,
-                top: rect.bottom - 5.5 * u,
-                right: rect.right - 6.0 * u,
-                bottom: rect.bottom - 2.5 * u,
-            };
-            br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.35));
-            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: bar_bg, radiusX: 1.5 * u, radiusY: 1.5 * u }, br);
-            let fill_ratio = if vol_muted { 0.0 } else { vol_pct as f32 / 100.0 };
-            if fill_ratio > 0.01 {
-                let bar_fg = D2D_RECT_F {
-                    left: bar_bg.left,
-                    top: bar_bg.top,
-                    right: bar_bg.left + (bar_bg.right - bar_bg.left) * fill_ratio,
-                    bottom: bar_bg.bottom,
-                };
-                br.SetColor(&rgba(accent_col.0, accent_col.1, accent_col.2, 0.95));
-                rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: bar_fg, radiusX: 1.5 * u, radiusY: 1.5 * u }, br);
-            }
-            return;
+            br.SetColor(&rgba(pcol.0, pcol.1, pcol.2, 0.78 * fade));
+            rt.DrawEllipse(
+                &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                    point: Vector2 { X: vx, Y: vy },
+                    radiusX: rad,
+                    radiusY: rad,
+                },
+                br,
+                (1.65 - 0.55 * ease) * u,
+                None,
+            );
         }
-    }
+    };
 
     let draw_wifi = |wx: f32, wy: f32| {
+        // State-change / activity ripple for ALL visible network styles
+        if anim.net_pulse_t < 0.995 {
+            let t = anim.net_pulse_t.clamp(0.0, 1.0);
+            let ease = 1.0 - (1.0 - t).powi(3);
+            let fade = (1.0 - t).powf(1.4);
+            let rcol = if wifi_on { accent_col } else { (236, 86, 86) };
+            let r_rad = (4.0 + ease * 8.0) * u;
+            br.SetColor(&rgba(rcol.0, rcol.1, rcol.2, 0.72 * fade));
+            rt.DrawEllipse(
+                &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                    point: Vector2 { X: wx, Y: wy },
+                    radiusX: r_rad,
+                    radiusY: r_rad,
+                },
+                br,
+                1.4 * u,
+                None,
+            );
+        }
+
         match cfg.w_tray.net_style {
             TrayNetMeterStyle::Hidden => {}
             TrayNetMeterStyle::MinimalDot => {
-                let col = if wifi_on { accent_col } else { (232, 82, 82) };
-                br.SetColor(&rgba(col.0, col.1, col.2, 0.28));
-                rt.FillEllipse(&windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE { point: Vector2 { X: wx, Y: wy }, radiusX: 5.5 * u, radiusY: 5.5 * u }, br);
-                br.SetColor(&rgba(col.0, col.1, col.2, 0.95));
-                rt.FillEllipse(&windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE { point: Vector2 { X: wx, Y: wy }, radiusX: 2.8 * u, radiusY: 2.8 * u }, br);
+                let col = if wifi_on { accent_col } else { (236, 84, 84) };
+                let sig = anim.net_signal_display.clamp(0.0, 1.0);
+                let breath = if wifi_on {
+                    0.5 + 0.5 * (anim_phase * 1.8 + anim.net_wave_phase).sin()
+                } else {
+                    0.0
+                };
+                // Outer signal ring proportional to Wi-Fi signal strength
+                let ring_r = 5.8 * u;
+                br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.28));
+                rt.DrawEllipse(
+                    &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                        point: Vector2 { X: wx, Y: wy },
+                        radiusX: ring_r,
+                        radiusY: ring_r,
+                    },
+                    br,
+                    1.2 * u,
+                    None,
+                );
+                if wifi_on {
+                    br.SetColor(&rgba(col.0, col.1, col.2, 0.85));
+                    draw_d2d_arc(rt, d2d, wx, wy, ring_r, 0.0, sig * 360.0, 1.45 * u, br);
+                    let halo_r = (3.4 + sig * 2.1 + breath * 0.7) * u;
+                    br.SetColor(&rgba(col.0, col.1, col.2, 0.22 + 0.14 * breath));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: wx, Y: wy },
+                            radiusX: halo_r,
+                            radiusY: halo_r,
+                        },
+                        br,
+                    );
+                    br.SetColor(&rgba(col.0, col.1, col.2, 0.96));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: wx, Y: wy },
+                            radiusX: 2.5 * u,
+                            radiusY: 2.5 * u,
+                        },
+                        br,
+                    );
+                } else {
+                    br.SetColor(&rgba(col.0, col.1, col.2, 0.26));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: wx, Y: wy },
+                            radiusX: 4.6 * u,
+                            radiusY: 4.6 * u,
+                        },
+                        br,
+                    );
+                    br.SetColor(&rgba(col.0, col.1, col.2, 0.95));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: wx, Y: wy },
+                            radiusX: 2.3 * u,
+                            radiusY: 2.3 * u,
+                        },
+                        br,
+                    );
+                    rt.DrawLine(
+                        Vector2 { X: wx - 4.4 * u, Y: wy - 4.4 * u },
+                        Vector2 { X: wx + 4.4 * u, Y: wy + 4.4 * u },
+                        br,
+                        1.35 * u,
+                        None,
+                    );
+                }
             }
             TrayNetMeterStyle::LiveThroughputText => {
                 if let Some(tfm) = tf_mono {
-                    let s = if wifi_on { format!("{}%", cpu_pct) } else { "OFF".to_string() };
-                    br.SetColor(&rgba(accent_col.0, accent_col.1, accent_col.2, 0.94));
+                    let s = if wifi_on {
+                        if wifi_signal > 0 {
+                            format!("{}%", wifi_signal)
+                        } else {
+                            "ON".to_string()
+                        }
+                    } else {
+                        "OFF".to_string()
+                    };
+                    let col = if wifi_on { accent_col } else { (236, 84, 84) };
+                    br.SetColor(&rgba(col.0, col.1, col.2, 0.95));
                     draw_d2d_text(
                         rt,
                         &s,
                         tfm,
-                        &D2D_RECT_F { left: wx - 13.0 * u, top: wy - 9.0 * u, right: wx + 13.0 * u, bottom: wy + 9.0 * u },
+                        &D2D_RECT_F {
+                            left: wx - 14.0 * u,
+                            top: wy - 9.5 * u,
+                            right: wx + 14.0 * u,
+                            bottom: wy + 6.5 * u,
+                        },
                         br,
                     );
+                    // Animated micro signal strength bar underneath
+                    let bw = 15.0 * u;
+                    let by = wy + 6.2 * u;
+                    br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.30));
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: wx - bw * 0.5,
+                                top: by,
+                                right: wx + bw * 0.5,
+                                bottom: by + 2.0 * u,
+                            },
+                            radiusX: 1.0 * u,
+                            radiusY: 1.0 * u,
+                        },
+                        br,
+                    );
+                    if wifi_on && anim.net_signal_display > 0.02 {
+                        let pulse_a = if anim.net_pulse_t < 1.0 { 1.0 } else { 0.88 };
+                        br.SetColor(&rgba(col.0, col.1, col.2, pulse_a));
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: wx - bw * 0.5,
+                                    top: by,
+                                    right: wx - bw * 0.5 + bw * anim.net_signal_display,
+                                    bottom: by + 2.0 * u,
+                                },
+                                radiusX: 1.0 * u,
+                                radiusY: 1.0 * u,
+                            },
+                            br,
+                        );
+                    }
                 }
             }
             TrayNetMeterStyle::SignalBars => {
-                if wifi_on {
-                    br.SetColor(&rgba(fg_col.0, fg_col.1, fg_col.2, 0.92));
+                let sig = anim.net_signal_display.clamp(0.0, 1.0);
+                let wave_boost = if anim.net_pulse_t < 1.0 {
+                    (1.0 - anim.net_pulse_t) * 1.8
                 } else {
-                    br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.55));
-                }
+                    0.0
+                };
                 for i in 0..3 {
-                    let bh = (3.5 + i as f32 * 3.0) * u;
-                    let bx = wx - 5.0 * u + i as f32 * 4.0 * u;
+                    let thresh = (i as f32) * 0.33;
+                    let bar_fill = ((sig - thresh) / 0.33).clamp(0.0, 1.0);
+                    let wave_lift = if wifi_on && wave_boost > 0.01 {
+                        ((anim.net_wave_phase - i as f32 * 0.9).sin().max(0.0)) * wave_boost * u
+                    } else {
+                        0.0
+                    };
+                    let bh = (3.6 + i as f32 * 3.1) * u + wave_lift;
+                    let bx = wx - 5.2 * u + i as f32 * 4.1 * u;
+                    let col = if wifi_on && bar_fill > 0.15 {
+                        if wave_boost > 0.1 { accent_col } else { fg_col }
+                    } else {
+                        muted_col
+                    };
+                    let alpha = if wifi_on {
+                        0.28 + 0.68 * bar_fill
+                    } else {
+                        0.38
+                    };
+                    br.SetColor(&rgba(col.0, col.1, col.2, alpha));
                     rt.FillRoundedRectangle(
                         &D2D1_ROUNDED_RECT {
                             rect: D2D_RECT_F {
                                 left: bx,
-                                top: wy + 5.0 * u - bh,
-                                right: bx + 2.4 * u,
-                                bottom: wy + 5.0 * u,
+                                top: wy + 5.2 * u - bh,
+                                right: bx + 2.5 * u,
+                                bottom: wy + 5.2 * u,
                             },
                             radiusX: 0.9 * u,
                             radiusY: 0.9 * u,
@@ -8846,12 +9542,12 @@ unsafe fn draw_tray_cluster(
                     );
                 }
                 if !wifi_on {
-                    br.SetColor(&rgba(232, 82, 82, 0.95));
+                    br.SetColor(&rgba(236, 84, 84, 0.95));
                     rt.DrawLine(
                         Vector2 { X: wx - 5.5 * u, Y: wy - 4.5 * u },
                         Vector2 { X: wx + 5.5 * u, Y: wy + 5.0 * u },
                         br,
-                        1.3 * u,
+                        1.35 * u,
                         None,
                     );
                 }
@@ -8860,19 +9556,62 @@ unsafe fn draw_tray_cluster(
     };
 
     let draw_speaker = |vx: f32, vy: f32| {
+        draw_vol_pulse_ring(vx, vy);
+        // Subtle directional pop/squeeze impulse when volume increases or decreases
+        let bump = if anim.vol_pulse_t < 0.65 {
+            let k = (anim.vol_pulse_t / 0.65 * std::f32::consts::PI).sin();
+            if anim.vol_dir > 0 {
+                1.0 + 0.14 * k
+            } else if anim.vol_dir < 0 {
+                1.0 - 0.12 * k
+            } else {
+                1.0 + 0.08 * k
+            }
+        } else {
+            1.0
+        };
+
         match cfg.w_tray.audio_style {
             TrayAudioMeterStyle::LiveVuEqualizer => {
-                let amp = if vol_muted { 0.12 } else { (vol_pct as f32 / 100.0).clamp(0.18, 1.0) };
+                let has_live_vu = anim.has_audio_vu_energy() && !vol_muted;
+                let pulse_wave = if anim.vol_pulse_t < 1.0 {
+                    (1.0 - anim.vol_pulse_t) * 0.45
+                } else {
+                    0.0
+                };
                 for b_i in 0..4 {
-                    let wave = if vol_muted {
-                        0.20
+                    let level = if vol_muted {
+                        0.08
+                    } else if has_live_vu {
+                        (anim.audio_vu[b_i] * (0.35 + 0.65 * vol_ratio) + pulse_wave * 0.25)
+                            .clamp(0.10, 1.0)
                     } else {
-                        ((anim_phase * (2.6 + b_i as f32 * 0.65) + b_i as f32 * 1.1).sin() * 0.45 + 0.55) * amp
+                        // Clean proportional staircase level meter reacting directly to volume adjustments
+                        let bar_pos = (b_i as f32 + 1.0) / 4.0;
+                        let lit = ((vol_ratio - (b_i as f32) * 0.24) / 0.28).clamp(0.0, 1.0);
+                        let dir_ripple = if anim.vol_pulse_t < 1.0 {
+                            let phase = if anim.vol_dir >= 0 {
+                                anim.vol_pulse_t * 4.5 - b_i as f32 * 0.65
+                            } else {
+                                anim.vol_pulse_t * 4.5 - (3 - b_i) as f32 * 0.65
+                            };
+                            phase.sin().max(0.0) * pulse_wave
+                        } else {
+                            0.0
+                        };
+                        (0.12 + bar_pos * 0.78 * lit + dir_ripple).clamp(0.10, 1.0)
                     };
-                    let bh = (2.5 + wave * 9.5) * u;
+                    let bh = (2.2 + level * 9.8) * u * bump;
                     let bx = vx - 6.0 * u + b_i as f32 * 3.4 * u;
-                    let col = if vol_muted { muted_col } else if b_i % 2 == 0 { accent_col } else { fg_col };
-                    br.SetColor(&rgba(col.0, col.1, col.2, 0.94));
+                    let col = if vol_muted {
+                        (236, 84, 84)
+                    } else if b_i % 2 == 0 {
+                        audio_col
+                    } else {
+                        fg_col
+                    };
+                    let alpha = if vol_muted { 0.65 } else { 0.45 + 0.52 * level };
+                    br.SetColor(&rgba(col.0, col.1, col.2, alpha));
                     rt.FillRoundedRectangle(
                         &D2D1_ROUNDED_RECT {
                             rect: D2D_RECT_F {
@@ -8890,80 +9629,194 @@ unsafe fn draw_tray_cluster(
             }
             TrayAudioMeterStyle::VolumePercentText => {
                 if let Some(tfm) = tf_mono {
-                    let txt = if vol_muted { "M".to_string() } else { format!("{}%", vol_pct) };
-                    br.SetColor(&rgba(fg_col.0, fg_col.1, fg_col.2, 0.95));
+                    let txt = if vol_muted {
+                        "MUTE".to_string()
+                    } else {
+                        format!("{}%", vol_pct)
+                    };
+                    let col = if vol_muted || anim.vol_pulse_t < 0.9 {
+                        audio_col
+                    } else {
+                        fg_col
+                    };
+                    br.SetColor(&rgba(col.0, col.1, col.2, 0.96));
                     draw_d2d_text(
                         rt,
                         &txt,
                         tfm,
-                        &D2D_RECT_F { left: vx - 13.0 * u, top: vy - 9.0 * u, right: vx + 13.0 * u, bottom: vy + 9.0 * u },
+                        &D2D_RECT_F {
+                            left: vx - 14.0 * u,
+                            top: vy - 9.5 * u,
+                            right: vx + 14.0 * u,
+                            bottom: vy + 6.5 * u,
+                        },
                         br,
                     );
+                    // Animated proportional volume micro-bar underneath text
+                    let bw = 16.0 * u;
+                    let by = vy + 6.2 * u;
+                    br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.32));
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: vx - bw * 0.5,
+                                top: by,
+                                right: vx + bw * 0.5,
+                                bottom: by + 2.2 * u,
+                            },
+                            radiusX: 1.1 * u,
+                            radiusY: 1.1 * u,
+                        },
+                        br,
+                    );
+                    if !vol_muted && vol_ratio > 0.01 {
+                        br.SetColor(&rgba(audio_col.0, audio_col.1, audio_col.2, 0.95));
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: vx - bw * 0.5,
+                                    top: by,
+                                    right: vx - bw * 0.5 + bw * vol_ratio,
+                                    bottom: by + 2.2 * u,
+                                },
+                                radiusX: 1.1 * u,
+                                radiusY: 1.1 * u,
+                            },
+                            br,
+                        );
+                    }
                 }
             }
             TrayAudioMeterStyle::RadialArc => {
-                let r_d = 5.4 * u;
-                br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.35));
-                rt.DrawEllipse(&windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE { point: Vector2 { X: vx, Y: vy }, radiusX: r_d, radiusY: r_d }, br, 1.4 * u, None);
-                let fill_r = r_d * (if vol_muted { 0.0 } else { vol_pct as f32 / 100.0 });
-                if fill_r > 0.5 {
-                    br.SetColor(&rgba(accent_col.0, accent_col.1, accent_col.2, 0.90));
-                    rt.FillEllipse(&windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE { point: Vector2 { X: vx, Y: vy }, radiusX: fill_r, radiusY: fill_r }, br);
+                // True circular dial gauge sweeping smoothly with vol_display + glowing tip + center cue
+                let r_d = 5.8 * u * bump;
+                br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.32));
+                rt.DrawEllipse(
+                    &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                        point: Vector2 { X: vx, Y: vy },
+                        radiusX: r_d,
+                        radiusY: r_d,
+                    },
+                    br,
+                    1.55 * u,
+                    None,
+                );
+                if !vol_muted && vol_ratio > 0.01 {
+                    let sweep = (vol_ratio * 360.0).clamp(4.0, 360.0);
+                    br.SetColor(&rgba(audio_col.0, audio_col.1, audio_col.2, 0.96));
+                    draw_d2d_arc(rt, d2d, vx, vy, r_d, 0.0, sweep, 2.0 * u, br);
+                    // Leading-edge glowing tip dot on the arc
+                    let tip_rad = (sweep - 90.0).to_radians();
+                    let tx = vx + r_d * tip_rad.cos();
+                    let ty = vy + r_d * tip_rad.sin();
+                    br.SetColor(&rgba(fg_col.0, fg_col.1, fg_col.2, 0.96));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: tx, Y: ty },
+                            radiusX: 1.45 * u,
+                            radiusY: 1.45 * u,
+                        },
+                        br,
+                    );
+                    // Soft inner energy glow scaling with level
+                    br.SetColor(&rgba(audio_col.0, audio_col.1, audio_col.2, 0.25 + 0.35 * vol_ratio));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: vx, Y: vy },
+                            radiusX: (1.5 + 1.5 * vol_ratio) * u,
+                            radiusY: (1.5 + 1.5 * vol_ratio) * u,
+                        },
+                        br,
+                    );
+                } else {
+                    // Muted: crisp coral center X inside the dial
+                    br.SetColor(&rgba(238, 86, 86, 0.96));
+                    rt.DrawLine(
+                        Vector2 { X: vx - 2.6 * u, Y: vy - 2.6 * u },
+                        Vector2 { X: vx + 2.6 * u, Y: vy + 2.6 * u },
+                        br,
+                        1.45 * u,
+                        None,
+                    );
+                    rt.DrawLine(
+                        Vector2 { X: vx + 2.6 * u, Y: vy - 2.6 * u },
+                        Vector2 { X: vx - 2.6 * u, Y: vy + 2.6 * u },
+                        br,
+                        1.45 * u,
+                        None,
+                    );
                 }
             }
             TrayAudioMeterStyle::SpeakerGlyph => {
-                br.SetColor(&rgba(fg_col.0, fg_col.1, fg_col.2, if vol_muted { 0.55 } else { 0.94 }));
+                let s = bump;
+                br.SetColor(&rgba(fg_col.0, fg_col.1, fg_col.2, if vol_muted { 0.52 } else { 0.95 }));
                 rt.FillRectangle(
                     &D2D_RECT_F {
-                        left: vx - 6.0 * u,
-                        top: vy - 2.6 * u,
-                        right: vx - 2.6 * u,
-                        bottom: vy + 2.6 * u,
+                        left: vx - 6.2 * u * s,
+                        top: vy - 2.5 * u * s,
+                        right: vx - 2.8 * u * s,
+                        bottom: vy + 2.5 * u * s,
                     },
                     br,
                 );
                 rt.FillRectangle(
                     &D2D_RECT_F {
-                        left: vx - 2.8 * u,
-                        top: vy - 4.6 * u,
-                        right: vx - 0.6 * u,
-                        bottom: vy + 4.6 * u,
+                        left: vx - 3.0 * u * s,
+                        top: vy - 4.6 * u * s,
+                        right: vx - 0.8 * u * s,
+                        bottom: vy + 4.6 * u * s,
                     },
                     br,
                 );
-                if vol_muted || vol_pct == 0 {
-                    br.SetColor(&rgba(236, 84, 84, 0.96));
+                if vol_muted || vol_ratio < 0.01 {
+                    br.SetColor(&rgba(238, 86, 86, 0.96));
+                    let xoff = if anim.vol_pulse_t < 0.5 {
+                        (anim.vol_pulse_t * 28.0).sin() * 1.2 * u
+                    } else {
+                        0.0
+                    };
                     rt.DrawLine(
-                        Vector2 { X: vx + 1.5 * u, Y: vy - 2.8 * u },
-                        Vector2 { X: vx + 6.2 * u, Y: vy + 2.8 * u },
+                        Vector2 { X: vx + 1.4 * u + xoff, Y: vy - 2.8 * u },
+                        Vector2 { X: vx + 6.2 * u + xoff, Y: vy + 2.8 * u },
                         br,
-                        1.4 * u,
+                        1.45 * u,
                         None,
                     );
                     rt.DrawLine(
-                        Vector2 { X: vx + 6.2 * u, Y: vy - 2.8 * u },
-                        Vector2 { X: vx + 1.5 * u, Y: vy + 2.8 * u },
+                        Vector2 { X: vx + 6.2 * u + xoff, Y: vy - 2.8 * u },
+                        Vector2 { X: vx + 1.4 * u + xoff, Y: vy + 2.8 * u },
                         br,
-                        1.4 * u,
+                        1.45 * u,
                         None,
                     );
                 } else {
-                    br.SetColor(&rgba(accent_col.0, accent_col.1, accent_col.2, 0.92));
-                    rt.DrawLine(
-                        Vector2 { X: vx + 1.8 * u, Y: vy - 2.4 * u },
-                        Vector2 { X: vx + 1.8 * u, Y: vy + 2.4 * u },
-                        br,
-                        1.4 * u,
-                        None,
-                    );
-                    if vol_pct >= 45 {
-                        rt.DrawLine(
-                            Vector2 { X: vx + 4.6 * u, Y: vy - 4.2 * u },
-                            Vector2 { X: vx + 4.6 * u, Y: vy + 4.2 * u },
-                            br,
-                            1.4 * u,
-                            None,
-                        );
+                    // 3 progressive curved acoustic arcs reacting smoothly to volume up/down!
+                    let wave_shift = if anim.vol_pulse_t < 1.0 {
+                        let k = (1.0 - anim.vol_pulse_t) * 1.4 * u;
+                        if anim.vol_dir > 0 { k } else if anim.vol_dir < 0 { -k * 0.7 } else { 0.0 }
+                    } else {
+                        0.0
+                    };
+                    for (wi, (thresh, base_r)) in [(0.02f32, 3.2f32), (0.34, 5.4), (0.68, 7.6)]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let seg_alpha = ((vol_ratio - thresh) / 0.24).clamp(0.0, 1.0);
+                        if seg_alpha > 0.05 {
+                            let rad = (base_r * u + wave_shift * (0.45 + wi as f32 * 0.25)).max(1.8 * u);
+                            br.SetColor(&rgba(audio_col.0, audio_col.1, audio_col.2, 0.25 + 0.72 * seg_alpha));
+                            draw_d2d_arc(
+                                rt,
+                                d2d,
+                                vx - 1.2 * u,
+                                vy,
+                                rad,
+                                42.0,
+                                96.0,
+                                1.35 * u,
+                                br,
+                            );
+                        }
                     }
                 }
             }
@@ -8971,28 +9824,111 @@ unsafe fn draw_tray_cluster(
     };
 
     let draw_battery = |bx: f32, by: f32, pct: u8| {
+        let bat_ratio = anim.bat_display.clamp(0.0, 1.0);
+        let bat_low = pct <= 20 && !bat_charging;
+        let charge_pulse = if bat_charging {
+            0.5 + 0.5 * anim.bat_charge_phase.sin()
+        } else {
+            0.0
+        };
+        let low_pulse = if bat_low {
+            0.5 + 0.5 * (anim.bat_charge_phase * 1.6).sin()
+        } else {
+            0.0
+        };
+        let bat_col: (u8, u8, u8) = if bat_charging {
+            (74, 228, 134)
+        } else if bat_low {
+            (246, 94, 72)
+        } else {
+            accent_col
+        };
+
+        // Plug/unplug or battery step transition ripple
+        if anim.bat_pulse_t < 0.995 {
+            let t = anim.bat_pulse_t.clamp(0.0, 1.0);
+            let ease = 1.0 - (1.0 - t).powi(3);
+            let fade = (1.0 - t).powf(1.4);
+            let r_rad = (4.2 + ease * 8.0) * u;
+            br.SetColor(&rgba(bat_col.0, bat_col.1, bat_col.2, 0.75 * fade));
+            rt.DrawEllipse(
+                &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                    point: Vector2 { X: bx, Y: by },
+                    radiusX: r_rad,
+                    radiusY: r_rad,
+                },
+                br,
+                1.45 * u,
+                None,
+            );
+        }
+
         match cfg.w_tray.battery_style {
             TrayBatteryMeterStyle::Hidden => {}
             TrayBatteryMeterStyle::RadialRingGauge => {
-                let r_b = 5.6 * u;
-                br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.34));
-                rt.DrawEllipse(&windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE { point: Vector2 { X: bx, Y: by }, radiusX: r_b, radiusY: r_b }, br, 1.5 * u, None);
-                let fill_col = if bat_charging {
-                    rgba(74, 222, 128, 0.94)
-                } else if pct <= 20 {
-                    rgba(244, 102, 74, 0.94)
+                // True proportional circular arc gauge + charging bolt & shimmer + low-battery pulse
+                let r_b = 5.8 * u;
+                if bat_charging || bat_low {
+                    let halo_a = if bat_charging {
+                        0.12 + 0.18 * charge_pulse
+                    } else {
+                        0.14 + 0.24 * low_pulse
+                    };
+                    br.SetColor(&rgba(bat_col.0, bat_col.1, bat_col.2, halo_a));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: bx, Y: by },
+                            radiusX: (r_b + 1.6 * u),
+                            radiusY: (r_b + 1.6 * u),
+                        },
+                        br,
+                    );
+                }
+                br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.32));
+                rt.DrawEllipse(
+                    &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                        point: Vector2 { X: bx, Y: by },
+                        radiusX: r_b,
+                        radiusY: r_b,
+                    },
+                    br,
+                    1.55 * u,
+                    None,
+                );
+                let sweep = (bat_ratio * 360.0).clamp(6.0, 360.0);
+                br.SetColor(&rgba(bat_col.0, bat_col.1, bat_col.2, if bat_low { 0.65 + 0.35 * low_pulse } else { 0.95 }));
+                draw_d2d_arc(rt, d2d, bx, by, r_b, 0.0, sweep, 2.0 * u, br);
+                if bat_charging {
+                    // Traveling shimmer highlight along the charging arc + crisp lightning bolt in center
+                    let shim_deg = (anim.bat_charge_phase.to_degrees() * 1.4) % sweep.max(10.0);
+                    br.SetColor(&rgba(216, 255, 232, 0.85 * (0.4 + 0.6 * charge_pulse)));
+                    draw_d2d_arc(rt, d2d, bx, by, r_b, shim_deg, 28.0f32.min(sweep), 2.1 * u, br);
+                    br.SetColor(&rgba(244, 255, 248, 0.95));
+                    draw_charge_bolt(rt, bx, by, 0.95 * u, br);
                 } else {
-                    rgba(accent_col.0, accent_col.1, accent_col.2, 0.92)
-                };
-                br.SetColor(&fill_col);
-                let r_in = (r_b - 1.6 * u) * (pct as f32 / 100.0).clamp(0.18, 1.0);
-                rt.FillEllipse(&windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE { point: Vector2 { X: bx, Y: by }, radiusX: r_in, radiusY: r_in }, br);
+                    let dot_r = (1.6 + 1.2 * bat_ratio) * u;
+                    br.SetColor(&rgba(bat_col.0, bat_col.1, bat_col.2, 0.88));
+                    rt.FillEllipse(
+                        &windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
+                            point: Vector2 { X: bx, Y: by },
+                            radiusX: dot_r,
+                            radiusY: dot_r,
+                        },
+                        br,
+                    );
+                }
             }
             TrayBatteryMeterStyle::PercentOnly => {
                 if let Some(tfm) = tf_mono {
-                    let s = format!("{}%", pct);
+                    let s = if bat_charging {
+                        format!("{}⚡", pct)
+                    } else {
+                        format!("{}%", pct)
+                    };
                     let fill_col = if bat_charging {
-                        rgba(74, 222, 128, 0.96)
+                        rgba(74, 228, 134, 0.82 + 0.18 * charge_pulse)
+                    } else if bat_low {
+                        rgba(246, 94, 72, 0.68 + 0.32 * low_pulse)
                     } else {
                         rgba(fg_col.0, fg_col.1, fg_col.2, 0.94)
                     };
@@ -9001,15 +9937,52 @@ unsafe fn draw_tray_cluster(
                         rt,
                         &s,
                         tfm,
-                        &D2D_RECT_F { left: bx - 14.0 * u, top: by - 9.0 * u, right: bx + 14.0 * u, bottom: by + 9.0 * u },
+                        &D2D_RECT_F {
+                            left: bx - 15.0 * u,
+                            top: by - 9.5 * u,
+                            right: bx + 15.0 * u,
+                            bottom: by + 6.5 * u,
+                        },
+                        br,
+                    );
+                    // Animated proportional battery micro-bar underneath
+                    let bw = 16.0 * u;
+                    let bar_y = by + 6.2 * u;
+                    br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.30));
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: bx - bw * 0.5,
+                                top: bar_y,
+                                right: bx + bw * 0.5,
+                                bottom: bar_y + 2.1 * u,
+                            },
+                            radiusX: 1.0 * u,
+                            radiusY: 1.0 * u,
+                        },
+                        br,
+                    );
+                    let fw = (bw * bat_ratio).max(2.0 * u);
+                    br.SetColor(&rgba(bat_col.0, bat_col.1, bat_col.2, 0.94));
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: bx - bw * 0.5,
+                                top: bar_y,
+                                right: bx - bw * 0.5 + fw,
+                                bottom: bar_y + 2.1 * u,
+                            },
+                            radiusX: 1.0 * u,
+                            radiusY: 1.0 * u,
+                        },
                         br,
                     );
                 }
             }
             TrayBatteryMeterStyle::HorizontalCell => {
-                let bw = 15.0 * u;
-                let bh = 8.6 * u;
-                let bx_body = bx - 1.2 * u; // center body + 2.4u right terminal nub cleanly on bx
+                let bw = 15.6 * u;
+                let bh = 9.0 * u;
+                let bx_body = bx - 1.2 * u;
                 let b_rect = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
                         left: bx_body - bw * 0.5,
@@ -9017,10 +9990,15 @@ unsafe fn draw_tray_cluster(
                         right: bx_body + bw * 0.5,
                         bottom: by + bh * 0.5,
                     },
-                    radiusX: 1.8 * u,
-                    radiusY: 1.8 * u,
+                    radiusX: 2.0 * u,
+                    radiusY: 2.0 * u,
                 };
-                br.SetColor(&rgba(fg_col.0, fg_col.1, fg_col.2, 0.86));
+                br.SetColor(&rgba(
+                    if bat_low { 246 } else { fg_col.0 },
+                    if bat_low { 94 } else { fg_col.1 },
+                    if bat_low { 72 } else { fg_col.2 },
+                    if bat_low { 0.65 + 0.35 * low_pulse } else { 0.88 },
+                ));
                 rt.DrawRoundedRectangle(&b_rect, br, 1.15 * u, None);
                 rt.FillRectangle(
                     &D2D_RECT_F {
@@ -9031,16 +10009,15 @@ unsafe fn draw_tray_cluster(
                     },
                     br,
                 );
-                let fill_col = if bat_charging {
-                    rgba(74, 222, 128, 0.94)
-                } else if pct <= 20 {
-                    rgba(244, 102, 74, 0.94)
+                let pad = 1.9 * u;
+                let inner_w = bw - pad * 2.0;
+                let fw = (inner_w * bat_ratio).max(2.0 * u);
+                let fill_alpha = if bat_low {
+                    0.62 + 0.36 * low_pulse
                 } else {
-                    rgba(fg_col.0, fg_col.1, fg_col.2, 0.90)
+                    0.92
                 };
-                br.SetColor(&fill_col);
-                let pad = 2.0 * u;
-                let fw = ((bw - pad * 2.0) * (pct as f32 / 100.0)).max(2.0 * u);
+                br.SetColor(&rgba(bat_col.0, bat_col.1, bat_col.2, fill_alpha));
                 rt.FillRoundedRectangle(
                     &D2D1_ROUNDED_RECT {
                         rect: D2D_RECT_F {
@@ -9054,19 +10031,152 @@ unsafe fn draw_tray_cluster(
                     },
                     br,
                 );
+                if bat_charging {
+                    // Animated shimmer highlight gliding across the green charge bar + lightning bolt
+                    let sweep_t = (anim.bat_charge_phase * 0.45).fract();
+                    let shim_w = (fw * 0.35).clamp(2.2 * u, 4.8 * u);
+                    let shim_x = b_rect.rect.left + pad + (fw - shim_w).max(0.0) * sweep_t;
+                    br.SetColor(&rgba(232, 255, 240, 0.55 * (0.4 + 0.6 * charge_pulse)));
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: shim_x,
+                                top: b_rect.rect.top + pad,
+                                right: (shim_x + shim_w).min(b_rect.rect.left + pad + fw),
+                                bottom: b_rect.rect.bottom - pad,
+                            },
+                            radiusX: 0.8 * u,
+                            radiusY: 0.8 * u,
+                        },
+                        br,
+                    );
+                    br.SetColor(&rgba(255, 255, 255, 0.95));
+                    draw_charge_bolt(rt, bx_body, by, 0.85 * u, br);
+                }
             }
         }
     };
 
-    let show_net = cfg.w_tray.net_style != TrayNetMeterStyle::Hidden;
-    let visible_bat = bat_pct.filter(|_| cfg.w_tray.battery_style != TrayBatteryMeterStyle::Hidden);
-    let pts = tray_cluster_item_centers(rect, is_vertical, show_net, visible_bat.is_some());
-    if let Some((wx, wy)) = pts.wifi {
-        draw_wifi(wx, wy);
+    let show_net = cfg.w_tray.eff_show_net();
+    let show_audio = cfg.w_tray.eff_show_audio();
+    let visible_bat = bat_pct.filter(|_| cfg.w_tray.eff_show_battery());
+    if !show_net && !show_audio && visible_bat.is_none() {
+        return;
     }
-    draw_speaker(pts.speaker.0, pts.speaker.1);
-    if let (Some((bx, by)), Some(bpct)) = (pts.battery, visible_bat) {
-        draw_battery(bx, by, bpct);
+    if show_audio {
+        let pts = tray_cluster_item_centers(rect, is_vertical, show_net, visible_bat.is_some());
+        if let Some((wx, wy)) = pts.wifi {
+            draw_wifi(wx, wy);
+        }
+        draw_speaker(pts.speaker.0, pts.speaker.1);
+        if let (Some((bx, by)), Some(bpct)) = (pts.battery, visible_bat) {
+            draw_battery(bx, by, bpct);
+        }
+    } else {
+        let w = (rect.right - rect.left).max(16.0);
+        let h = (rect.bottom - rect.top).max(16.0);
+        let cx = (rect.left + rect.right) * 0.5;
+        let cy = (rect.top + rect.bottom) * 0.5;
+        match (show_net, visible_bat) {
+            (true, Some(bpct)) => {
+                if is_vertical {
+                    draw_wifi(cx, rect.top + h * 0.30);
+                    draw_battery(cx, rect.top + h * 0.70, bpct);
+                } else {
+                    draw_wifi(rect.left + w * 0.30, cy);
+                    draw_battery(rect.left + w * 0.72, cy, bpct);
+                }
+            }
+            (true, None) => draw_wifi(cx, cy),
+            (false, Some(bpct)) => draw_battery(cx, cy, bpct),
+            (false, None) => {}
+        }
+    }
+
+    // Non-destructive live volume badge + animated bar overlay during volume adjustment
+    // (preserves all animated tray indicators underneath while clearly showing exact % / MUTE)
+    if show_audio && show_vol_osd && (anim.vol_badge_ttl > 0.01 || hovered) {
+        let pts = tray_cluster_item_centers(rect, is_vertical, show_net, visible_bat.is_some());
+        let fade = if anim.vol_badge_ttl > 0.01 {
+            (anim.vol_badge_ttl / 0.28).clamp(0.0, 1.0)
+        } else {
+            0.92
+        };
+        if let Some(tfm) = tf_mono {
+            let txt = if vol_muted {
+                "MUTE".to_string()
+            } else if is_vertical {
+                format!("{}%", vol_pct)
+            } else {
+                format!("VOL {}%", vol_pct)
+            };
+            let pill_h = if is_vertical { 17.0 * u } else { 15.0 * u };
+            let pill_rc = if is_vertical {
+                let py = (pts.speaker.1 + 7.5 * u).min(rect.bottom - pill_h - 1.0 * u);
+                D2D_RECT_F {
+                    left: rect.left + 2.0 * u,
+                    top: py,
+                    right: rect.right - 2.0 * u,
+                    bottom: py + pill_h,
+                }
+            } else {
+                D2D_RECT_F {
+                    left: rect.left + 2.5 * u,
+                    top: rect.bottom - pill_h - 1.0 * u,
+                    right: rect.right - 2.5 * u,
+                    bottom: rect.bottom - 1.0 * u,
+                }
+            };
+            br.SetColor(&rgba(12, 16, 22, 0.86 * fade));
+            rt.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT { rect: pill_rc, radiusX: 4.5 * u, radiusY: 4.5 * u },
+                br,
+            );
+            br.SetColor(&rgba(audio_col.0, audio_col.1, audio_col.2, 0.55 * fade));
+            rt.DrawRoundedRectangle(
+                &D2D1_ROUNDED_RECT { rect: pill_rc, radiusX: 4.5 * u, radiusY: 4.5 * u },
+                br,
+                0.9 * u,
+                None,
+            );
+            br.SetColor(&rgba(248, 252, 255, 0.96 * fade));
+            draw_d2d_text(
+                rt,
+                &txt,
+                tfm,
+                &D2D_RECT_F {
+                    left: pill_rc.left + 1.5 * u,
+                    top: pill_rc.top,
+                    right: pill_rc.right - 1.5 * u,
+                    bottom: pill_rc.bottom - 3.0 * u,
+                },
+                br,
+            );
+            let bar_bg = D2D_RECT_F {
+                left: pill_rc.left + 3.5 * u,
+                top: pill_rc.bottom - 3.6 * u,
+                right: pill_rc.right - 3.5 * u,
+                bottom: pill_rc.bottom - 1.4 * u,
+            };
+            br.SetColor(&rgba(muted_col.0, muted_col.1, muted_col.2, 0.35 * fade));
+            rt.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT { rect: bar_bg, radiusX: 1.1 * u, radiusY: 1.1 * u },
+                br,
+            );
+            if !vol_muted && vol_ratio > 0.01 {
+                let bar_fg = D2D_RECT_F {
+                    left: bar_bg.left,
+                    top: bar_bg.top,
+                    right: bar_bg.left + (bar_bg.right - bar_bg.left) * vol_ratio,
+                    bottom: bar_bg.bottom,
+                };
+                br.SetColor(&rgba(audio_col.0, audio_col.1, audio_col.2, 0.96 * fade));
+                rt.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT { rect: bar_fg, radiusX: 1.1 * u, radiusY: 1.1 * u },
+                    br,
+                );
+            }
+        }
     }
 }
 
@@ -9077,6 +10187,36 @@ struct TrayClusterPoints {
     battery: Option<(f32, f32)>,
 }
 
+fn tray_cluster_slot_span_cfg(
+    is_vertical: bool,
+    base_sz: f32,
+    has_battery: bool,
+    cfg: &AppConfig,
+    u: f32,
+) -> f32 {
+    let show_net = cfg.w_tray.eff_show_net();
+    let show_audio = cfg.w_tray.eff_show_audio();
+    let show_bat = has_battery && cfg.w_tray.eff_show_battery();
+    let count = usize::from(show_audio) + usize::from(show_net) + usize::from(show_bat);
+    if count == 0 {
+        return 0.0;
+    }
+    if is_vertical {
+        match count {
+            3 => (base_sz * 1.48).max(66.0 * u),
+            2 => base_sz.max(44.0 * u),
+            _ => base_sz,
+        }
+    } else {
+        match count {
+            3 => 82.0 * u,
+            2 => 58.0 * u,
+            _ => base_sz.min(44.0 * u).max(34.0 * u),
+        }
+    }
+}
+
+#[allow(dead_code)]
 fn tray_cluster_slot_span(
     is_vertical: bool,
     base_sz: f32,
@@ -9408,20 +10548,21 @@ mod tests {
     }
 
     #[test]
-    fn dock_timer_cadence_drops_to_idle_and_throttles_ambient() {
-        // Active spring/slide/bounce motion runs at 60 FPS (16ms)
-        assert_eq!(compute_dock_timer_ms(true, false, false, false, false), 16);
-        assert_eq!(compute_dock_timer_ms(true, true, true, true, true), 16);
-        // Hover settle / dwell runs at 30 FPS (33ms)
-        assert_eq!(compute_dock_timer_ms(false, true, false, false, true), 33);
-        // Thumbnail popup polls calmly at 80ms
-        assert_eq!(compute_dock_timer_ms(false, false, true, false, false), 80);
-        // Unhovered ambient dock throttles to 110ms (140ms eco) instead of hammering 50ms/16ms
-        assert_eq!(compute_dock_timer_ms(false, false, false, true, false), 110);
-        assert_eq!(compute_dock_timer_ms(false, false, false, true, true), 140);
+    fn dock_timer_cadence_drops_to_idle_and_obeys_anim_fps() {
+        // Active spring/slide/bounce/ambient motion obeys max(8, 1000 / anim_fps)
+        assert_eq!(compute_dock_timer_ms(true, false, false, false, 45), 22);
+        assert_eq!(compute_dock_timer_ms(true, true, true, true, 24), 41);
+        assert_eq!(compute_dock_timer_ms(false, true, false, false, 30), 33);
+        assert_eq!(compute_dock_timer_ms(false, false, false, true, 60), 16);
+        assert_eq!(compute_dock_timer_ms(false, false, false, true, 90), 11);
+        assert_eq!(compute_dock_timer_ms(false, false, false, true, 120), 8);
+        // Thumbnail popup polls calmly at 2x frame interval clamped 40..=80ms
+        assert_eq!(compute_dock_timer_ms(false, false, true, false, 45), 44);
+        assert_eq!(compute_dock_timer_ms(false, false, true, false, 24), 80);
+        assert_eq!(compute_dock_timer_ms(false, false, true, false, 120), 40);
         // Settled static/tactile dock drops completely to 0ms (0% idle CPU)
-        assert_eq!(compute_dock_timer_ms(false, false, false, false, false), 0);
-        assert_eq!(compute_dock_timer_ms(false, false, false, false, true), 0);
+        assert_eq!(compute_dock_timer_ms(false, false, false, false, 45), 0);
+        assert_eq!(compute_dock_timer_ms(false, false, false, false, 120), 0);
 
         // Disabled dock engine always reports 0ms timer even on ambient themes
         let eng = MacDockEngine::new(HINSTANCE::default());
@@ -9438,5 +10579,128 @@ mod tests {
             !crate::dock_themes::is_ambient_animated_cfg(&vert_cfg),
             "Static vertical dock must not run ambient animation just because marquee_ticker is true"
         );
+    }
+
+    #[test]
+    fn reactive_tray_animations_all_styles_and_idle_settling() {
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::RealisticWaterDock);
+        cfg.tb_ambient_anim = true;
+
+        let mut anim = TrayAnimState::default();
+        anim.seed_volume(70, false);
+        anim.seed_net(true, 90);
+        anim.seed_battery(Some(75));
+        assert!(
+            !anim.is_active(&cfg, false, false, false),
+            "Freshly seeded tray must be idle (0% CPU) with no spurious startup animation"
+        );
+
+        // 1. Reducing volume triggers directional -1 animation, smooth glide, and live badge
+        anim.on_volume_change(70, 40, false, false, true);
+        assert_eq!(anim.vol_dir, -1);
+        assert_eq!(anim.vol_pulse_t, 0.0);
+        assert!(anim.vol_badge_ttl > 1.0);
+        assert!(anim.is_active(&cfg, false, false, false));
+        let moved = anim.step(0.022, false, false, false, true);
+        assert!(moved);
+        assert!(anim.vol_display < 0.70 && anim.vol_display > 0.40);
+        assert!(anim.vol_pulse_t > 0.0 && anim.vol_pulse_t < 1.0);
+
+        // Increasing volume flips direction to +1; mute toggle sets direction to 0
+        anim.on_volume_change(40, 82, false, false, true);
+        assert_eq!(anim.vol_dir, 1);
+        anim.on_volume_change(82, 82, false, true, true);
+        assert_eq!(anim.vol_dir, 0);
+        assert!(anim.is_active(&cfg, true, false, false));
+
+        // 2. Network & Battery transitions trigger ripples and settle back to exact idle
+        anim.on_net_change(false, 0, true);
+        assert_eq!(anim.net_pulse_t, 0.0);
+        anim.on_battery_change(Some(74), true);
+        assert_eq!(anim.bat_pulse_t, 0.0);
+
+        // Run ~2.5s of frames (at 45 FPS = 0.022s) -> all transients settle cleanly to 0% idle
+        for _ in 0..120 {
+            anim.step(0.022, true, false, false, true);
+        }
+        assert!(
+            !anim.is_active(&cfg, true, false, false),
+            "Settled tray must drop back to idle once transient volume/net/bat pulses finish"
+        );
+
+        // Charging and low-battery states keep gentle ambient shimmer active when enabled
+        assert!(anim.is_active(&cfg, false, true, false));
+        assert!(anim.is_active(&cfg, false, false, true));
+        // LiveVuEqualizer wakes up on real audio bands and settles when audio stops
+        cfg.w_tray.audio_style = TrayAudioMeterStyle::LiveVuEqualizer;
+        anim.update_audio_vu(&[0.8; 12]);
+        assert!(anim.is_active(&cfg, false, false, false));
+        for _ in 0..25 {
+            anim.update_audio_vu(&[0.0; 12]);
+        }
+        assert!(!anim.has_audio_vu_energy());
+
+        // 3. Direct2D smoke test across ALL Audio × Net × Battery styles (horizontal + vertical)
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut eng = MacDockEngine::new(HINSTANCE::default());
+        assert!(eng.ensure_graphics(), "Direct2D graphics must initialize for tray render test");
+        let mut surf = DibSurface::new();
+        assert!(surf.ensure_size(120, 120));
+        let rc = RECT { left: 0, top: 0, right: 120, bottom: 120 };
+        let rt = eng.dc_rt.as_ref().unwrap();
+        let br = unsafe { rt.CreateSolidColorBrush(&rgba(255, 255, 255, 1.0), None).unwrap() };
+        unsafe {
+            assert!(rt.BindDC(surf.mem_dc, &rc).is_ok());
+            rt.BeginDraw();
+            for &aud in &TrayAudioMeterStyle::ALL {
+                for &net in &TrayNetMeterStyle::ALL {
+                    for &bat in &TrayBatteryMeterStyle::ALL {
+                        cfg.w_tray.audio_style = aud;
+                        cfg.w_tray.net_style = net;
+                        cfg.w_tray.battery_style = bat;
+                        anim.on_volume_change(75, 42, false, false, true);
+                        anim.step(0.05, false, true, false, true);
+                        for is_vert in [false, true] {
+                            let slot_rc = if is_vert {
+                                D2D_RECT_F { left: 8.0, top: 8.0, right: 56.0, bottom: 92.0 }
+                            } else {
+                                D2D_RECT_F { left: 8.0, top: 8.0, right: 94.0, bottom: 52.0 }
+                            };
+                            draw_tray_cluster(
+                                rt,
+                                eng.d2d.as_ref(),
+                                &br,
+                                eng.tf_mono.as_ref(),
+                                slot_rc,
+                                42,
+                                false,
+                                true,
+                                78,
+                                Some(86),
+                                true,
+                                true,
+                                true,
+                                (244, 250, 255),
+                                (165, 190, 210),
+                                (0, 224, 240),
+                                &cfg,
+                                &anim,
+                                1.2,
+                                is_vert,
+                                1.0,
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(rt.EndDraw(None, None).is_ok());
+        }
+        surf.release();
+        unsafe {
+            CoUninitialize();
+        }
     }
 }

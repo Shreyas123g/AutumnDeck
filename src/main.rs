@@ -66,7 +66,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use config::{
     get_native_autohide, load_config, save_config, start_explorer_pref_watcher, to_wide,
-    AppConfig, MacDockHideMode, PillMode, TaskbarMode, TaskbarTheme,
+    AppConfig, MacDockHideMode, PillMode, TaskbarMode,
 };
 use mac_dock::{MacDockAction, MacDockEngine};
 use settings_ui::{SettingsCommand, SettingsController, StudioTab, WidgetPage};
@@ -179,7 +179,9 @@ struct AppState {
     os_session_ending: bool,
     maintenance_ticks: u32,
     self_workarea_broadcast_until: Option<Instant>,
+    mode_switch_settle_until: Option<Instant>,
     last_eval_recheck: Option<Instant>,
+    last_applied_24h: bool,
     clean_exit_event: HANDLE,
     hooks: [HWINEVENTHOOK; 5],
 }
@@ -534,6 +536,7 @@ fn main() {
 
     let clean_exit_event = spawn_watchdog();
 
+    let initial_24h = config.w_clock.use_24h.unwrap_or(config.widgets_24h);
     let mut boxed = Box::new(AppState {
         hidden_hwnd,
         config,
@@ -547,7 +550,7 @@ fn main() {
         taskbar_created_msg,
         peek_leave_ticks: 0,
         preview_hold_ticks: 0,
-        boot_settle_ticks: 24,
+        boot_settle_ticks: 8,
         viz_timer_ms: 0,
         dock_timer_ms: 0,
         game_mode_active: false,
@@ -555,7 +558,9 @@ fn main() {
         os_session_ending: false,
         maintenance_ticks: 0,
         self_workarea_broadcast_until: None,
+        mode_switch_settle_until: None,
         last_eval_recheck: None,
+        last_applied_24h: initial_24h,
         clean_exit_event,
         hooks: [HWINEVENTHOOK::default(); 5],
     });
@@ -661,7 +666,7 @@ fn main() {
 
     unsafe {
         let _ = SetTimer(Some(hidden_hwnd), TIMER_EDGE_PEEK, 60, None);
-        let _ = SetTimer(Some(hidden_hwnd), TIMER_PILL_SYNC, 2500, None);
+        let _ = SetTimer(Some(hidden_hwnd), TIMER_PILL_SYNC, 5000, None);
         let _ = SetTimer(Some(hidden_hwnd), TIMER_WIDGETS_TICK, 400, None);
         let _ = SetTimer(Some(hidden_hwnd), TIMER_BOOT_SETTLE, 450, None);
         let _ = PostMessageW(Some(hidden_hwnd), WM_APP_DEFERRED_INIT, WPARAM(0), LPARAM(0));
@@ -940,6 +945,11 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
+    let in_mode_switch_settle = state
+        .mode_switch_settle_until
+        .map(|t| Instant::now() < t)
+        .unwrap_or(false);
+
     if event == EVENT_OBJECT_LOCATIONCHANGE {
         let tray_hw = state.styler.tracked_tray_hwnd();
         let on_tray = !state.config.mac_dock_enabled
@@ -947,7 +957,9 @@ unsafe extern "system" fn win_event_proc(
             && !tray_hw.0.is_null()
             && hwnd == tray_hw;
         if on_tray {
-            post_sched_eval();
+            if !in_mode_switch_settle {
+                post_sched_eval();
+            }
         } else if eval_needed && hwnd == GetForegroundWindow() {
             let now_ms = GetTickCount64();
             let prev = LAST_FG_LOC_EVAL_MS.load(Ordering::Relaxed);
@@ -966,9 +978,11 @@ unsafe extern "system" fn win_event_proc(
         if eval_needed {
             post_sched_eval();
         }
-    } else if state.config.mode == TaskbarMode::SmartMaximize
-        || !state.hider.is_hidden
-        || state.hider.peek_visible
+    } else if state.config.mode == TaskbarMode::SmartMaximize {
+        post_sched_eval();
+    } else if (!state.hider.is_hidden || state.hider.peek_visible)
+        && event != EVENT_SYSTEM_MOVESIZEEND
+        && !in_mode_switch_settle
     {
         post_sched_eval();
     }
@@ -1198,7 +1212,7 @@ unsafe extern "system" fn global_wnd_proc(
         state.widgets.render();
         evaluate_mode_and_apply(state, true);
         schedule_pill_rechecks(state.hidden_hwnd);
-        state.boot_settle_ticks = 24;
+        state.boot_settle_ticks = 8;
         let _ = SetTimer(Some(state.hidden_hwnd), TIMER_BOOT_SETTLE, 450, None);
         return LRESULT(0);
     }
@@ -1214,12 +1228,14 @@ unsafe extern "system" fn global_wnd_proc(
         }
         WM_APP_FORCE_HIDE => {
             state.config.mode = TaskbarMode::StealthHide;
+            state.config.sync_dock_hide_from_mode();
             save_config(&state.config);
             evaluate_mode_and_apply(state, false);
             LRESULT(0)
         }
         WM_APP_FORCE_SHOW => {
             state.config.mode = TaskbarMode::AlwaysVisible;
+            state.config.sync_dock_hide_from_mode();
             save_config(&state.config);
             evaluate_mode_and_apply(state, true);
             LRESULT(0)
@@ -1275,15 +1291,22 @@ unsafe extern "system" fn global_wnd_proc(
         }
         WM_APP_TAP_READY => {
             if !state.shutting_down {
+                let connected = wparam.0 != 0;
                 if !state.config.mac_dock_enabled
                     && (!state.hider.is_hidden || state.hider.peek_visible)
                 {
-                    state.styler.on_tap_connected(&state.config);
-                    schedule_pill_rechecks(state.hidden_hwnd);
-                    write_status_snapshot("TAP_READY", state);
-                } else {
+                    if connected {
+                        state.styler.on_tap_connected(&state.config);
+                        schedule_pill_rechecks(state.hidden_hwnd);
+                        write_status_snapshot("TAP_READY", state);
+                    } else {
+                        state.styler.sync_taskbar(&state.config, false);
+                        write_status_snapshot("TAP_FALLBACK", state);
+                    }
+                } else if connected {
                     state.styler.note_tap_ready();
                 }
+                sync_studio_live(state);
             }
             LRESULT(0)
         }
@@ -1328,8 +1351,10 @@ unsafe extern "system" fn global_wnd_proc(
             LRESULT(0)
         }
         WM_APP_WIDGET_CLOCK_24H => {
-            state.config.widgets_24h = wparam.0 != 0;
+            let use_24h = wparam.0 != 0;
+            state.config.set_clock_24h(use_24h);
             save_config(&state.config);
+            sync_clock_24h_if_changed(state);
             state.settings.sync_from_config(&state.config);
             LRESULT(0)
         }
@@ -1395,6 +1420,7 @@ unsafe extern "system" fn global_wnd_proc(
             state.widgets.on_media_update();
             if state.config.mac_dock_enabled {
                 sync_dock_snapshots(state);
+                update_dock_timer(state);
             }
             sync_studio_live(state);
             update_viz_timer(state);
@@ -1494,9 +1520,13 @@ unsafe extern "system" fn global_wnd_proc(
                         } else {
                             Vec::new()
                         };
-                        state.hider.settle_hidden(dock_reserves.is_empty());
+                        let mut wa_changed = state.hider.settle_hidden(dock_reserves.is_empty());
                         if !dock_reserves.is_empty() {
-                            TaskbarHider::apply_dock_work_area(&dock_reserves);
+                            wa_changed |= TaskbarHider::apply_dock_work_area(&dock_reserves);
+                        }
+                        if wa_changed {
+                            state.self_workarea_broadcast_until =
+                                Some(Instant::now() + Duration::from_millis(1200));
                         }
                         state.styler.hide_overlays();
                         write_status_snapshot("SETTLE", state);
@@ -1571,19 +1601,19 @@ unsafe extern "system" fn global_wnd_proc(
                         }
                         if !state.hider.is_hidden || state.hider.peek_visible {
                             state.styler.ensure_zorder_only(&state.config);
-                            let now = Instant::now();
-                            if state
-                                .last_eval_recheck
-                                .map(|t| now.duration_since(t) >= Duration::from_millis(1200))
-                                .unwrap_or(true)
-                            {
-                                state.last_eval_recheck = Some(now);
-                                let _ = SetTimer(
-                                    Some(state.hidden_hwnd),
-                                    TIMER_PILL_RECHECK_1,
-                                    180,
-                                    None,
-                                );
+                            if matches!(
+                                state.config.pill_mode,
+                                PillMode::SplitPills | PillMode::UnifiedPill
+                            ) {
+                                let now = Instant::now();
+                                if state
+                                    .last_eval_recheck
+                                    .map(|t| now.duration_since(t) >= Duration::from_millis(2000))
+                                    .unwrap_or(true)
+                                {
+                                    state.last_eval_recheck = Some(now);
+                                    schedule_pill_rechecks(state.hidden_hwnd);
+                                }
                             }
                         }
                     }
@@ -1645,24 +1675,14 @@ unsafe extern "system" fn global_wnd_proc(
                     if !state.config.mac_dock_enabled
                         && (!state.hider.is_hidden || state.hider.peek_visible)
                     {
-                        state.styler.request_pill_remeasure(&state.config, false);
+                        state.styler.request_pill_remeasure(&state.config, true);
                     }
                 }
                 TIMER_PILL_RECHECK_2 => {
                     let _ = KillTimer(Some(state.hidden_hwnd), TIMER_PILL_RECHECK_2);
-                    if !state.config.mac_dock_enabled
-                        && (!state.hider.is_hidden || state.hider.peek_visible)
-                    {
-                        state.styler.request_pill_remeasure(&state.config, true);
-                    }
                 }
                 TIMER_PILL_RECHECK_3 => {
                     let _ = KillTimer(Some(state.hidden_hwnd), TIMER_PILL_RECHECK_3);
-                    if !state.config.mac_dock_enabled
-                        && (!state.hider.is_hidden || state.hider.peek_visible)
-                    {
-                        state.styler.request_pill_remeasure(&state.config, false);
-                    }
                 }
                 TIMER_WIDGETS_TICK => {
                     state.maintenance_ticks = state.maintenance_ticks.wrapping_add(1);
@@ -1755,19 +1775,25 @@ unsafe extern "system" fn global_wnd_proc(
                     let audio_on = state.widgets.is_audio_active();
                     let tb_visible = !state.config.mac_dock_enabled
                         && (!state.hider.is_hidden || state.hider.peek_visible);
-                    let tb_needs_audio = tb_visible
-                        && audio_on
+                    let tb_fx_on = state.config.tb_show_fx
                         && state.config.tb_viz_style != config::TaskbarVizStyle::Off;
+                    let tb_needs_audio = tb_visible && audio_on && tb_fx_on;
                     let tb_ambient_on = tb_visible
+                        && tb_fx_on
                         && state.config.tb_ambient_anim
                         && state.config.tb_viz_style.is_ambient_live();
                     let tb_active_decay = tb_visible
+                        && tb_fx_on
                         && (state.styler.is_viz_hover_active()
                             || (!tb_ambient_on && state.styler.has_viz_decay()));
+                    let dock_vu_active = state.config.mac_dock_enabled
+                        && state.config.mac_dock_hide != MacDockHideMode::StealthHide
+                        && state.config.w_tray.audio_style
+                            == config::TrayAudioMeterStyle::LiveVuEqualizer;
                     let bands = if tb_needs_audio
                         || tb_ambient_on
                         || tb_active_decay
-                        || (audio_on && state.settings.is_visible())
+                        || (audio_on && (state.settings.is_visible() || dock_vu_active))
                     {
                         state.widgets.bands()
                     } else {
@@ -1775,9 +1801,15 @@ unsafe extern "system" fn global_wnd_proc(
                     };
                     if widgets_audio_on || widgets_fx {
                         state.widgets.tick_fast();
-                        if audio_on && state.settings.is_visible() {
-                            state.settings.sync_audio_bands_only(bands);
-                        }
+                    }
+                    if dock_vu_active {
+                        state
+                            .mac_dock
+                            .sync_audio_bands(if audio_on { &bands } else { &[0.0; 12] });
+                        update_dock_timer(state);
+                    }
+                    if state.settings.is_visible() {
+                        state.settings.sync_audio_bands_only(if audio_on { bands } else { [0.0; 12] });
                     }
                     if tb_ambient_on || tb_needs_audio || tb_active_decay {
                         state.styler.tick_visualizer(&state.config, &bands);
@@ -1791,42 +1823,39 @@ unsafe extern "system" fn global_wnd_proc(
                     update_viz_timer(state);
                 }
                 TIMER_BOOT_SETTLE => {
-                    // Self-heal Explorer/Progman host readiness during Windows bootup
+                    // Self-heal Explorer/Progman host readiness during Windows bootup,
+                    // short-circuiting immediately on tick 1 when Explorer & DWM are already settled.
                     if state.boot_settle_ticks == 0 || state.shutting_down {
                         let _ = KillTimer(Some(state.hidden_hwnd), TIMER_BOOT_SETTLE);
                     } else {
                         state.boot_settle_ticks -= 1;
-                        let mut settled = true;
-                        if !state.hider.main_taskbar_exists() {
-                            settled = false;
-                        } else if !state.config.mac_dock_enabled
+                        let taskbar_ok = state.hider.main_taskbar_exists();
+                        let need_styler_check = !state.config.mac_dock_enabled
                             && (!state.hider.is_hidden || state.hider.peek_visible)
-                            && !mac_dock::is_any_tray_overflow_open()
-                        {
-                            if !state.styler.tap_connected || !state.styler.has_dwm_refreshed(&state.config)
-                            {
-                                settled = false;
-                                state.styler.sync_taskbar(&state.config, true);
-                                if state.styler.tap_connected {
-                                    schedule_pill_rechecks(state.hidden_hwnd);
-                                }
-                            }
-                        }
-                        if !state.widgets.has_desktop_host() {
-                            settled = false;
-                            state.widgets.rebind_desktop_host();
-                        }
-                        if state.config.wallpaper_enabled
-                            && state.wallpaper.is_visible_on_desktop()
-                            && !state.wallpaper.is_behind_defview()
-                        {
-                            settled = false;
-                            state.wallpaper.place_behind_icons();
-                        }
-                        if settled {
+                            && !mac_dock::is_any_tray_overflow_open();
+                        let styler_ok = !need_styler_check || state.styler.is_settled(&state.config);
+                        let widgets_ok =
+                            !state.config.widgets_enabled || state.widgets.has_desktop_host();
+                        let wp_ok = !state.config.wallpaper_enabled
+                            || !state.wallpaper.is_visible_on_desktop()
+                            || state.wallpaper.is_behind_defview();
+
+                        if should_short_circuit_boot_settle(taskbar_ok, styler_ok, widgets_ok, wp_ok) {
                             write_status_snapshot("BOOT_SETTLED", state);
                             let _ = KillTimer(Some(state.hidden_hwnd), TIMER_BOOT_SETTLE);
                             config::trim_process_working_set();
+                        } else {
+                            if taskbar_ok && !styler_ok && !state.styler.is_tap_connecting() {
+                                let need_dwm_only = state.styler.tap_connected
+                                    && !state.styler.has_dwm_refreshed(&state.config);
+                                state.styler.sync_taskbar(&state.config, need_dwm_only);
+                            }
+                            if !widgets_ok {
+                                state.widgets.rebind_desktop_host();
+                            }
+                            if !wp_ok {
+                                state.wallpaper.place_behind_icons();
+                            }
                         }
                     }
                 }
@@ -1864,23 +1893,38 @@ unsafe extern "system" fn global_wnd_proc(
             }
             const SPI_SETDESKWALLPAPER_WP: usize = 20;
             const SPI_SETWORKAREA_WP: usize = 47;
-            if wparam.0 == SPI_SETWORKAREA_WP
-                && state
-                    .self_workarea_broadcast_until
-                    .map(|t| Instant::now() < t)
-                    .unwrap_or(false)
-            {
-                return LRESULT(0);
-            }
             let setting_name = if lparam.0 != 0 {
                 PCWSTR(lparam.0 as *const u16).to_string().unwrap_or_default()
             } else {
                 String::new()
             };
+            let wp_or_theme_changed = wparam.0 == SPI_SETDESKWALLPAPER_WP
+                || setting_name.eq_ignore_ascii_case("ImmersiveColorSet")
+                || setting_name.eq_ignore_ascii_case("Wallpaper");
+            let in_wa_quiet = state
+                .self_workarea_broadcast_until
+                .map(|t| Instant::now() < t)
+                .unwrap_or(false);
+            if in_wa_quiet
+                && !wp_or_theme_changed
+                && (wparam.0 == SPI_SETWORKAREA_WP
+                    || setting_name.is_empty()
+                    || setting_name.eq_ignore_ascii_case("TraySettings"))
+            {
+                return LRESULT(0);
+            }
             if setting_name.eq_ignore_ascii_case("Environment")
                 || setting_name.eq_ignore_ascii_case("intl")
                 || setting_name.eq_ignore_ascii_case("Policy")
             {
+                return LRESULT(0);
+            }
+            let is_relevant = wp_or_theme_changed
+                || wparam.0 == SPI_SETWORKAREA_WP
+                || setting_name.is_empty()
+                || setting_name.eq_ignore_ascii_case("TraySettings")
+                || setting_name.eq_ignore_ascii_case("UserPreferences");
+            if !is_relevant {
                 return LRESULT(0);
             }
             if !state.hider.is_hidden {
@@ -1890,9 +1934,6 @@ unsafe extern "system" fn global_wnd_proc(
             }
             state.styler.invalidate_for_layout_change();
             state.settings.refresh_win_prefs();
-            let wp_or_theme_changed = wparam.0 == SPI_SETDESKWALLPAPER_WP
-                || setting_name.eq_ignore_ascii_case("ImmersiveColorSet")
-                || setting_name.eq_ignore_ascii_case("Wallpaper");
             if wp_or_theme_changed && state.config.any_match_wallpaper() {
                 let _ = theme::ensure_wallpaper_palette_for_config(&state.config, true);
                 state.widgets.apply_config(&state.config);
@@ -1901,7 +1942,7 @@ unsafe extern "system" fn global_wnd_proc(
                     state.mac_dock.mark_dirty_paint();
                 }
             }
-            evaluate_mode_and_apply(state, true);
+            evaluate_mode_and_apply(state, false);
             if !state.config.mac_dock_enabled {
                 schedule_pill_rechecks(state.hidden_hwnd);
             }
@@ -1950,11 +1991,22 @@ unsafe extern "system" fn global_wnd_proc(
 }
 
 fn schedule_pill_rechecks(hwnd: HWND) {
+    // Throttle background UIA pill remeasures to a single coalesced deferred frame
+    // instead of firing three staggered subtree scans into Explorer.
     unsafe {
-        let _ = SetTimer(Some(hwnd), TIMER_PILL_RECHECK_1, 160, None);
-        let _ = SetTimer(Some(hwnd), TIMER_PILL_RECHECK_2, 450, None);
-        let _ = SetTimer(Some(hwnd), TIMER_PILL_RECHECK_3, 850, None);
+        let _ = KillTimer(Some(hwnd), TIMER_PILL_RECHECK_2);
+        let _ = KillTimer(Some(hwnd), TIMER_PILL_RECHECK_3);
+        let _ = SetTimer(Some(hwnd), TIMER_PILL_RECHECK_1, 220, None);
     }
+}
+
+fn should_short_circuit_boot_settle(
+    taskbar_ok: bool,
+    styler_ok: bool,
+    widgets_ok: bool,
+    wp_ok: bool,
+) -> bool {
+    taskbar_ok && styler_ok && widgets_ok && wp_ok
 }
 
 fn kill_pill_rechecks(hwnd: HWND) {
@@ -1968,6 +2020,14 @@ fn kill_pill_rechecks(hwnd: HWND) {
 fn sync_dock_snapshots(state: &mut AppState) {
     let cc = state.widgets.cc_snapshot();
     state.mac_dock.sync_tray_snapshot(&cc);
+    if state.config.w_tray.audio_style == config::TrayAudioMeterStyle::LiveVuEqualizer {
+        let bands = if state.widgets.is_audio_active() {
+            state.widgets.bands()
+        } else {
+            [0.0; 12]
+        };
+        state.mac_dock.sync_audio_bands(&bands);
+    }
     let (cpu, ram, _) = state.widgets.telemetry();
     let ms = state.widgets.media_snapshot();
     let track = if ms.is_playing && !ms.title.is_empty() {
@@ -2112,17 +2172,34 @@ fn is_cursor_in_taskbar_zone(
     }
 }
 
+fn sync_clock_24h_if_changed(state: &mut AppState) {
+    let cur = state.config.w_clock.use_24h.unwrap_or(state.config.widgets_24h);
+    if cur != state.last_applied_24h {
+        state.last_applied_24h = cur;
+        state.config.set_clock_24h(cur);
+        config::apply_win_clock_24h(cur);
+        if state.config.mac_dock_enabled {
+            state.mac_dock.force_clock_refresh(&state.config);
+        }
+    }
+}
+
 fn toggle_taskbar_manual(state: &mut AppState) {
     state.preview_hold_ticks = 0;
     if state.config.mac_dock_enabled {
-        state.config.apply_taskbar_theme_preset(TaskbarTheme::AutumnCrystal);
-        state.config.mode = TaskbarMode::AlwaysVisible;
+        state.config.mac_dock_hide = if state.config.mac_dock_hide == MacDockHideMode::StealthHide {
+            MacDockHideMode::AlwaysVisible
+        } else {
+            MacDockHideMode::StealthHide
+        };
+        state.config.sync_hide_mode_from_dock();
     } else {
         state.config.mode = if state.hider.is_hidden {
             TaskbarMode::AlwaysVisible
         } else {
             TaskbarMode::StealthHide
         };
+        state.config.sync_dock_hide_from_mode();
     }
     save_config(&state.config);
     evaluate_mode_and_apply(state, true);
@@ -2164,13 +2241,18 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
                     let _ = theme::ensure_wallpaper_palette_for_config(&state.config, false);
                 }
             }
-            if !state.config.tb_viz_style.is_ambient_live() && !state.widgets.is_audio_active() {
+            if !state.config.tb_show_fx
+                || state.config.tb_viz_style == config::TaskbarVizStyle::Off
+                || (!state.config.tb_viz_style.is_ambient_live() && !state.widgets.is_audio_active())
+            {
                 state.styler.clear_viz_energy();
             }
             let switched_dock = state.config.mac_dock_enabled != state.mac_dock.is_active();
             if switched_dock {
+                state.mode_switch_settle_until =
+                    Some(Instant::now() + Duration::from_millis(550));
                 if !state.config.mac_dock_enabled {
-                    state.styler.invalidate_cache();
+                    state.styler.invalidate_for_layout_change();
                 }
                 evaluate_mode_and_apply(state, true);
                 if state.hider.is_hidden
@@ -2183,8 +2265,9 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
                     schedule_pill_rechecks(state.hidden_hwnd);
                 }
             } else if state.config.mac_dock_enabled {
-                state.mac_dock.mark_dirty_paint();
-                state.mac_dock.tick(&state.config);
+                // Full dock sync so switching between Dock themes (e.g., 3-Island -> HUD Deck -> Full Edge)
+                // immediately rebuilds slots, updates layout metrics, and reconciles work-area reserves.
+                evaluate_mode_and_apply(state, true);
             } else {
                 if state.hider.is_hidden && state.config.mode != TaskbarMode::StealthHide {
                     state.hider.peek_show(true);
@@ -2229,8 +2312,12 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             write_status_snapshot("LAYOUT", state);
         }
         SettingsCommand::WidgetsConfigUpdated => {
+            sync_clock_24h_if_changed(state);
             save_config(&state.config);
             state.widgets.apply_config(&state.config);
+            if state.config.mac_dock_enabled {
+                state.mac_dock.force_clock_refresh(&state.config);
+            }
             update_viz_timer(state);
             sync_studio_live(state);
             write_status_snapshot("WIDGETS", state);
@@ -2293,8 +2380,10 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             sync_studio_live(state);
         }
         SettingsCommand::MacDockUpdated => {
+            sync_clock_24h_if_changed(state);
             save_config(&state.config);
             evaluate_mode_and_apply(state, true);
+            state.widgets.apply_config(&state.config);
             sync_studio_live(state);
             write_status_snapshot("MAC_DOCK", state);
         }
@@ -2424,7 +2513,9 @@ fn handle_dock_action(state: &mut AppState, act: MacDockAction) {
                 .open_taskbar_customize(&state.config, state.hider.is_hidden);
         }
         MacDockAction::ConfigUpdated => {
+            sync_clock_24h_if_changed(state);
             evaluate_mode_and_apply(state, true);
+            state.widgets.apply_config(&state.config);
             state.settings.sync_from_config(&state.config);
             sync_studio_live(state);
         }
@@ -2458,7 +2549,7 @@ fn update_dock_timer(state: &mut AppState) {
 
 #[allow(clippy::too_many_arguments)]
 fn compute_viz_timer_ms(
-    viz_eco_fps: bool,
+    anim_fps: u32,
     game_mode_paused: bool,
     widgets_60fps: bool,
     tb_ambient: bool,
@@ -2474,20 +2565,21 @@ fn compute_viz_timer_ms(
     if game_mode_paused {
         return 0;
     }
-    if widgets_60fps {
-        16
+    let active_ms = AppConfig::anim_frame_ms_for(anim_fps);
+    if widgets_60fps
+        || tb_audio
+        || tb_decay
+        || widgets_audio
+        || widgets_fx_30fps
+        || widgets_fx
+        || tb_ambient
+        || widgets_ambient_idle
+    {
+        active_ms
     } else if settings_fast {
-        30
-    } else if tb_audio || tb_decay || widgets_audio {
-        if viz_eco_fps { 42 } else { 30 }
-    } else if widgets_fx_30fps || (widgets_fx && !widgets_ambient_idle) {
-        30
-    } else if tb_ambient {
-        if viz_eco_fps { 100 } else { 80 }
+        active_ms.max(16)
     } else if settings_anim {
-        90
-    } else if widgets_ambient_idle {
-        if viz_eco_fps { 125 } else { 95 }
+        (active_ms * 2).clamp(45, 90)
     } else {
         0
     }
@@ -2500,20 +2592,28 @@ fn update_viz_timer(state: &mut AppState) {
     let settings_fast = settings_anim && state.settings.wants_fast_30fps_anim();
     let tb_visible = !state.config.mac_dock_enabled
         && (!state.hider.is_hidden || state.hider.peek_visible);
+    let dock_vu_enabled = state.config.mac_dock_enabled
+        && state.config.mac_dock_hide != MacDockHideMode::StealthHide
+        && state.config.w_tray.audio_style == config::TrayAudioMeterStyle::LiveVuEqualizer;
+    let tb_fx_on = state.config.tb_show_fx
+        && state.config.tb_viz_style != config::TaskbarVizStyle::Off;
     let viz_needed = (!state.game_mode_active
-        && ((tb_visible && state.config.tb_viz_style != config::TaskbarVizStyle::Off)
+        && ((tb_visible && tb_fx_on)
+            || dock_vu_enabled
             || state.widgets.wants_wasapi_loopback()))
         || settings_vis;
     state.widgets.set_viz_needed(viz_needed);
-    state.widgets.set_viz_eco_fps(state.config.viz_eco_fps);
+    state.widgets.set_anim_fps(state.config.anim_fps);
 
     let tb_ambient = tb_visible
+        && tb_fx_on
         && state.config.tb_ambient_anim
         && state.config.tb_viz_style.is_ambient_live();
     let audio_on = state.widgets.is_audio_active();
-    let tb_audio =
-        tb_visible && audio_on && state.config.tb_viz_style != config::TaskbarVizStyle::Off;
+    let tb_audio = (tb_visible && audio_on && tb_fx_on)
+        || (dock_vu_enabled && audio_on);
     let tb_decay = tb_visible
+        && tb_fx_on
         && (state.styler.is_viz_hover_active()
             || (!tb_ambient && state.styler.has_viz_decay()));
     let widgets_audio = state.widgets.wants_audio_viz_tick();
@@ -2523,7 +2623,7 @@ fn update_viz_timer(state: &mut AppState) {
     let widgets_fx_30fps = widgets_fx && state.widgets.wants_fast_30fps();
 
     let want_ms = compute_viz_timer_ms(
-        state.config.viz_eco_fps,
+        state.config.anim_fps,
         state.game_mode_active && !settings_vis,
         widgets_60fps,
         tb_ambient,
@@ -2566,6 +2666,7 @@ fn sync_studio_live(state: &mut AppState) {
     } else {
         false
     };
+    state.settings.sync_tap_fallback_status(state.styler.is_tap_fallback_active(&state.config));
     state.settings.sync_live_state(
         state.widgets.media_snapshot(),
         state.widgets.cc_snapshot(),
@@ -2597,20 +2698,33 @@ fn evaluate_mode_and_apply(state: &mut AppState, force_style: bool) {
         kill_pill_rechecks(state.hidden_hwnd);
         let dock_reserves = state.mac_dock.desired_work_area_reserves(&state.config);
         let expand_wa = dock_reserves.is_empty();
+        let was_visible_tb = !state.hider.is_hidden;
+        let mut wa_mutated = false;
         state.styler.hide_overlays();
-        if !state.hider.is_hidden {
-            state.hider.hide(expand_wa);
+        if was_visible_tb {
+            state.self_workarea_broadcast_until =
+                Some(Instant::now() + Duration::from_millis(1200));
+            state.mode_switch_settle_until =
+                Some(Instant::now() + Duration::from_millis(550));
+            wa_mutated |= state.hider.hide(expand_wa);
             unsafe {
                 let _ = SetTimer(Some(state.hidden_hwnd), TIMER_SETTLE_HIDE, 140, None);
             }
         } else if state.hider.peek_visible {
             state.hider.peek_hide(false);
         } else if force_style && !mac_dock::is_tray_overflow_active() {
-            state.hider.settle_hidden(expand_wa);
+            wa_mutated |= state.hider.settle_hidden(expand_wa);
         }
         sync_dock_snapshots(state);
         state.mac_dock.sync(&state.config);
-        TaskbarHider::apply_dock_work_area(&dock_reserves);
+        // Avoid duplicate SPI_SETWORKAREA pass when hide(true) already expanded full work area.
+        if !expand_wa || !was_visible_tb {
+            wa_mutated |= TaskbarHider::apply_dock_work_area(&dock_reserves);
+        }
+        if wa_mutated {
+            state.self_workarea_broadcast_until =
+                Some(Instant::now() + Duration::from_millis(1200));
+        }
         if state.settings.is_visible() && !state.settings.hwnd().0.is_null() {
             unsafe {
                 let _ = SetWindowPos(
@@ -2641,12 +2755,17 @@ fn evaluate_mode_and_apply(state: &mut AppState, force_style: bool) {
     };
 
     let restore_wa_on_show = !get_native_autohide();
-    if state.mac_dock.is_active() {
+    let switched_from_dock = state.mac_dock.is_active();
+    if switched_from_dock {
+        state.self_workarea_broadcast_until =
+            Some(Instant::now() + Duration::from_millis(1200));
+        state.mode_switch_settle_until =
+            Some(Instant::now() + Duration::from_millis(550));
         state.mac_dock.disable();
         // Avoid double WorkArea bounce + double refit_maximized_windows() when hider.show()
         // is immediately going to restore native taskbar WorkArea below.
         if should_hide || !restore_wa_on_show {
-            TaskbarHider::apply_dock_work_area(&[]);
+            let _ = TaskbarHider::apply_dock_work_area(&[]);
         }
     }
 
@@ -2656,7 +2775,10 @@ fn evaluate_mode_and_apply(state: &mut AppState, force_style: bool) {
                 let _ = KillTimer(Some(state.hidden_hwnd), TIMER_SETTLE_HIDE);
             }
             state.styler.hide_overlays();
-            state.hider.hide(true);
+            if state.hider.hide(true) {
+                state.self_workarea_broadcast_until =
+                    Some(Instant::now() + Duration::from_millis(1200));
+            }
             unsafe {
                 let _ = SetTimer(Some(state.hidden_hwnd), TIMER_SETTLE_HIDE, 140, None);
             }
@@ -2669,8 +2791,9 @@ fn evaluate_mode_and_apply(state: &mut AppState, force_style: bool) {
             state.styler.sync_taskbar(&state.config, force_style);
         } else {
             state.styler.hide_overlays();
-            if force_style {
-                state.hider.settle_hidden(true);
+            if force_style && state.hider.settle_hidden(true) {
+                state.self_workarea_broadcast_until =
+                    Some(Instant::now() + Duration::from_millis(1200));
             }
         }
     } else {
@@ -2679,11 +2802,13 @@ fn evaluate_mode_and_apply(state: &mut AppState, force_style: bool) {
             unsafe {
                 let _ = KillTimer(Some(state.hidden_hwnd), TIMER_SETTLE_HIDE);
             }
+            state.mode_switch_settle_until =
+                Some(Instant::now() + Duration::from_millis(550));
             if restore_wa_on_show {
                 state.self_workarea_broadcast_until =
-                    Some(Instant::now() + Duration::from_millis(650));
+                    Some(Instant::now() + Duration::from_millis(1200));
             }
-            state.hider.show(restore_wa_on_show);
+            let _ = state.hider.show(restore_wa_on_show);
             state.styler.invalidate_for_layout_change();
         }
         state.styler.sync_taskbar(&state.config, force_style);
@@ -3175,8 +3300,18 @@ fn write_status_snapshot(tag: &str, state: &AppState) {
         .unwrap_or_else(|| "(0,0,0,0)".to_string());
 
     let (wp_bd, wp_bvalid, wp_bvis, wp_blay, wp_vvis, wp_lwa, wp_paint) = state.wallpaper.diagnostic_flags();
+    let tap_diag = state.styler.tap_diag_snapshot();
+    let tap_hr_str = tap_diag
+        .last_hr
+        .map(|h| format!("0x{:08X}", h as u32))
+        .unwrap_or_else(|| "none".to_string());
+    let tap_mode_str = if tap_diag.last_stage_mode.is_empty() {
+        "none"
+    } else {
+        tap_diag.last_stage_mode.as_str()
+    };
     let content = format!(
-        "tag={} hidden={} peek={} mode={} pill={} surface={} alpha={} amber={} tap={} pills={} bar={} work={} tray_vis={} widgets={} widgets_gpu={} wp={} wp_active={} wp_bd={} wp_hw={} wp_bvis={} wp_lay={} wp_lwa={} wp_paint={} wp_vvis={} pid={}\r\n",
+        "tag={} hidden={} peek={} mode={} pill={} surface={} alpha={} amber={} tap={} tap_tried={} tap_hr={} tap_mode={} pills={} bar={} work={} tray_vis={} widgets={} widgets_gpu={} wp={} wp_active={} wp_bd={} wp_hw={} wp_bvis={} wp_lay={} wp_lwa={} wp_paint={} wp_vvis={} pid={}\r\n",
         tag,
         state.hider.is_hidden,
         state.hider.peek_visible,
@@ -3186,6 +3321,9 @@ fn write_status_snapshot(tag: &str, state: &AppState) {
         state.config.tint_alpha,
         state.config.amber_border,
         state.styler.tap_connected,
+        tap_diag.attempted,
+        tap_hr_str,
+        tap_mode_str,
         state.styler.last_pill_count,
         state.styler.last_bar_rect_str,
         work_str,
@@ -3220,66 +3358,68 @@ mod tests {
     }
 
     #[test]
-    fn viz_timer_cadence_caps_audio_visualizers_at_24fps_in_eco_mode() {
-        // Active music widget or taskbar audio visualizer: 42ms (~24 FPS) in Eco mode vs 30ms full
+    fn boot_settle_short_circuits_immediately_when_ready() {
+        assert!(should_short_circuit_boot_settle(true, true, true, true));
+        assert!(!should_short_circuit_boot_settle(false, true, true, true));
+        assert!(!should_short_circuit_boot_settle(true, false, true, true));
+        assert!(!should_short_circuit_boot_settle(true, true, false, true));
+        assert!(!should_short_circuit_boot_settle(true, true, true, false));
+    }
+
+    #[test]
+    fn viz_timer_cadence_scales_dynamically_with_anim_fps() {
+        // Default 45 FPS -> 22ms; 24 Eco -> 41ms; 30 Standard -> 33ms; 60 -> 16ms; 90 -> 11ms; 120 -> 8ms
         assert_eq!(
-            compute_viz_timer_ms(true, false, false, false, false, false, true, false, false, true, true, false),
-            42
+            compute_viz_timer_ms(45, false, false, false, false, false, true, false, false, true, true, false),
+            22
         );
         assert_eq!(
-            compute_viz_timer_ms(false, false, false, false, false, false, true, false, false, true, true, false),
-            30
+            compute_viz_timer_ms(24, false, false, false, false, false, true, false, false, true, true, false),
+            41
         );
         assert_eq!(
-            compute_viz_timer_ms(true, false, false, false, true, false, false, false, false, false, false, false),
-            42
+            compute_viz_timer_ms(30, false, false, false, true, false, false, false, false, false, false, false),
+            33
         );
-        // Short 60fps Ring-Pill convergence stays 16ms when explicitly requested
         assert_eq!(
-            compute_viz_timer_ms(true, false, true, false, false, false, true, false, false, true, true, false),
+            compute_viz_timer_ms(60, false, true, false, false, false, true, false, false, true, true, false),
             16
+        );
+        assert_eq!(
+            compute_viz_timer_ms(90, false, false, true, false, false, false, false, false, false, false, false),
+            11
+        );
+        assert_eq!(
+            compute_viz_timer_ms(120, false, false, false, false, false, false, false, true, false, true, false),
+            8
         );
         // Fullscreen game mode silences visualizer timer completely (0ms)
         assert_eq!(
-            compute_viz_timer_ms(true, true, false, true, true, true, true, false, false, true, true, false),
+            compute_viz_timer_ms(45, true, false, true, true, true, true, false, false, true, true, false),
             0
         );
         // Idle desktop with no active animations stops timer completely (0ms)
         assert_eq!(
-            compute_viz_timer_ms(true, false, false, false, false, false, false, false, false, false, false, false),
+            compute_viz_timer_ms(45, false, false, false, false, false, false, false, false, false, false, false),
             0
         );
-        // Idle ambient native taskbar (no audio/hover) throttles to 80ms (100ms eco) instead of 30ms
+        // Unhovered Studio preview runs calmly at 2x frame interval (clamped 45..=90ms)
         assert_eq!(
-            compute_viz_timer_ms(false, false, false, true, false, false, false, false, false, false, false, false),
-            80
+            compute_viz_timer_ms(45, false, false, false, false, false, false, false, false, false, false, true),
+            45
         );
         assert_eq!(
-            compute_viz_timer_ms(true, false, false, true, false, false, false, false, false, false, false, false),
-            100
+            compute_viz_timer_ms(24, false, false, false, false, false, false, false, false, false, false, true),
+            82
         );
-        // Idle ambient-only desktop widgets throttle to 95ms (125ms eco)
+        // Hovered Studio preview wakes to max(16, active_ms)
         assert_eq!(
-            compute_viz_timer_ms(false, false, false, false, false, false, false, false, true, false, true, false),
-            95
-        );
-        assert_eq!(
-            compute_viz_timer_ms(true, false, false, false, false, false, false, false, true, false, true, false),
-            125
-        );
-        // Unhovered Studio preview runs calmly at 90ms; hovered preview wakes to 30ms
-        assert_eq!(
-            compute_viz_timer_ms(false, false, false, false, false, false, false, false, false, false, false, true),
-            90
+            compute_viz_timer_ms(45, false, false, false, false, false, false, true, false, false, false, true),
+            22
         );
         assert_eq!(
-            compute_viz_timer_ms(false, false, false, false, false, false, false, true, false, false, false, true),
-            30
-        );
-        // Active widget hover/ripple (non-idle) wakes immediately to 30ms
-        assert_eq!(
-            compute_viz_timer_ms(true, false, false, false, false, false, false, false, false, true, true, false),
-            30
+            compute_viz_timer_ms(120, false, false, false, false, false, false, true, false, false, false, true),
+            16
         );
     }
 }

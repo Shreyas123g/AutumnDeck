@@ -220,20 +220,22 @@ pub fn is_ambient_animated(theme: TaskbarTheme) -> bool {
 }
 
 pub fn is_ambient_animated_cfg(cfg: &AppConfig) -> bool {
-    if !cfg.tb_ambient_anim {
+    if !cfg.tb_ambient_anim || cfg.is_dock_all_elements_off() {
         return false;
     }
     let s = resolve_shelf_spec(cfg);
     let is_horizontal = !matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
     let hud_wing_visible = is_horizontal
+        && cfg.w_hud.show_telemetry
         && (cfg.w_hud.mode == HudWingMode::AlwaysEnabled
             || (cfg.w_hud.mode == HudWingMode::InheritTheme
                 && s.layout == DockLayoutKind::HudConsoleDeck));
-    is_ambient_animated(cfg.tb_theme)
-        || (s.ambient_animated && is_art_ambient_live(s.art))
-        || (cfg.tb_theme == TaskbarTheme::BiolumAbyssDock
-            && matches!(s.layout, DockLayoutKind::IndependentOrbs))
-        || (hud_wing_visible && cfg.w_hud.marquee_ticker)
+    let shelf_art_live = cfg.w_shelf.show_art
+        && (is_ambient_animated(cfg.tb_theme) || (s.ambient_animated && is_art_ambient_live(s.art)));
+    let orb_live = !cfg.w_apps.is_all_elements_off()
+        && cfg.tb_theme == TaskbarTheme::BiolumAbyssDock
+        && matches!(s.layout, DockLayoutKind::IndependentOrbs);
+    shelf_art_live || orb_live || (hud_wing_visible && cfg.w_hud.marquee_ticker)
 }
 
 pub fn dock_palette(theme: TaskbarTheme) -> Option<ThemePalette> {
@@ -1746,6 +1748,12 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
     is_preview: bool,
     click_ripple: Option<(f32, f32)>,
 ) {
+    let show_plate = is_preview || cfg.w_shelf.show_plate;
+    let show_art = is_preview || cfg.w_shelf.show_art;
+    let show_rim = is_preview || cfg.w_shelf.show_rim;
+    if !show_plate && !show_art && !show_rim {
+        return;
+    }
     let spec = if is_preview {
         dock_spec(cfg.tb_theme)
     } else {
@@ -1781,57 +1789,61 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
 
     // Photorealistic PBR Material Path for all 18 Realistic Material & Nature docks
     if let Some(pbr_mat) = spec.art.pbr_material() {
-        if spec.layout != DockLayoutKind::FullEdgeTaskbar {
-            crate::realistic_pbr::draw_pbr_drop_shadows(
-                rt,
-                shelf_r,
-                rad,
-                u,
-                spec.light_mode_paper,
-            );
-        }
-        let alpha_user = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
-        let base_a = (spec.bg_alpha_bias * 0.72 + alpha_user * 0.28).clamp(0.55, 0.99);
-        let tint_override = if cfg.tb_match_wallpaper {
-            Some((
-                crate::theme::rgb_to_u32(pal.glass_top),
-                Some(crate::theme::rgb_to_u32(pal.glass_bot)),
-            ))
-        } else {
-            None
-        };
         let cham_base: Option<ID2D1Geometry> = cham_geo
             .as_ref()
             .and_then(|g| g.cast::<ID2D1Geometry>().ok());
-        let inter = crate::realistic_pbr::pbr_input_for_dock(
-            anim_phase,
-            hover_mix,
-            cursor_axis_norm,
-            is_vertical,
-            click_ripple,
-        );
-        crate::realistic_pbr::draw_pbr_surface_clipped(
-            rt,
-            d2d,
-            pbr_mat,
-            shelf_r,
-            rad,
-            u,
-            base_a,
-            tint_override,
-            cham_base.as_ref(),
-            &inter,
-        );
+        if show_plate {
+            if spec.layout != DockLayoutKind::FullEdgeTaskbar {
+                crate::realistic_pbr::draw_pbr_drop_shadows(
+                    rt,
+                    shelf_r,
+                    rad,
+                    u,
+                    spec.light_mode_paper,
+                );
+            }
+            let alpha_user = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
+            let base_a = (spec.bg_alpha_bias * 0.72 + alpha_user * 0.28).clamp(0.55, 0.99);
+            let tint_override = if cfg.tb_match_wallpaper {
+                Some((
+                    crate::theme::rgb_to_u32(pal.glass_top),
+                    Some(crate::theme::rgb_to_u32(pal.glass_bot)),
+                ))
+            } else {
+                None
+            };
+            let inter = crate::realistic_pbr::pbr_input_for_dock(
+                anim_phase,
+                hover_mix,
+                cursor_axis_norm,
+                is_vertical,
+                click_ripple,
+            );
+            crate::realistic_pbr::draw_pbr_surface_clipped(
+                rt,
+                d2d,
+                pbr_mat,
+                shelf_r,
+                rad,
+                u,
+                base_a,
+                tint_override,
+                cham_base.as_ref(),
+                &inter,
+            );
+        }
 
         // Layer signature mechanical/aquatic details for specialty variants on top of PBR texture
-        if matches!(
-            spec.art,
-            DockArtLayer::VacuumTubeHiFi
-                | DockArtLayer::SwissGuilloche
-                | DockArtLayer::CassetteDeck1984
-                | DockArtLayer::OceanTideFoam
-                | DockArtLayer::TranquilKoiPond
-        ) {
+        if show_art
+            && matches!(
+                spec.art,
+                DockArtLayer::VacuumTubeHiFi
+                    | DockArtLayer::SwissGuilloche
+                    | DockArtLayer::CassetteDeck1984
+                    | DockArtLayer::OceanTideFoam
+                    | DockArtLayer::TranquilKoiPond
+            )
+        {
             let clip_layer = push_shelf_clip(rt, d2d, shelf_r, rad, spec.shape, cut);
             draw_internal_art(
                 rt,
@@ -1847,139 +1859,147 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
             pop_shelf_clip(rt, clip_layer);
         }
 
-        if spec.layout == DockLayoutKind::FullEdgeTaskbar {
-            draw_shelf_rims(
-                rt,
-                br,
-                shelf_r,
-                rad,
-                &spec,
-                cfg,
-                pal,
-                cham_geo.as_ref(),
-                u,
-                is_preview,
-            );
-        } else {
-            let custom_border = if cfg.amber_border && cfg.tb_match_wallpaper {
-                Some(crate::theme::rgb_to_u32(pal.rim))
+        if show_rim {
+            if spec.layout == DockLayoutKind::FullEdgeTaskbar {
+                draw_shelf_rims(
+                    rt,
+                    br,
+                    shelf_r,
+                    rad,
+                    &spec,
+                    cfg,
+                    pal,
+                    cham_geo.as_ref(),
+                    u,
+                    is_preview,
+                );
             } else {
-                None
-            };
-            crate::realistic_pbr::draw_pbr_bevel_rim(
-                rt,
-                shelf_r,
-                rad,
-                u,
-                pbr_mat,
-                custom_border,
-                spec.rim_outer.3.max(0.75),
-                hover_mix,
-                cham_base.as_ref(),
-            );
+                let custom_border = if cfg.amber_border && cfg.tb_match_wallpaper {
+                    Some(crate::theme::rgb_to_u32(pal.rim))
+                } else {
+                    None
+                };
+                crate::realistic_pbr::draw_pbr_bevel_rim(
+                    rt,
+                    shelf_r,
+                    rad,
+                    u,
+                    pbr_mat,
+                    custom_border,
+                    spec.rim_outer.3.max(0.75),
+                    hover_mix,
+                    cham_base.as_ref(),
+                );
+            }
         }
         return;
     }
 
-    if spec.layout != DockLayoutKind::FullEdgeTaskbar {
-        let shadow_col = if spec.light_mode_paper { 0.22 } else { 0.14 };
-        for (expand, a) in [(5.0 * u, shadow_col), (2.2 * u, shadow_col + 0.11)] {
-            let sh_rr = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: shelf_r.left - expand,
-                    top: shelf_r.top - expand * 0.45 + 1.6 * u,
-                    right: shelf_r.right + expand,
-                    bottom: shelf_r.bottom + expand,
-                },
-                radiusX: rad + expand * 0.45,
-                radiusY: rad + expand * 0.45,
-            };
-            br.SetColor(&rgba(0, 0, 0, a));
-            rt.FillRoundedRectangle(&sh_rr, br);
+    if show_plate {
+        if spec.layout != DockLayoutKind::FullEdgeTaskbar {
+            let shadow_col = if spec.light_mode_paper { 0.22 } else { 0.14 };
+            for (expand, a) in [(5.0 * u, shadow_col), (2.2 * u, shadow_col + 0.11)] {
+                let sh_rr = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: shelf_r.left - expand,
+                        top: shelf_r.top - expand * 0.45 + 1.6 * u,
+                        right: shelf_r.right + expand,
+                        bottom: shelf_r.bottom + expand,
+                    },
+                    radiusX: rad + expand * 0.45,
+                    radiusY: rad + expand * 0.45,
+                };
+                br.SetColor(&rgba(0, 0, 0, a));
+                rt.FillRoundedRectangle(&sh_rr, br);
+            }
         }
-    }
 
-    let alpha_user = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
-    let base_a = (spec.bg_alpha_bias * 0.68 + alpha_user * 0.32).clamp(0.40, 0.96);
-    let (gt, gm, gb) = if cfg.tb_match_wallpaper {
-        (
-            pal.glass_top,
+        let alpha_user = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
+        let base_a = (spec.bg_alpha_bias * 0.68 + alpha_user * 0.32).clamp(0.40, 0.96);
+        let (gt, gm, gb) = if cfg.tb_match_wallpaper {
             (
-                ((pal.glass_top.0 as u16 + pal.glass_bot.0 as u16) / 2) as u8,
-                ((pal.glass_top.1 as u16 + pal.glass_bot.1 as u16) / 2) as u8,
-                ((pal.glass_top.2 as u16 + pal.glass_bot.2 as u16) / 2) as u8,
-            ),
-            pal.glass_bot,
-        )
-    } else {
-        (spec.bg_top, spec.bg_mid, spec.bg_bot)
-    };
-    let stops = [
-        D2D1_GRADIENT_STOP {
-            position: 0.0,
-            color: rgba(gt.0, gt.1, gt.2, (base_a + 0.06).min(0.97)),
-        },
-        D2D1_GRADIENT_STOP {
-            position: 0.52,
-            color: rgba(gm.0, gm.1, gm.2, base_a),
-        },
-        D2D1_GRADIENT_STOP {
-            position: 1.0,
-            color: rgba(gb.0, gb.1, gb.2, (base_a + 0.04).min(0.97)),
-        },
-    ];
+                pal.glass_top,
+                (
+                    ((pal.glass_top.0 as u16 + pal.glass_bot.0 as u16) / 2) as u8,
+                    ((pal.glass_top.1 as u16 + pal.glass_bot.1 as u16) / 2) as u8,
+                    ((pal.glass_top.2 as u16 + pal.glass_bot.2 as u16) / 2) as u8,
+                ),
+                pal.glass_bot,
+            )
+        } else {
+            (spec.bg_top, spec.bg_mid, spec.bg_bot)
+        };
+        let stops = [
+            D2D1_GRADIENT_STOP {
+                position: 0.0,
+                color: rgba(gt.0, gt.1, gt.2, (base_a + 0.06).min(0.97)),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 0.52,
+                color: rgba(gm.0, gm.1, gm.2, base_a),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 1.0,
+                color: rgba(gb.0, gb.1, gb.2, (base_a + 0.04).min(0.97)),
+            },
+        ];
 
-    let shelf_rr = D2D1_ROUNDED_RECT {
-        rect: shelf_r,
-        radiusX: rad,
-        radiusY: rad,
-    };
-    if let Some(grad) = create_grad(
-        rt,
-        Vector2 { X: shelf_r.left, Y: shelf_r.top },
-        Vector2 { X: shelf_r.left, Y: shelf_r.bottom },
-        &stops,
-    ) {
-        if let Some(ref geo) = cham_geo {
-            rt.FillGeometry(geo, &grad, None);
+        let shelf_rr = D2D1_ROUNDED_RECT {
+            rect: shelf_r,
+            radiusX: rad,
+            radiusY: rad,
+        };
+        if let Some(grad) = create_grad(
+            rt,
+            Vector2 { X: shelf_r.left, Y: shelf_r.top },
+            Vector2 { X: shelf_r.left, Y: shelf_r.bottom },
+            &stops,
+        ) {
+            if let Some(ref geo) = cham_geo {
+                rt.FillGeometry(geo, &grad, None);
+            } else {
+                rt.FillRoundedRectangle(&shelf_rr, &grad);
+            }
         } else {
-            rt.FillRoundedRectangle(&shelf_rr, &grad);
-        }
-    } else {
-        br.SetColor(&rgba(gm.0, gm.1, gm.2, base_a));
-        if let Some(ref geo) = cham_geo {
-            rt.FillGeometry(geo, br, None);
-        } else {
-            rt.FillRoundedRectangle(&shelf_rr, br);
+            br.SetColor(&rgba(gm.0, gm.1, gm.2, base_a));
+            if let Some(ref geo) = cham_geo {
+                rt.FillGeometry(geo, br, None);
+            } else {
+                rt.FillRoundedRectangle(&shelf_rr, br);
+            }
         }
     }
 
-    let clip_layer = push_shelf_clip(rt, d2d, shelf_r, rad, spec.shape, cut);
-    draw_internal_art(
-        rt,
-        br,
-        spec.art,
-        shelf_r,
-        anim_phase,
-        hover_mix,
-        cursor_axis_norm,
-        is_vertical,
-        u,
-    );
-    pop_shelf_clip(rt, clip_layer);
+    if show_art {
+        let clip_layer = push_shelf_clip(rt, d2d, shelf_r, rad, spec.shape, cut);
+        draw_internal_art(
+            rt,
+            br,
+            spec.art,
+            shelf_r,
+            anim_phase,
+            hover_mix,
+            cursor_axis_norm,
+            is_vertical,
+            u,
+        );
+        pop_shelf_clip(rt, clip_layer);
+    }
 
-    draw_shelf_rims(
-        rt,
-        br,
-        shelf_r,
-        rad,
-        &spec,
-        cfg,
-        pal,
-        cham_geo.as_ref(),
-        u,
-        is_preview,
-    );
+    if show_rim {
+        draw_shelf_rims(
+            rt,
+            br,
+            shelf_r,
+            rad,
+            &spec,
+            cfg,
+            pal,
+            cham_geo.as_ref(),
+            u,
+            is_preview,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3716,6 +3736,9 @@ pub unsafe fn draw_dock_divider_styled(
     is_vertical: bool,
     u: f32,
 ) {
+    if !cfg.w_apps.show_separators {
+        return;
+    }
     let (_, spec) = resolve_widget_spec(cfg, TaskbarWidgetId::AppDock);
     let div_style = cfg.w_apps.divider_style;
     if div_style == DockDividerStyle::BlankGap {
@@ -3786,6 +3809,9 @@ pub unsafe fn draw_dock_slot_fx_styled(
     idx: usize,
     u: f32,
 ) {
+    if widget_id == TaskbarWidgetId::AppDock && !cfg.w_apps.show_cards {
+        return;
+    }
     let (eff_theme, mut spec) = resolve_widget_spec(cfg, widget_id);
     if let Some(bc) = brand_rgb {
         spec.dot_glow = bc;
@@ -3920,7 +3946,7 @@ pub unsafe fn draw_dock_indicator_styled(
     is_active: bool,
     u: f32,
 ) {
-    if dot_count == 0 {
+    if dot_count == 0 || !cfg.w_apps.show_indicators {
         return;
     }
     let (_, mut spec) = resolve_widget_spec(cfg, TaskbarWidgetId::AppDock);
@@ -4027,6 +4053,9 @@ pub unsafe fn draw_dock_clock_module(
     let Some(tf) = tfm else {
         return;
     };
+    if cfg.w_clock.is_all_elements_off() {
+        return;
+    }
     let (eff_theme, spec) = resolve_widget_spec(cfg, TaskbarWidgetId::Clock);
     let mut txt_pri = cfg.w_clock.custom_text_rgb.map(unpack_rgb).unwrap_or(pal.text_primary);
     let mut txt_acc = cfg.w_clock.custom_accent_rgb.map(unpack_rgb).unwrap_or(spec.dot_active);
@@ -4065,6 +4094,14 @@ pub unsafe fn draw_dock_clock_module(
 
     let h = (slot_rect.bottom - slot_rect.top).max(12.0 * u);
     let w = (slot_rect.right - slot_rect.left).max(12.0 * u);
+
+    if !cfg.w_clock.show_time {
+        if cfg.w_clock.show_date && !date_str.is_empty() {
+            br.SetColor(&rgba(txt_pri.0, txt_pri.1, txt_pri.2, 0.94));
+            draw_d2d_text(rt, date_str, tf, &slot_rect, br);
+        }
+        return;
+    }
 
     if is_vertical {
         br.SetColor(&rgba(txt_pri.0, txt_pri.1, txt_pri.2, 0.94));

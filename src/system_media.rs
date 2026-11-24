@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -109,6 +109,7 @@ impl Default for MediaSnapshot {
 pub struct CcSnapshot {
     pub wifi_on: bool,
     pub wifi_name: String,
+    pub wifi_signal: u8,
     pub bt_on: bool,
     pub bt_sub: String,
     pub air_on: bool,
@@ -129,6 +130,7 @@ impl Default for CcSnapshot {
         Self {
             wifi_on: true,
             wifi_name: "Wi-Fi".to_string(),
+            wifi_signal: 85,
             bt_on: false,
             bt_sub: "Off".to_string(),
             air_on: false,
@@ -189,7 +191,7 @@ pub struct SystemMediaEngine {
     stop_wake: Arc<(Mutex<bool>, Condvar)>,
     action_wake: Arc<(Mutex<ActionSignal>, Condvar)>,
     cc_active: Arc<AtomicBool>,
-    viz_eco_fps: Arc<AtomicBool>,
+    viz_frame_ms: Arc<AtomicU32>,
     viz_needed: Arc<AtomicBool>,
     media_thread: Option<JoinHandle<()>>,
     audio_thread: Option<JoinHandle<()>>,
@@ -247,7 +249,9 @@ impl SystemMediaEngine {
         let stop_wake = Arc::new((Mutex::new(false), Condvar::new()));
         let action_wake = Arc::new((Mutex::new(ActionSignal::default()), Condvar::new()));
         let cc_active = Arc::new(AtomicBool::new(false));
-        let viz_eco_fps = Arc::new(AtomicBool::new(true));
+        let viz_frame_ms = Arc::new(AtomicU32::new(crate::config::AppConfig::anim_frame_ms_for(
+            crate::config::AppConfig::DEFAULT_ANIM_FPS,
+        )));
         let viz_needed = Arc::new(AtomicBool::new(true));
         let (tx, rx) = mpsc::channel();
         let hwnd_raw = notify_hwnd.0 as isize;
@@ -263,10 +267,10 @@ impl SystemMediaEngine {
         let sh2 = Arc::clone(&shared);
         let st2 = Arc::clone(&stop);
         let wk2 = Arc::clone(&stop_wake);
-        let eco2 = Arc::clone(&viz_eco_fps);
+        let fms2 = Arc::clone(&viz_frame_ms);
         let need2 = Arc::clone(&viz_needed);
         let audio_thread = thread::spawn(move || {
-            run_wasapi_loopback_worker(sh2, st2, wk2, eco2, need2);
+            run_wasapi_loopback_worker(sh2, st2, wk2, fms2, need2, hwnd_raw, notify_msg);
         });
 
         Self {
@@ -276,15 +280,16 @@ impl SystemMediaEngine {
             stop_wake,
             action_wake,
             cc_active,
-            viz_eco_fps,
+            viz_frame_ms,
             viz_needed,
             media_thread: Some(media_thread),
             audio_thread: Some(audio_thread),
         }
     }
 
-    pub fn set_viz_eco_fps(&self, eco: bool) {
-        self.viz_eco_fps.store(eco, Ordering::Relaxed);
+    pub fn set_anim_fps(&self, fps: u32) {
+        let ms = crate::config::AppConfig::anim_frame_ms_for(fps);
+        self.viz_frame_ms.store(ms, Ordering::Relaxed);
     }
 
     pub fn set_viz_needed(&self, needed: bool) {
@@ -324,7 +329,9 @@ impl SystemMediaEngine {
 
     pub fn is_audio_active(&self) -> bool {
         if let Ok(g) = self.shared.lock() {
-            return g.media.is_playing || g.bands.iter().any(|&b| b > 0.02);
+            let muted_or_zero = g.cc.vol_muted || g.cc.vol_pct == 0;
+            let has_bands = g.bands.iter().any(|&b| b > 0.005);
+            return has_bands || (g.media.is_playing && !muted_or_zero);
         }
         false
     }
@@ -648,9 +655,8 @@ fn run_smtc_and_cc_worker(
         }
 
         // Poll Control Center hardware/OS state every ~3000ms (or immediately after toggle),
-        // and only invoke heavy SettingsHandlers DLL / WinRT Radio queries when Control Center UI
-        // is actually open or right after a user action. When closed, use fast registry/WLAN/cached COM
-        // so idle handle count stays flat and zero extra DLL/Section handles accumulate.
+        // plus ultra-lightweight cached COM volume/mute check on every wake (~160ms, <10us, 0 handles)
+        // so keyboard volume keys and Windows mixer trigger instant dock tray animations.
         if !stop.load(Ordering::Relaxed)
             && (had_action || prev_cc.is_none() || last_cc_sync.elapsed() >= Duration::from_millis(3000))
         {
@@ -676,9 +682,31 @@ fn run_smtc_and_cc_worker(
                     let _ = PostMessageW(Some(HWND(hwnd_raw as *mut c_void)), notify_msg, WPARAM(0), LPARAM(0));
                 }
             }
+        } else if !stop.load(Ordering::Relaxed) {
+            if let Some(ref mut prev) = prev_cc {
+                let (vol_pct, vol_muted) = get_master_volume_cached(&mut cached_vol_ep);
+                if prev.vol_pct != vol_pct || prev.vol_muted != vol_muted {
+                    prev.vol_pct = vol_pct;
+                    prev.vol_muted = vol_muted;
+                    if let Ok(mut g) = shared.lock() {
+                        g.cc.vol_pct = vol_pct;
+                        g.cc.vol_muted = vol_muted;
+                    }
+                    if hwnd_raw != 0 && notify_msg != 0 {
+                        unsafe {
+                            let _ = PostMessageW(
+                                Some(HWND(hwnd_raw as *mut c_void)),
+                                notify_msg,
+                                WPARAM(0),
+                                LPARAM(0),
+                            );
+                        }
+                    }
+                }
+            }
         }
 
-        if !wait_for_action_or_timeout(&action_wake, Duration::from_millis(250)) {
+        if !wait_for_action_or_timeout(&action_wake, Duration::from_millis(160)) {
             break;
         }
     }
@@ -1528,9 +1556,10 @@ fn get_master_volume_cached(cached: &mut Option<IAudioEndpointVolume>) -> (u8, b
     }
 }
 
-fn read_wifi_wlan_fast() -> (bool, String) {
+fn read_wifi_wlan_fast() -> (bool, String, u8) {
     let mut connected = false;
     let mut ssid = String::new();
+    let mut signal_pct = 0u8;
     unsafe {
         let mut neg = 0u32;
         let mut client = windows::Win32::Foundation::HANDLE::default();
@@ -1559,6 +1588,7 @@ fn read_wifi_wlan_fast() -> (bool, String) {
                             && !data_ptr.is_null()
                         {
                             let attr = &*(data_ptr as *const WLAN_CONNECTION_ATTRIBUTES);
+                            signal_pct = attr.wlanAssociationAttributes.wlanSignalQuality.min(100) as u8;
                             let len =
                                 (attr.wlanAssociationAttributes.dot11Ssid.uSSIDLength as usize)
                                     .min(32);
@@ -1584,7 +1614,12 @@ fn read_wifi_wlan_fast() -> (bool, String) {
     } else {
         "Wi-Fi".to_string()
     };
-    (connected, label)
+    let final_sig = if connected {
+        if signal_pct > 0 { signal_pct } else { 80 }
+    } else {
+        0
+    };
+    (connected, label, final_sig)
 }
 
 fn collect_cc_snapshot_light(
@@ -1595,12 +1630,16 @@ fn collect_cc_snapshot_light(
     let (vol_pct, vol_muted) = get_master_volume_cached(cached_vol_ep);
     next.vol_pct = vol_pct;
     next.vol_muted = vol_muted;
-    let (wlan_on, wlan_label) = read_wifi_wlan_fast();
+    let (wlan_on, wlan_label, wlan_sig) = read_wifi_wlan_fast();
     if wlan_on {
         next.wifi_on = true;
         next.wifi_name = wlan_label;
-    } else if next.wifi_name.is_empty() || (prev.wifi_on && !prev.wifi_name.eq_ignore_ascii_case("Off")) {
-        next.wifi_name = wlan_label;
+        next.wifi_signal = wlan_sig;
+    } else {
+        next.wifi_signal = 0;
+        if next.wifi_name.is_empty() || (prev.wifi_on && !prev.wifi_name.eq_ignore_ascii_case("Off")) {
+            next.wifi_name = wlan_label;
+        }
     }
     let mut ps = SYSTEM_POWER_STATUS::default();
     if unsafe { GetSystemPowerStatus(&mut ps).is_ok() } {
@@ -1674,6 +1713,12 @@ fn set_master_volume_cached(
 
 fn collect_cc_snapshot() -> CcSnapshot {
     let (wifi_on, wifi_name) = read_wifi_state();
+    let (wlan_conn, _, wlan_sig) = read_wifi_wlan_fast();
+    let wifi_signal = if wifi_on {
+        if wlan_conn && wlan_sig > 0 { wlan_sig } else { 85 }
+    } else {
+        0
+    };
     let (bt_on, bt_sub) = read_bt_state();
     let air_on = read_reg_dword(
         HKEY_LOCAL_MACHINE,
@@ -1739,6 +1784,7 @@ fn collect_cc_snapshot() -> CcSnapshot {
     CcSnapshot {
         wifi_on,
         wifi_name,
+        wifi_signal,
         bt_on,
         bt_sub,
         air_on,
@@ -1854,14 +1900,129 @@ fn try_toggle_system_setting_bool(
 }
 
 // =========================================================================
-// Lightweight 12-Band WASAPI Loopback Spectrum Analyzer (with Auto-Reconnect & AGC)
+// 12-Band Hann-Windowed 1024-pt WASAPI Loopback Spectrum Analyzer
+// (with Fast Device-Switch Detection, Pink-Noise Tilt & AGC)
 // =========================================================================
+pub(crate) const WASAPI_FFT_LEN: usize = 1024;
+pub(crate) const WASAPI_BAND_FREQS: [f32; 12] = [
+    55.0, 95.0, 160.0, 270.0, 450.0, 750.0, 1250.0, 2100.0, 3500.0, 5800.0, 9000.0, 13000.0,
+];
+
+fn build_hann_window() -> [f32; WASAPI_FFT_LEN] {
+    let mut win = [0.0f32; WASAPI_FFT_LEN];
+    let denom = (WASAPI_FFT_LEN - 1) as f32;
+    for (i, slot) in win.iter_mut().enumerate() {
+        *slot = 0.5 * (1.0 - (TAU * i as f32 / denom).cos());
+    }
+    win
+}
+
+fn build_goertzel_coeffs(sample_rate: f32) -> [f32; 12] {
+    let sr = sample_rate.max(8000.0);
+    let mut coeffs = [0.0f32; 12];
+    for (bi, &freq) in WASAPI_BAND_FREQS.iter().enumerate() {
+        let clamped_f = freq.min(sr * 0.48);
+        let omega = TAU * clamped_f / sr;
+        coeffs[bi] = 2.0 * omega.cos();
+    }
+    coeffs
+}
+
+/// Smooth, strictly monotonic perceptual loudness curve derived from master endpoint volume.
+/// Guarantees 0% volume or Muted always maps to exact `0.0`, while 1%..100% increases smoothly.
+pub(crate) fn volume_visualizer_scale(vol_scalar: f32, muted: bool) -> f32 {
+    if muted || !vol_scalar.is_finite() || vol_scalar <= 0.005 {
+        return 0.0;
+    }
+    vol_scalar.clamp(0.0, 1.0).powf(0.55)
+}
+
+/// Computes 12 perceptually balanced, Hann-windowed Goertzel spectrum bands from a 1024-sample ring.
+pub(crate) fn compute_hann_goertzel_bands(
+    ring: &[f32; WASAPI_FFT_LEN],
+    ring_pos: usize,
+    hann: &[f32; WASAPI_FFT_LEN],
+    coeffs: &[f32; 12],
+    agc_ref: f32,
+) -> [f32; 12] {
+    let gain = (0.58 / agc_ref.max(0.08)).clamp(0.90, 5.5);
+    let mut windowed = [0.0f32; WASAPI_FFT_LEN];
+    let mut peak = 0.0f32;
+    for i in 0..WASAPI_FFT_LEN {
+        let s = (ring[(ring_pos + i) & (WASAPI_FFT_LEN - 1)] * gain).clamp(-1.4, 1.4);
+        peak = peak.max(s.abs());
+        windowed[i] = s * hann[i];
+    }
+    if peak < 0.0015 {
+        return [0.0; 12];
+    }
+    let mut out = [0.0f32; 12];
+    let inv_norm = 2.0 / (WASAPI_FFT_LEN as f32 * 0.5); // compensate 0.5 Hann coherent gain
+    for (bi, &coeff) in coeffs.iter().enumerate() {
+        let mut q1 = 0.0f32;
+        let mut q2 = 0.0f32;
+        for &s in &windowed {
+            let q0 = coeff * q1 - q2 + s;
+            q2 = q1;
+            q1 = q0;
+        }
+        let mag = (q1 * q1 + q2 * q2 - q1 * q2 * coeff).max(0.0).sqrt() * inv_norm;
+        // Compensate 1/f pink-noise rolloff so mid/treble instruments dance alongside kick bass
+        let p = bi as f32 / 11.0;
+        let tilt = 0.80 + p.powf(1.25) * 1.95;
+        let level = (mag * tilt * 2.15).clamp(0.0, 1.25);
+        out[bi] = if level < 0.022 {
+            0.0
+        } else {
+            ((level - 0.022) / 0.98).powf(0.74).clamp(0.0, 1.0)
+        };
+    }
+    out
+}
+
+/// Computes volume-aware spectrum bands so 0%/Muted is strictly flat (`0.0`) and 1%..100% scales monotonically.
+pub(crate) fn compute_volume_scaled_bands(
+    ring: &[f32; WASAPI_FFT_LEN],
+    ring_pos: usize,
+    hann: &[f32; WASAPI_FFT_LEN],
+    coeffs: &[f32; 12],
+    agc_ref: f32,
+    vol_scalar: f32,
+    muted: bool,
+) -> [f32; 12] {
+    let vol_scale = volume_visualizer_scale(vol_scalar, muted);
+    if vol_scale <= 0.0 {
+        return [0.0; 12];
+    }
+    let mut bands = compute_hann_goertzel_bands(ring, ring_pos, hann, coeffs, agc_ref);
+    for b in &mut bands {
+        *b = (*b * vol_scale).clamp(0.0, 1.0);
+    }
+    bands
+}
+
+unsafe fn query_endpoint_id(device: &windows::Win32::Media::Audio::IMMDevice) -> Option<String> {
+    let pw = device.GetId().ok()?;
+    if pw.0.is_null() {
+        return None;
+    }
+    let mut len = 0usize;
+    while *pw.0.add(len) != 0 && len < 512 {
+        len += 1;
+    }
+    let s = String::from_utf16_lossy(std::slice::from_raw_parts(pw.0, len));
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    Some(s)
+}
+
 fn run_wasapi_loopback_worker(
     shared: Arc<Mutex<SharedState>>,
     stop: Arc<AtomicBool>,
     stop_wake: Arc<(Mutex<bool>, Condvar)>,
-    viz_eco_fps: Arc<AtomicBool>,
+    viz_frame_ms: Arc<AtomicU32>,
     viz_needed: Arc<AtomicBool>,
+    hwnd_raw: isize,
+    notify_msg: u32,
 ) {
     defer_on_fresh_boot(&stop);
     if stop.load(Ordering::Relaxed) {
@@ -1871,13 +2032,9 @@ fn run_wasapi_loopback_worker(
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
 
-    let freqs: [f32; 12] = [
-        55.0, 95.0, 160.0, 270.0, 450.0, 750.0, 1250.0, 2100.0, 3500.0, 5800.0, 9000.0, 13000.0,
-    ];
+    let hann = build_hann_window();
     let mut smooth = [0.0f32; 12];
-    let mut ring = vec![0.0f32; 256];
-    let mut ring_pos = 0usize;
-    let mut agc_ref = 0.12f32;
+    let mut agc_ref = 0.14f32;
     let mut synth_phase = 0.0f32;
 
     unsafe {
@@ -1901,9 +2058,13 @@ fn run_wasapi_loopback_worker(
                 }
                 continue;
             };
+            let active_dev_id = query_endpoint_id(&device);
 
             let meter_opt = device
                 .Activate::<IAudioMeterInformation>(CLSCTX_INPROC_SERVER, None)
+                .ok();
+            let vol_ep_opt = device
+                .Activate::<IAudioEndpointVolume>(CLSCTX_INPROC_SERVER, None)
                 .ok();
 
             let Ok(client) = device.Activate::<IAudioClient>(CLSCTX_INPROC_SERVER, None) else {
@@ -1930,7 +2091,7 @@ fn run_wasapi_loopback_worker(
                         .read_unaligned()
                         == GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71));
 
-            // Use a 100ms loopback buffer so 33ms wakes never overflow or drop packets
+            // Use a 100ms loopback buffer so variable FPS wakes never overflow or drop packets
             let init_ok = client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
@@ -1961,14 +2122,11 @@ fn run_wasapi_loopback_worker(
                 continue;
             }
 
-            let mut coeffs = [0.0f32; 12];
-            for (bi, &freq) in freqs.iter().enumerate() {
-                let omega = TAU * freq / sample_rate;
-                coeffs[bi] = 2.0 * omega.cos();
-            }
+            let coeffs = build_goertzel_coeffs(sample_rate);
+            let mut ring = [0.0f32; WASAPI_FFT_LEN];
+            let mut ring_pos = 0usize;
 
             let mut silent_ticks = 0u32;
-            let mut reacquire_ticks = 0u32;
             let mut stream_started = true;
             let mut written_zero = true;
 
@@ -1996,6 +2154,8 @@ fn run_wasapi_loopback_worker(
                     }
                     stream_started = true;
                     silent_ticks = 0;
+                    ring = [0.0; WASAPI_FFT_LEN];
+                    ring_pos = 0;
                 }
                 let mut peak = 0.0f32;
                 let mut pkt_err = false;
@@ -2014,7 +2174,7 @@ fn run_wasapi_loopback_worker(
                                 if silent_flag || data_ptr.is_null() {
                                     for _ in 0..frames {
                                         ring[ring_pos] = 0.0;
-                                        ring_pos = (ring_pos + 1) & 255;
+                                        ring_pos = (ring_pos + 1) & (WASAPI_FFT_LEN - 1);
                                     }
                                 } else if is_float && bits == 32 {
                                     let slice = std::slice::from_raw_parts(
@@ -2029,7 +2189,7 @@ fn run_wasapi_loopback_worker(
                                         let mono = sum / (channels as f32);
                                         peak = peak.max(mono.abs());
                                         ring[ring_pos] = mono;
-                                        ring_pos = (ring_pos + 1) & 255;
+                                        ring_pos = (ring_pos + 1) & (WASAPI_FFT_LEN - 1);
                                     }
                                 } else if bits == 16 {
                                     let slice = std::slice::from_raw_parts(
@@ -2044,7 +2204,7 @@ fn run_wasapi_loopback_worker(
                                         let mono = sum / (channels as f32);
                                         peak = peak.max(mono.abs());
                                         ring[ring_pos] = mono;
-                                        ring_pos = (ring_pos + 1) & 255;
+                                        ring_pos = (ring_pos + 1) & (WASAPI_FFT_LEN - 1);
                                     }
                                 } else if bits == 32 && !is_float {
                                     let slice = std::slice::from_raw_parts(
@@ -2059,7 +2219,7 @@ fn run_wasapi_loopback_worker(
                                         let mono = sum / (channels as f32);
                                         peak = peak.max(mono.abs());
                                         ring[ring_pos] = mono;
-                                        ring_pos = (ring_pos + 1) & 255;
+                                        ring_pos = (ring_pos + 1) & (WASAPI_FFT_LEN - 1);
                                     }
                                 } else if bits == 24 && block_align >= channels * 3 {
                                     let bytes = std::slice::from_raw_parts(
@@ -2079,7 +2239,7 @@ fn run_wasapi_loopback_worker(
                                         let mono = sum / (channels as f32);
                                         peak = peak.max(mono.abs());
                                         ring[ring_pos] = mono;
-                                        ring_pos = (ring_pos + 1) & 255;
+                                        ring_pos = (ring_pos + 1) & (WASAPI_FFT_LEN - 1);
                                     }
                                 }
                                 let _ = capture.ReleaseBuffer(frames);
@@ -2098,55 +2258,75 @@ fn run_wasapi_loopback_worker(
                     break;
                 }
 
-                if peak >= 0.0004 {
+                let (vol_scalar, vol_muted) = vol_ep_opt
+                    .as_ref()
+                    .and_then(|ep| {
+                        let s = ep.GetMasterVolumeLevelScalar().ok()?;
+                        let m = ep.GetMute().ok()?.as_bool();
+                        Some((s.clamp(0.0, 1.0), m))
+                    })
+                    .unwrap_or((1.0, false));
+                let vol_scale = volume_visualizer_scale(vol_scalar, vol_muted);
+
+                if vol_scale <= 0.0 {
+                    // Master volume is 0% or Muted: guarantee flat zero bars (never fall back to pre-volume endpoint meter!)
+                    silent_ticks = silent_ticks.saturating_add(1);
+                    agc_ref = agc_ref * 0.92 + 0.18 * 0.08;
+                    for b in &mut smooth {
+                        *b *= 0.62;
+                        if *b < 0.004 {
+                            *b = 0.0;
+                        }
+                    }
+                } else if peak >= 0.00035 {
                     silent_ticks = 0;
                     if peak > agc_ref {
-                        agc_ref = agc_ref * 0.65 + peak * 0.35;
+                        agc_ref = agc_ref * 0.62 + peak * 0.38;
                     } else {
-                        agc_ref = (agc_ref * 0.992 + peak * 0.008).max(0.035);
+                        agc_ref = (agc_ref * 0.985 + peak * 0.015).max(0.08);
                     }
-                    let gain = (0.45 / agc_ref).clamp(0.8, 12.0);
-
-                    for (bi, &coeff) in coeffs.iter().enumerate() {
-                        let mut q1 = 0.0f32;
-                        let mut q2 = 0.0f32;
-                        for i in 0..256usize {
-                            let s = (ring[(ring_pos + i) & 255] * gain).clamp(-1.5, 1.5);
-                            let q0 = coeff * q1 - q2 + s;
-                            q2 = q1;
-                            q1 = q0;
-                        }
-                        let mag = (q1 * q1 + q2 * q2 - q1 * q2 * coeff).max(0.0).sqrt() / 128.0;
-                        let target = (mag.sqrt() * 2.4).clamp(0.0, 1.0);
+                    let raw_bands = compute_volume_scaled_bands(
+                        &ring,
+                        ring_pos,
+                        &hann,
+                        &coeffs,
+                        agc_ref,
+                        vol_scalar,
+                        vol_muted,
+                    );
+                    for bi in 0..12 {
+                        let target = raw_bands[bi];
                         if target > smooth[bi] {
-                            smooth[bi] = smooth[bi] * 0.38 + target * 0.62;
+                            smooth[bi] = smooth[bi] * 0.24 + target * 0.76;
                         } else {
-                            smooth[bi] = smooth[bi] * 0.76 + target * 0.24;
+                            smooth[bi] = smooth[bi] * 0.70 + target * 0.30;
                         }
                     }
                 } else {
-                    // Only query COM endpoint peak meter when loopback buffer was silent.
+                    // Only query COM endpoint peak meter when loopback buffer was silent AND volume > 0% & unmuted.
                     let hw_meter_peak = meter_opt
                         .as_ref()
                         .and_then(|m| m.GetPeakValue().ok())
                         .unwrap_or(0.0);
                     if hw_meter_peak > 0.003 {
-                        // Fallback when audio is playing via hardware/endpoint meter
+                        // Fallback scaled monotonically by master endpoint volume so low volume never spikes full-up
                         silent_ticks = 0;
                         synth_phase = (synth_phase + 0.22) % (TAU * 32.0);
-                        let env = (hw_meter_peak * 2.6).max(0.0).powf(0.65).clamp(0.08, 1.0);
+                        let env = (hw_meter_peak * 2.0).max(0.0).powf(0.72).clamp(0.04, 1.0) * vol_scale;
                         for (bi, s) in smooth.iter_mut().enumerate() {
                             let p = bi as f32 / 11.0;
-                            let w1 = (synth_phase * (1.2 + p * 0.7) + bi as f32 * 0.85).sin() * 0.5 + 0.5;
+                            let w1 =
+                                (synth_phase * (1.2 + p * 0.7) + bi as f32 * 0.85).sin() * 0.5 + 0.5;
                             let w2 = (synth_phase * 1.9 - bi as f32 * 1.3).cos() * 0.5 + 0.5;
-                            let target = (env * (0.35 + 0.65 * (w1 * 0.6 + w2 * 0.4))).clamp(0.04, 1.0);
-                            *s = *s * 0.45 + target * 0.55;
+                            let target =
+                                (env * (0.28 + 0.72 * (w1 * 0.6 + w2 * 0.4))).clamp(0.0, 1.0);
+                            *s = *s * 0.38 + target * 0.62;
                         }
                     } else {
                         silent_ticks = silent_ticks.saturating_add(1);
                         for b in &mut smooth {
-                            *b *= 0.74;
-                            if *b < 0.005 {
+                            *b *= 0.68;
+                            if *b < 0.004 {
                                 *b = 0.0;
                             }
                         }
@@ -2154,27 +2334,39 @@ fn run_wasapi_loopback_worker(
                 }
 
                 let is_all_zero = smooth.iter().all(|&b| b == 0.0);
+                let woke_from_silence = written_zero && !is_all_zero;
                 if !(is_all_zero && written_zero) {
                     if let Ok(mut g) = shared.lock() {
                         g.bands = smooth;
                     }
                     written_zero = is_all_zero;
+                    if woke_from_silence && hwnd_raw != 0 {
+                        let _ = PostMessageW(
+                            Some(HWND(hwnd_raw as *mut c_void)),
+                            notify_msg,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
                 }
 
-                reacquire_ticks = reacquire_ticks.saturating_add(1);
-                if silent_ticks > 600 && reacquire_ticks > 1000 {
-                    // Periodically re-bind default endpoint after ~2-3m idle in case audio device switched
-                    break;
+                // Fast default audio output switch detection (e.g., speakers -> Bluetooth/USB DAC)
+                if silent_ticks >= 16 && silent_ticks % 16 == 0 {
+                    if let Ok(cur_dev) = enumerator
+                        .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                        .or_else(|_| enumerator.GetDefaultAudioEndpoint(eRender, eConsole))
+                    {
+                        let cur_id = query_endpoint_id(&cur_dev);
+                        if cur_id != active_dev_id {
+                            break;
+                        }
+                    }
                 }
 
-                let active_sleep_ms = if viz_eco_fps.load(Ordering::Relaxed) {
-                    42
-                } else {
-                    30
-                };
+                let active_sleep_ms = viz_frame_ms.load(Ordering::Relaxed).clamp(8, 66) as u64;
                 if !sleep_or_stop(
                     &stop_wake,
-                    Duration::from_millis(if silent_ticks > 30 { 160 } else { active_sleep_ms }),
+                    Duration::from_millis(if silent_ticks > 30 { 140 } else { active_sleep_ms }),
                 ) {
                     break;
                 }
@@ -3241,7 +3433,7 @@ mod tests {
             media_thread: Some(h1),
             audio_thread: Some(h2),
             cc_active: Arc::new(AtomicBool::new(false)),
-            viz_eco_fps: Arc::new(AtomicBool::new(true)),
+            viz_frame_ms: Arc::new(AtomicU32::new(22)),
             viz_needed: Arc::new(AtomicBool::new(true)),
         };
         let t0 = Instant::now();
@@ -3254,5 +3446,92 @@ mod tests {
         // Release test worker threads cleanly after measurement.
         *gate.0.lock().unwrap() = true;
         gate.1.notify_all();
+    }
+
+    #[test]
+    fn hann_goertzel_separates_bass_mid_treble_and_returns_zero_on_silence() {
+        let sr = 48_000.0f32;
+        let hann = build_hann_window();
+        let coeffs = build_goertzel_coeffs(sr);
+
+        // 1. Pure silence -> exact zero across all 12 bands
+        let silent = [0.0f32; WASAPI_FFT_LEN];
+        assert_eq!(
+            compute_hann_goertzel_bands(&silent, 0, &hann, &coeffs, 0.2),
+            [0.0; 12]
+        );
+
+        let make_sine = |freq_hz: f32| -> [f32; WASAPI_FFT_LEN] {
+            let mut buf = [0.0f32; WASAPI_FFT_LEN];
+            for (i, s) in buf.iter_mut().enumerate() {
+                *s = 0.5 * (TAU * freq_hz * (i as f32) / sr).sin();
+            }
+            buf
+        };
+
+        // 2. 95 Hz bass tone -> peaks on band 1, treble stays silent
+        let bass = compute_hann_goertzel_bands(&make_sine(95.0), 0, &hann, &coeffs, 0.5);
+        assert!(bass[1] > 0.55, "95 Hz should strongly excite band 1: {:?}", bass);
+        assert!(bass[10] < 0.05, "95 Hz must not leak into 9 kHz band: {:?}", bass);
+
+        // 3. 1250 Hz mid tone -> peaks on band 6
+        let mid = compute_hann_goertzel_bands(&make_sine(1250.0), 0, &hann, &coeffs, 0.5);
+        assert!(mid[6] > 0.65, "1250 Hz should strongly excite band 6: {:?}", mid);
+        assert!(mid[0] < 0.05 && mid[11] < 0.05, "1250 Hz should stay focused on mid band: {:?}", mid);
+
+        // 4. 9000 Hz treble tone -> peaks on band 10, bass stays silent
+        let treble = compute_hann_goertzel_bands(&make_sine(9000.0), 0, &hann, &coeffs, 0.5);
+        assert!(treble[10] > 0.65, "9000 Hz should strongly excite band 10: {:?}", treble);
+        assert!(treble[1] < 0.05, "9000 Hz must not leak into bass band: {:?}", treble);
+    }
+
+    #[test]
+    fn volume_scaling_zero_is_silent_and_increases_monotonically_to_100() {
+        let sr = 48_000.0f32;
+        let hann = build_hann_window();
+        let coeffs = build_goertzel_coeffs(sr);
+
+        let make_sine = |amp: f32, freq_hz: f32| -> [f32; WASAPI_FFT_LEN] {
+            let mut buf = [0.0f32; WASAPI_FFT_LEN];
+            for (i, s) in buf.iter_mut().enumerate() {
+                *s = amp * (TAU * freq_hz * (i as f32) / sr).sin();
+            }
+            buf
+        };
+
+        // 1. Volume 0% OR Muted at 100% must ALWAYS produce strict zero bands (never jump full up)
+        let full_pcm = make_sine(0.75, 160.0);
+        assert_eq!(
+            compute_volume_scaled_bands(&full_pcm, 0, &hann, &coeffs, 0.75, 0.0, false),
+            [0.0; 12]
+        );
+        assert_eq!(
+            compute_volume_scaled_bands(&full_pcm, 0, &hann, &coeffs, 0.75, 1.0, true),
+            [0.0; 12]
+        );
+
+        // 2. Pre-volume loopback driver (constant PCM amplitude): strictly increases 10% < 40% < 75% < 100%
+        let b10 = compute_volume_scaled_bands(&full_pcm, 0, &hann, &coeffs, 0.75, 0.10, false)[2];
+        let b40 = compute_volume_scaled_bands(&full_pcm, 0, &hann, &coeffs, 0.75, 0.40, false)[2];
+        let b75 = compute_volume_scaled_bands(&full_pcm, 0, &hann, &coeffs, 0.75, 0.75, false)[2];
+        let b100 = compute_volume_scaled_bands(&full_pcm, 0, &hann, &coeffs, 0.75, 1.00, false)[2];
+        assert!(
+            0.0 < b10 && b10 < b40 && b40 < b75 && b75 < b100,
+            "Pre-volume loopback must scale monotonically with volume: 10%={b10}, 40%={b40}, 75%={b75}, 100%={b100}"
+        );
+
+        // 3. Post-volume loopback driver (PCM scales with volume): strictly increases 10% < 40% < 75% < 100%
+        let p10 = make_sine(0.75 * 0.10, 160.0);
+        let p40 = make_sine(0.75 * 0.40, 160.0);
+        let p75 = make_sine(0.75 * 0.75, 160.0);
+        let p100 = make_sine(0.75 * 1.00, 160.0);
+        let v10 = compute_volume_scaled_bands(&p10, 0, &hann, &coeffs, (0.75 * 0.10_f32).max(0.08), 0.10, false)[2];
+        let v40 = compute_volume_scaled_bands(&p40, 0, &hann, &coeffs, 0.75 * 0.40, 0.40, false)[2];
+        let v75 = compute_volume_scaled_bands(&p75, 0, &hann, &coeffs, 0.75 * 0.75, 0.75, false)[2];
+        let v100 = compute_volume_scaled_bands(&p100, 0, &hann, &coeffs, 0.75 * 1.00, 1.00, false)[2];
+        assert!(
+            0.0 < v10 && v10 < v40 && v40 < v75 && v75 < v100,
+            "Post-volume loopback must scale monotonically (never reverse!): 10%={v10}, 40%={v40}, 75%={v75}, 100%={v100}"
+        );
     }
 }

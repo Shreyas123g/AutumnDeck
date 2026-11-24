@@ -21,7 +21,7 @@ use crate::config::{
     app_data_dir, is_logon_task_enabled, is_startup_enabled, serialize_config_ini, AppConfig,
 };
 use crate::taskbar_hide::{is_fullscreen_game_or_app_active, TaskbarHider};
-use crate::taskbar_styler::has_app_package_rx_acl;
+use crate::taskbar_styler::{has_app_package_rx_acl, tap_cache_dll_diagnostics};
 
 const MAX_EVENT_LOG_ENTRIES: usize = 80;
 static EVENT_LOG: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
@@ -356,6 +356,13 @@ fn build_support_report(cfg: &AppConfig, game_mode_active: bool) -> String {
         tap_bytes,
         tap_acl
     ));
+    if let Some((staged_path, staged_acl)) = tap_cache_dll_diagnostics(&tap_path) {
+        out.push_str(&format!(
+            "staged_tap_dll={} acl={}\n",
+            sanitize_user_paths(&staged_path),
+            staged_acl
+        ));
+    }
     out.push_str(&format!("startup_run_key={}\n", is_startup_enabled()));
     out.push_str(&format!("startup_logon_task={}\n", is_logon_task_enabled()));
     out.push_str(&format!(
@@ -388,6 +395,25 @@ fn build_support_report(cfg: &AppConfig, game_mode_active: bool) -> String {
     }
     if !out.ends_with('\n') {
         out.push('\n');
+    }
+    out.push('\n');
+
+    out.push_str("[TapDiagLogTail]\n");
+    let tap_log_file = std::env::temp_dir().join("autumn_tap_diag.log");
+    match fs::read_to_string(&tap_log_file) {
+        Ok(content) => {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(25);
+            if lines.is_empty() {
+                out.push_str("(autumn_tap_diag.log is empty)\n");
+            } else {
+                for line in &lines[start..] {
+                    out.push_str(&sanitize_user_paths(line));
+                    out.push('\n');
+                }
+            }
+        }
+        Err(_) => out.push_str("(no autumn_tap_diag.log found — TAP DLL was not loaded by explorer.exe)\n"),
     }
     out.push('\n');
 

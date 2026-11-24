@@ -66,8 +66,15 @@ Normally, clicking **"More info" ➔ "Run anyway"** (or unblocking the `.zip`) i
 
 ## Community & Sponsorship
 If you love AutumnDeck and want to support ongoing development, new presets, and features:
+
+<p align="center">
+  <a href="https://ko-fi.com/autumndeck"><img src="https://img.shields.io/badge/Ko--fi-Tip%20a%20Coffee-F16061?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Tip on Ko-fi" /></a>
+  <a href="https://www.patreon.com/c/AutumnDeck"><img src="https://img.shields.io/badge/Patreon-Support-FF424D?style=for-the-badge&logo=patreon&logoColor=white" alt="Support on Patreon" /></a>
+  <a href="https://github.com/sponsors/Shreyas123g"><img src="https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors" /></a>
+</p>
+
+- **Ko-fi (One-time tips):** [ko-fi.com/autumndeck](https://ko-fi.com/autumndeck) — Tip any custom amount once via PayPal or Card.
 - **Patreon:** [patreon.com/c/AutumnDeck](https://www.patreon.com/c/AutumnDeck)
-- **Ko-fi:** [ko-fi.com/autumndeck](https://ko-fi.com/autumndeck)
 - **GitHub Sponsors:** [github.com/sponsors/Shreyas123g](https://github.com/sponsors/Shreyas123g)
 
 ---

@@ -13,8 +13,11 @@
 
 # Scratch & local test artifacts
 panic.txt
-GEMINI_HANDOFF_PROMPT.txt
+GEMINI_HANDOFF_PROMPT*.txt
 BUGS_AND_FIXES_PLAN.md
+AUTUMN_DECK_PLAN*.md
 verify_modular_widgets.*
 modular_verify_*.png
 Themes/
+github recovery code/
+scratch/

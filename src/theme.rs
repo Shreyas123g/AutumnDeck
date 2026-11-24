@@ -151,6 +151,112 @@ impl ThemePalette {
         }
     }
 
+    /// Curated artistic native palettes for the 6 Music Taskbar Themes (eliminating monochrome amber).
+    pub fn for_music_taskbar_theme(theme: crate::config::TaskbarTheme) -> Option<Self> {
+        use crate::config::TaskbarTheme;
+        match theme {
+            // Cyber Neon Cyan & Deep Violet
+            TaskbarTheme::LiveMusicBars => Some(Self {
+                accent: (0, 232, 255),
+                accent_light: (158, 248, 255),
+                accent_deep: (132, 56, 255),
+                rim: (0, 232, 255),
+                text_primary: (238, 252, 255),
+                text_muted: (174, 214, 240),
+                glass_top: (14, 16, 36),
+                glass_bot: (8, 9, 24),
+                preview_a: (16, 12, 42),
+                preview_b: (48, 22, 92),
+                preview_c: (8, 18, 38),
+                swatches: [0x00E8FF, 0x9EF8FF, 0x8438FF, 0x30165C, 0x080918],
+            }),
+            // Synthwave Magenta & Amber Orange
+            TaskbarTheme::NeonWave => Some(Self {
+                accent: (255, 56, 168),
+                accent_light: (255, 168, 70),
+                accent_deep: (166, 36, 206),
+                rim: (255, 92, 174),
+                text_primary: (255, 242, 250),
+                text_muted: (238, 186, 220),
+                glass_top: (28, 12, 34),
+                glass_bot: (16, 7, 22),
+                preview_a: (38, 12, 44),
+                preview_b: (98, 28, 66),
+                preview_c: (26, 12, 32),
+                swatches: [0xFF38A8, 0xFFA846, 0xA624CE, 0x621C42, 0x100716],
+            }),
+            // Frost Ice White & Aquamarine
+            TaskbarTheme::PureClearPulse => Some(Self {
+                accent: (76, 240, 222),
+                accent_light: (240, 252, 255),
+                accent_deep: (26, 158, 184),
+                rim: (192, 250, 255),
+                text_primary: (244, 254, 255),
+                text_muted: (184, 232, 238),
+                glass_top: (12, 30, 38),
+                glass_bot: (8, 18, 26),
+                preview_a: (10, 32, 46),
+                preview_b: (26, 78, 96),
+                preview_c: (8, 22, 34),
+                swatches: [0x4CF0DE, 0xF0FCFF, 0x1A9EB8, 0x1A4E60, 0x08121A],
+            }),
+            // Polished Metallic Chrome & Vivid Indigo
+            TaskbarTheme::MirrorBeatPill => Some(Self {
+                accent: (122, 134, 255),
+                accent_light: (234, 242, 255),
+                accent_deep: (68, 56, 214),
+                rim: (206, 220, 248),
+                text_primary: (246, 249, 255),
+                text_muted: (188, 198, 234),
+                glass_top: (18, 20, 38),
+                glass_bot: (10, 12, 24),
+                preview_a: (18, 20, 44),
+                preview_b: (48, 52, 108),
+                preview_c: (12, 14, 28),
+                swatches: [0x7A86FF, 0xEAF2FF, 0x4438D6, 0x30346C, 0x0A0C18],
+            }),
+            // Electric Lime & Midnight Charcoal
+            TaskbarTheme::BassPulseSplit => Some(Self {
+                accent: (140, 255, 58),
+                accent_light: (218, 255, 138),
+                accent_deep: (44, 182, 56),
+                rim: (152, 255, 76),
+                text_primary: (244, 255, 238),
+                text_muted: (184, 216, 174),
+                glass_top: (16, 20, 18),
+                glass_bot: (10, 12, 11),
+                preview_a: (12, 18, 14),
+                preview_b: (24, 52, 26),
+                preview_c: (8, 12, 10),
+                swatches: [0x8CFF3A, 0xDAFF8A, 0x2CB638, 0x18341A, 0x0A0C0B],
+            }),
+            // Studio Tri-Color LED Gradient (Green -> Yellow -> Peak Red)
+            TaskbarTheme::VuPeakStudio => Some(Self {
+                accent: (52, 232, 108),
+                accent_light: (255, 218, 56),
+                accent_deep: (255, 58, 68),
+                rim: (68, 232, 126),
+                text_primary: (244, 254, 248),
+                text_muted: (176, 214, 192),
+                glass_top: (14, 18, 18),
+                glass_bot: (8, 10, 11),
+                preview_a: (12, 22, 18),
+                preview_b: (26, 48, 34),
+                preview_c: (10, 12, 14),
+                swatches: [0x34E86C, 0xFFDA38, 0xFF3A44, 0x1A3022, 0x080A0B],
+            }),
+            _ => None,
+        }
+    }
+
+    /// Builds a custom visualizer accent palette while preserving the theme's dark glass base.
+    pub fn with_custom_viz_accent(rgb_u32: u32, base: &Self) -> Self {
+        let mut p = Self::from_accent_rgb(rgb_u32);
+        p.glass_top = blend_rgb(base.glass_top, p.glass_top, 0.45);
+        p.glass_bot = blend_rgb(base.glass_bot, p.glass_bot, 0.45);
+        p
+    }
+
     #[allow(dead_code)]
     pub const REALISTIC_THEME_IDS: [&'static str; 10] = [
         "calm_ocean_lagoon",

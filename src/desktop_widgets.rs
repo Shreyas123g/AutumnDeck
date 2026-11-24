@@ -94,7 +94,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::config::{
     resolve_resources_dir, self_exe_path, AppConfig, AppShortcut, ClockAlign, ClockElemId,
-    ClockElemTransform, ClockStyle, TaskbarVizStyle,
+    ClockElemTransform, ClockStyle, MacDockHideMode, TaskbarMode, TaskbarVizStyle,
 };
 use crate::dcomp_surface::DCompSwapSurface;
 use crate::system_media::{CcAction, CcSnapshot, MediaSnapshot, SystemMediaEngine};
@@ -10298,6 +10298,134 @@ pub unsafe fn find_desktop_host_hwnd() -> HWND {
     FindWindowW(w!("Progman"), PCWSTR::null()).unwrap_or_default()
 }
 
+/// Aspect-adaptive projection from the canonical 1280×800 Suite design canvas onto any live
+/// monitor resolution, aspect ratio (16:10, 16:9, 3:2, 4:3, 21:9, 32:9, portrait), DPI, and
+/// taskbar/dock work area. Preserves edge margins, dead-centers centered widgets, guarantees
+/// zero clipping and zero overlap, and provides an exact bijective inverse for 1:1 mouse drag.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewportLayout {
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub u: f32,
+    pub extra_w: f32,
+    pub extra_h: f32,
+}
+
+impl ViewportLayout {
+    pub const DESIGN_W: f32 = 1280.0;
+    pub const DESIGN_H: f32 = 800.0;
+    const AX0: f32 = 220.0;
+    const AX1: f32 = 1060.0;
+    const AY0: f32 = 160.0;
+    const AY1: f32 = 640.0;
+
+    #[inline]
+    fn map_axis(coord: f32, size: f32, a0: f32, a1: f32, extra: f32) -> f32 {
+        if extra <= 0.001 {
+            return coord;
+        }
+        let c = coord + 0.5 * size;
+        let mapped_c = if c <= a0 {
+            c
+        } else if c >= a1 {
+            c + extra
+        } else {
+            c + extra * ((c - a0) / (a1 - a0))
+        };
+        mapped_c - 0.5 * size
+    }
+
+    #[inline]
+    fn unmap_axis(mapped_coord: f32, size: f32, a0: f32, a1: f32, extra: f32) -> f32 {
+        if extra <= 0.001 {
+            return mapped_coord;
+        }
+        let mapped_c = mapped_coord + 0.5 * size;
+        let span = a1 - a0;
+        let c = if mapped_c <= a0 {
+            mapped_c
+        } else if mapped_c >= a1 + extra {
+            mapped_c - extra
+        } else {
+            a0 + (mapped_c - a0) * (span / (span + extra))
+        };
+        c - 0.5 * size
+    }
+
+    /// Computes a responsive viewport layout for a monitor `mon` and its work area `work`.
+    pub fn compute(mon: RECT, work: RECT, cfg: &AppConfig) -> Self {
+        let mon_w = (mon.right - mon.left).max(320) as f32;
+        let mon_h = (mon.bottom - mon.top).max(240) as f32;
+
+        let work_l = (work.left - mon.left).clamp(0, (mon.right - mon.left).max(0)) as f32;
+        let work_t = (work.top - mon.top).clamp(0, (mon.bottom - mon.top).max(0)) as f32;
+        let work_r = (work.right - mon.left).clamp(0, (mon.right - mon.left).max(0)) as f32;
+        let work_b = (work.bottom - mon.top).clamp(0, (mon.bottom - mon.top).max(0)) as f32;
+        let work_w = (work_r - work_l).max(0.0);
+        let work_h = (work_b - work_t).max(0.0);
+        let has_valid_work = work_w >= 320.0 && work_h >= 240.0;
+
+        let (mut ox, mut oy, mut uw, mut uh) =
+            if !cfg.mac_dock_enabled && cfg.mode == TaskbarMode::AlwaysVisible && has_valid_work {
+                // Native Windows taskbar visible: fit cleanly inside rcWork so bottom widgets
+                // never sit behind the Windows taskbar on any resolution or DPI.
+                (work_l, work_t, work_w, work_h)
+            } else {
+                // Virtual dock suites already reserve their dock edge inside the 1280x800 canvas.
+                (0.0, 0.0, mon_w, mon_h)
+            };
+
+        let mut u = (uw / Self::DESIGN_W).min(uh / Self::DESIGN_H).clamp(0.5, 4.0);
+
+        // If a virtual dock at high DPI (e.g. 175%-200% on 1080p) reserves thicker screen space
+        // than the standard 1280x800 canvas margin, inset only by the excess so widgets never touch it.
+        if cfg.mac_dock_enabled && cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible && has_valid_work {
+            let ex_l = (work_l - 76.0 * u).max(0.0);
+            let ex_t = (work_t - 72.0 * u).max(0.0);
+            let ex_r = ((mon_w - work_r) - 76.0 * u).max(0.0);
+            let ex_b = ((mon_h - work_b) - 80.0 * u).max(0.0);
+            if ex_l > 0.5 || ex_t > 0.5 || ex_r > 0.5 || ex_b > 0.5 {
+                let nw = (uw - ex_l - ex_r).max(320.0);
+                let nh = (uh - ex_t - ex_b).max(240.0);
+                ox += ex_l;
+                oy += ex_t;
+                uw = nw;
+                uh = nh;
+                u = (uw / Self::DESIGN_W).min(uh / Self::DESIGN_H).clamp(0.5, 4.0);
+            }
+        }
+
+        let logical_w = (uw / u).max(Self::DESIGN_W);
+        let logical_h = (uh / u).max(Self::DESIGN_H);
+        Self {
+            origin_x: ox,
+            origin_y: oy,
+            u,
+            extra_w: (logical_w - Self::DESIGN_W).max(0.0),
+            extra_h: (logical_h - Self::DESIGN_H).max(0.0),
+        }
+    }
+
+    #[inline]
+    pub fn project_pos(&self, cx: i32, cy: i32, lw: f32, lh: f32, scale_pct: u8) -> (f32, f32) {
+        let sf = (scale_pct as f32 / 100.0).max(0.25);
+        let mx = Self::map_axis(cx as f32, lw * sf, Self::AX0, Self::AX1, self.extra_w);
+        let my = Self::map_axis(cy as f32, lh * sf, Self::AY0, Self::AY1, self.extra_h);
+        (self.origin_x + mx * self.u, self.origin_y + my * self.u)
+    }
+
+    #[inline]
+    pub fn unproject_pos(&self, px: f32, py: f32, lw: f32, lh: f32, scale_pct: u8) -> (i32, i32) {
+        let sf = (scale_pct as f32 / 100.0).max(0.25);
+        let u = self.u.max(0.25);
+        let mx = (px - self.origin_x) / u;
+        let my = (py - self.origin_y) / u;
+        let cx = Self::unmap_axis(mx, lw * sf, Self::AX0, Self::AX1, self.extra_w);
+        let cy = Self::unmap_axis(my, lh * sf, Self::AY0, Self::AY1, self.extra_h);
+        (cx.round() as i32, cy.round() as i32)
+    }
+}
+
 pub struct DesktopWidgets {
     hwnd: HWND,
     desktop_host: HWND,
@@ -10322,6 +10450,7 @@ pub struct DesktopWidgets {
 
     hover_zone: WidgetHitZone,
     u: f32,
+    viewport: ViewportLayout,
     mon_left: i32,
     mon_top: i32,
     screen_w: i32,
@@ -10330,6 +10459,7 @@ pub struct DesktopWidgets {
     drag_widget: Option<DragWidgetKind>,
     drag_start_cursor: POINT,
     drag_start_xy: (i32, i32),
+    drag_start_px: (f32, f32),
     drag_moved: bool,
     cc_drag: Option<CcDragMode>,
     bright_drag: Option<(f32, Instant)>,
@@ -10596,6 +10726,7 @@ impl DesktopWidgets {
             right: 1920,
             bottom: 1200,
         };
+        let mut init_work = init_mon;
         unsafe {
             let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
             let mut mi = MONITORINFO {
@@ -10604,11 +10735,12 @@ impl DesktopWidgets {
             };
             if GetMonitorInfoW(hmon, &mut mi).as_bool() {
                 init_mon = mi.rcMonitor;
+                init_work = mi.rcWork;
             }
         }
         let init_sw = (init_mon.right - init_mon.left).max(320);
         let init_sh = (init_mon.bottom - init_mon.top).max(240);
-        let init_u = (init_sw as f32 / 1280.0).clamp(0.5, 4.0);
+        let init_vp = ViewportLayout::compute(init_mon, init_work, initial_cfg);
 
         let mut instance = Self {
             hwnd,
@@ -10631,7 +10763,8 @@ impl DesktopWidgets {
             fg_bmp_cache: WidgetFgBmpCache::default(),
             media_engine,
             hover_zone: WidgetHitZone::None,
-            u: init_u,
+            u: init_vp.u,
+            viewport: init_vp,
             mon_left: init_mon.left,
             mon_top: init_mon.top,
             screen_w: init_sw,
@@ -10639,6 +10772,7 @@ impl DesktopWidgets {
             drag_widget: None,
             drag_start_cursor: POINT::default(),
             drag_start_xy: (0, 0),
+            drag_start_px: (0.0, 0.0),
             drag_moved: false,
             cc_drag: None,
             bright_drag: None,
@@ -10687,10 +10821,100 @@ impl DesktopWidgets {
             covered_trimmed: false,
         };
 
-        instance.media_engine.set_viz_eco_fps(instance.cfg.viz_eco_fps);
+        instance.media_engine.set_anim_fps(instance.cfg.anim_fps);
         instance.query_fast_baseline();
         instance.hud_smooth = [instance.cpu_pct, instance.gpu_pct, instance.ram_pct, instance.temp_c];
         instance
+    }
+
+    #[inline]
+    fn refresh_viewport(&mut self, mon: RECT, work: RECT) {
+        self.mon_left = mon.left;
+        self.mon_top = mon.top;
+        self.screen_w = (mon.right - mon.left).max(320);
+        self.screen_h = (mon.bottom - mon.top).max(240);
+        self.viewport = ViewportLayout::compute(mon, work, &self.cfg);
+        self.u = self.viewport.u;
+    }
+
+    #[inline]
+    fn widget_dt_pos(&self) -> (f32, f32) {
+        let (lw, lh) = dt_logical_size(&self.cfg);
+        self.viewport
+            .project_pos(self.cfg.dt_x, self.cfg.dt_y, lw, lh, self.cfg.dt_scale_pct)
+    }
+
+    #[inline]
+    fn widget_apps_size(&self) -> (f32, f32) {
+        let show_add = self.cfg.apps_show_add_tile && self.cfg.apps.len() < 12;
+        let total_tiles = (self.cfg.apps.len() + usize::from(show_add)).max(1);
+        let (_, tw, th) = apps_layout_offsets(total_tiles, self.cfg.apps_cols.max(1) as usize);
+        (tw, th)
+    }
+
+    #[inline]
+    fn widget_apps_pos(&self) -> (f32, f32) {
+        let (lw, lh) = self.widget_apps_size();
+        self.viewport
+            .project_pos(self.cfg.apps_x, self.cfg.apps_y, lw, lh, self.cfg.apps_scale_pct)
+    }
+
+    #[inline]
+    fn widget_vitals_pos(&self) -> (f32, f32) {
+        let (lw, lh) = vitals_logical_size(&self.cfg);
+        self.viewport
+            .project_pos(self.cfg.vitals_x, self.cfg.vitals_y, lw, lh, self.cfg.vitals_scale_pct)
+    }
+
+    #[inline]
+    fn widget_music_pos(&self) -> (f32, f32) {
+        let (lw, lh) = music_logical_size(&self.cfg);
+        self.viewport
+            .project_pos(self.cfg.music_x, self.cfg.music_y, lw, lh, self.cfg.music_scale_pct)
+    }
+
+    #[inline]
+    fn widget_cc_pos(&self) -> (f32, f32) {
+        self.viewport
+            .project_pos(self.cfg.cc_x, self.cfg.cc_y, 388.0, 298.0, self.cfg.cc_scale_pct)
+    }
+
+    #[inline]
+    fn widget_ext_pos(&self, id: ExtWidgetId) -> (f32, f32) {
+        let wcfg = &self.cfg.ext_widgets[id.idx()];
+        let (lw, lh) = wcfg.logical_size(id);
+        self.viewport
+            .project_pos(wcfg.x, wcfg.y, lw, lh, wcfg.scale_pct)
+    }
+
+    #[inline]
+    fn widget_drag_info(&self, dk: DragWidgetKind) -> ((f32, f32), f32, f32, u8) {
+        match dk {
+            DragWidgetKind::DateTime => {
+                let (lw, lh) = dt_logical_size(&self.cfg);
+                (self.widget_dt_pos(), lw, lh, self.cfg.dt_scale_pct)
+            }
+            DragWidgetKind::Apps | DragWidgetKind::AppTile(_) => {
+                let (lw, lh) = self.widget_apps_size();
+                (self.widget_apps_pos(), lw, lh, self.cfg.apps_scale_pct)
+            }
+            DragWidgetKind::Vitals => {
+                let (lw, lh) = vitals_logical_size(&self.cfg);
+                (self.widget_vitals_pos(), lw, lh, self.cfg.vitals_scale_pct)
+            }
+            DragWidgetKind::Music => {
+                let (lw, lh) = music_logical_size(&self.cfg);
+                (self.widget_music_pos(), lw, lh, self.cfg.music_scale_pct)
+            }
+            DragWidgetKind::ControlCenter => {
+                (self.widget_cc_pos(), 388.0, 298.0, self.cfg.cc_scale_pct)
+            }
+            DragWidgetKind::Ext(id) => {
+                let wcfg = &self.cfg.ext_widgets[id.idx()];
+                let (lw, lh) = wcfg.logical_size(id);
+                (self.widget_ext_pos(id), lw, lh, wcfg.scale_pct)
+            }
+        }
     }
 
     fn telemetry_needed(&self) -> bool {
@@ -10798,8 +11022,8 @@ impl DesktopWidgets {
         self.media_engine.is_audio_active()
     }
 
-    pub fn set_viz_eco_fps(&self, eco: bool) {
-        self.media_engine.set_viz_eco_fps(eco);
+    pub fn set_anim_fps(&self, fps: u32) {
+        self.media_engine.set_anim_fps(fps);
     }
 
     pub fn set_viz_needed(&self, needed: bool) {
@@ -10841,7 +11065,7 @@ impl DesktopWidgets {
         if self.is_ring_pill_interpolating() {
             return true;
         }
-        if self.cfg.viz_eco_fps {
+        if self.cfg.anim_fps <= 24 {
             return false;
         }
         self.is_island_bands_decaying()
@@ -10889,13 +11113,9 @@ impl DesktopWidgets {
             && self.drag_widget.is_none()
             && self.cc_drag.is_none()
         {
-            let min_gap = if self.wants_fast_60fps() {
-                Duration::from_millis(14)
-            } else if self.cfg.viz_eco_fps {
-                Duration::from_millis(40)
-            } else {
-                Duration::from_millis(28)
-            };
+            let min_gap = Duration::from_millis(
+                self.cfg.anim_frame_ms().saturating_sub(2).max(6) as u64,
+            );
             if !self.wants_fast_30fps() || self.last_render_at.elapsed() >= min_gap {
                 self.render();
             } else {
@@ -11051,17 +11271,15 @@ impl DesktopWidgets {
             return;
         }
         let interactive_on = self.has_active_interactive_fx();
-        // Idle ambient-only motion (hover_sakura/snow/caustics with cursor away) is capped to
-        // ~8-11 FPS regardless of the shared viz timer cadence to keep full-screen DComp CPU low.
-        if interactive_on && self.ambient_idle_only() {
-            let min_gap = Duration::from_millis(if self.cfg.viz_eco_fps { 120 } else { 90 });
-            if self.last_render_at.elapsed() < min_gap {
-                return;
-            }
+        let frame_gap = Duration::from_millis(
+            self.cfg.anim_frame_ms().saturating_sub(2).max(6) as u64,
+        );
+        if interactive_on && self.last_render_at.elapsed() < frame_gap {
+            return;
         }
         let mut any_visual_change = self.viz_dirty;
         if interactive_on && self.drag_widget.is_none() && self.cc_drag.is_none() {
-            let dt = self.last_fx_tick.elapsed().as_secs_f32().clamp(0.008, 0.135);
+            let dt = self.last_fx_tick.elapsed().as_secs_f32().clamp(0.006, 0.135);
             self.last_fx_tick = Instant::now();
             let mut pt = POINT::default();
             unsafe {
@@ -11118,12 +11336,13 @@ impl DesktopWidgets {
             if self.cfg.show_datetime {
                 let s = u * (self.cfg.dt_scale_pct as f32 / 100.0);
                 let (lw, lh) = dt_logical_size(&self.cfg);
+                let (dx, dy) = self.widget_dt_pos();
                 if self.cfg.dt_hover_fx.is_ambient_live() {
                     any_visual_change |= step_rect(
                         &mut self.widget_sims[0],
                         self.cfg.dt_hover_fx,
-                        self.cfg.dt_x as f32 * u,
-                        self.cfg.dt_y as f32 * u,
+                        dx,
+                        dy,
                         lw * s,
                         lh * s,
                     );
@@ -11131,8 +11350,8 @@ impl DesktopWidgets {
                     any_visual_change |= step_pbr(
                         &mut self.widget_sims[0],
                         mat,
-                        self.cfg.dt_x as f32 * u,
-                        self.cfg.dt_y as f32 * u,
+                        dx,
+                        dy,
                         lw * s,
                         lh * s,
                     );
@@ -11143,8 +11362,7 @@ impl DesktopWidgets {
             }
             if self.cfg.show_apps && self.cfg.apps_hover_fx.is_ambient_live() {
                 let s = u * (self.cfg.apps_scale_pct as f32 / 100.0);
-                let bx = self.cfg.apps_x as f32 * u;
-                let by = self.cfg.apps_y as f32 * u;
+                let (bx, by) = self.widget_apps_pos();
                 let show_add = self.cfg.apps_show_add_tile && self.cfg.apps.len() < 12;
                 let total_tiles = self.cfg.apps.len() + usize::from(show_add);
                 if total_tiles > 0 {
@@ -11176,11 +11394,12 @@ impl DesktopWidgets {
             if self.cfg.show_vitals && self.cfg.vitals_hover_fx.is_ambient_live() {
                 let s = u * (self.cfg.vitals_scale_pct as f32 / 100.0);
                 let (vw, vh) = vitals_logical_size(&self.cfg);
+                let (vx, vy) = self.widget_vitals_pos();
                 any_visual_change |= step_rect(
                     &mut self.widget_sims[2],
                     self.cfg.vitals_hover_fx,
-                    self.cfg.vitals_x as f32 * u,
-                    self.cfg.vitals_y as f32 * u,
+                    vx,
+                    vy,
                     vw * s,
                     vh * s,
                 );
@@ -11188,12 +11407,13 @@ impl DesktopWidgets {
             if self.cfg.show_music {
                 let s = u * (self.cfg.music_scale_pct as f32 / 100.0);
                 let (lw, lh) = music_logical_size(&self.cfg);
+                let (mx, my) = self.widget_music_pos();
                 if self.cfg.music_hover_fx.is_ambient_live() {
                     any_visual_change |= step_rect(
                         &mut self.widget_sims[3],
                         self.cfg.music_hover_fx,
-                        self.cfg.music_x as f32 * u,
-                        self.cfg.music_y as f32 * u,
+                        mx,
+                        my,
                         lw * s,
                         lh * s,
                     );
@@ -11201,8 +11421,8 @@ impl DesktopWidgets {
                     any_visual_change |= step_pbr(
                         &mut self.widget_sims[3],
                         mat,
-                        self.cfg.music_x as f32 * u,
-                        self.cfg.music_y as f32 * u,
+                        mx,
+                        my,
                         lw * s,
                         lh * s,
                     );
@@ -11210,39 +11430,44 @@ impl DesktopWidgets {
             }
             if self.cfg.show_cc && self.cfg.cc_hover_fx.is_ambient_live() {
                 let s = u * (self.cfg.cc_scale_pct as f32 / 100.0);
+                let (cx, cy) = self.widget_cc_pos();
                 any_visual_change |= step_rect(
                     &mut self.widget_sims[4],
                     self.cfg.cc_hover_fx,
-                    self.cfg.cc_x as f32 * u,
-                    self.cfg.cc_y as f32 * u,
+                    cx,
+                    cy,
                     388.0 * s,
                     298.0 * s,
                 );
             }
             for id in ExtWidgetId::ALL {
-                let wcfg = &self.cfg.ext_widgets[id.idx()];
-                if wcfg.enabled {
-                    let s = u * (wcfg.scale_pct as f32 / 100.0);
+                let (ew_enabled, ew_scale_pct, ew_hover_fx, ew_theme, lw, lh) = {
+                    let wcfg = &self.cfg.ext_widgets[id.idx()];
                     let (lw, lh) = wcfg.logical_size(id);
-                    if wcfg.hover_fx.is_ambient_live() {
+                    (wcfg.enabled, wcfg.scale_pct, wcfg.hover_fx, wcfg.theme, lw, lh)
+                };
+                if ew_enabled {
+                    let s = u * (ew_scale_pct as f32 / 100.0);
+                    let (wx, wy) = self.widget_ext_pos(id);
+                    if ew_hover_fx.is_ambient_live() {
                         any_visual_change |= step_rect(
                             &mut self.widget_sims[5 + id.idx()],
-                            wcfg.hover_fx,
-                            wcfg.x as f32 * u,
-                            wcfg.y as f32 * u,
+                            ew_hover_fx,
+                            wx,
+                            wy,
                             lw * s,
                             lh * s,
                         );
-                    } else if let Some(mat) = wcfg.theme.pbr_material() {
+                    } else if let Some(mat) = ew_theme.pbr_material() {
                         any_visual_change |= step_pbr(
                             &mut self.widget_sims[5 + id.idx()],
                             mat,
-                            wcfg.x as f32 * u,
-                            wcfg.y as f32 * u,
+                            wx,
+                            wy,
                             lw * s,
                             lh * s,
                         );
-                    } else if live_mat && wcfg.theme.has_idle_motion() {
+                    } else if live_mat && ew_theme.has_idle_motion() {
                         any_visual_change = true;
                     }
                 }
@@ -11752,7 +11977,7 @@ impl DesktopWidgets {
         self.cfg = cfg.clone();
         self.visible = cfg.widgets_enabled;
         self.media_engine.set_cc_active(cfg.widgets_enabled && cfg.show_cc);
-        self.media_engine.set_viz_eco_fps(cfg.viz_eco_fps);
+        self.media_engine.set_anim_fps(cfg.anim_fps);
         if self.telemetry_needed() && !self.covered_by_maximized {
             self.ensure_pdh_started();
             self.query_telemetry();
@@ -11850,13 +12075,9 @@ impl DesktopWidgets {
             } else if cur_tel != self.last_drawn_telemetry && self.is_ring_pill_interpolating() {
                 self.notify_viz_wake();
             }
-            let min_gap = if self.wants_fast_60fps() {
-                Duration::from_millis(14)
-            } else if self.cfg.viz_eco_fps {
-                Duration::from_millis(40)
-            } else {
-                Duration::from_millis(28)
-            };
+            let min_gap = Duration::from_millis(
+                self.cfg.anim_frame_ms().saturating_sub(2).max(6) as u64,
+            );
             if !self.wants_fast_30fps() || self.last_render_at.elapsed() >= min_gap {
                 self.render();
             } else {
@@ -12000,8 +12221,7 @@ impl DesktopWidgets {
 
         if self.cfg.show_datetime {
             let s = u * (self.cfg.dt_scale_pct as f32 / 100.0);
-            let dx = self.cfg.dt_x as f32 * u;
-            let dy = self.cfg.dt_y as f32 * u;
+            let (dx, dy) = self.widget_dt_pos();
             let (lw, lh) = dt_logical_size(&self.cfg);
             include_rect(dx, dy, dx + lw * s, dy + lh * s, 52.0 * s);
             for tr in &self.cfg.dt_elem_transforms {
@@ -12016,8 +12236,7 @@ impl DesktopWidgets {
 
         if self.cfg.show_apps {
             let s = u * (self.cfg.apps_scale_pct as f32 / 100.0);
-            let bx = self.cfg.apps_x as f32 * u;
-            let by = self.cfg.apps_y as f32 * u;
+            let (bx, by) = self.widget_apps_pos();
             let show_add = self.cfg.apps_show_add_tile && self.cfg.apps.len() < 12;
             let total_tiles = self.cfg.apps.len() + usize::from(show_add);
             if total_tiles > 0 {
@@ -12044,23 +12263,20 @@ impl DesktopWidgets {
 
         if self.cfg.show_vitals {
             let s = u * (self.cfg.vitals_scale_pct as f32 / 100.0);
-            let vx = self.cfg.vitals_x as f32 * u;
-            let vy = self.cfg.vitals_y as f32 * u;
+            let (vx, vy) = self.widget_vitals_pos();
             let (vw, vh) = vitals_logical_size(&self.cfg);
             include_rect(vx, vy, vx + vw * s, vy + vh * s, 28.0 * s);
         }
 
         if self.cfg.show_cc {
             let s = u * (self.cfg.cc_scale_pct as f32 / 100.0);
-            let cx = self.cfg.cc_x as f32 * u;
-            let cy = self.cfg.cc_y as f32 * u;
+            let (cx, cy) = self.widget_cc_pos();
             include_rect(cx, cy, cx + 388.0 * s, cy + 298.0 * s, 32.0 * s);
         }
 
         if self.cfg.show_music {
             let s = u * (self.cfg.music_scale_pct as f32 / 100.0);
-            let mx = self.cfg.music_x as f32 * u;
-            let my = self.cfg.music_y as f32 * u;
+            let (mx, my) = self.widget_music_pos();
             let (mlw, mlh) = music_logical_size(&self.cfg);
             include_rect(mx, my, mx + mlw * s, my + mlh * s, 48.0 * s);
         }
@@ -12069,8 +12285,7 @@ impl DesktopWidgets {
             let wcfg = &self.cfg.ext_widgets[id.idx()];
             if wcfg.enabled {
                 let s = (u * (wcfg.scale_pct as f32 / 100.0)).max(0.25);
-                let wx = wcfg.x as f32 * u;
-                let wy = wcfg.y as f32 * u;
+                let (wx, wy) = self.widget_ext_pos(id);
                 let (lw, lh) = wcfg.logical_size(id);
                 include_rect(wx, wy, wx + lw * s, wy + lh * s, 36.0 * s);
             }
@@ -12111,6 +12326,7 @@ impl DesktopWidgets {
             right: 1920,
             bottom: 1200,
         };
+        let mut work = mon;
         unsafe {
             let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
             let mut mi = MONITORINFO {
@@ -12119,13 +12335,10 @@ impl DesktopWidgets {
             };
             if GetMonitorInfoW(hmon, &mut mi).as_bool() {
                 mon = mi.rcMonitor;
+                work = mi.rcWork;
             }
         }
-        self.mon_left = mon.left;
-        self.mon_top = mon.top;
-        self.screen_w = mon.right - mon.left;
-        self.screen_h = mon.bottom - mon.top;
-        self.u = (self.screen_w as f32 / 1280.0).clamp(0.5, 4.0);
+        self.refresh_viewport(mon, work);
 
         let Some((bx, by, bw, bh)) = self.compute_tight_bounds() else {
             unsafe {
@@ -12243,6 +12456,20 @@ impl DesktopWidgets {
             }
         };
 
+        let dt_pos = if self.cfg.show_datetime { self.widget_dt_pos() } else { (0.0, 0.0) };
+        let apps_pos = if self.cfg.show_apps { self.widget_apps_pos() } else { (0.0, 0.0) };
+        let vitals_pos = if self.cfg.show_vitals { self.widget_vitals_pos() } else { (0.0, 0.0) };
+        let cc_pos = if self.cfg.show_cc { self.widget_cc_pos() } else { (0.0, 0.0) };
+        let music_pos = if self.cfg.show_music { self.widget_music_pos() } else { (0.0, 0.0) };
+        let ext_pos: [(f32, f32); EXT_WIDGET_COUNT] = std::array::from_fn(|i| {
+            let id = ExtWidgetId::ALL[i];
+            if self.cfg.ext_widgets[i].enabled {
+                self.widget_ext_pos(id)
+            } else {
+                (0.0, 0.0)
+            }
+        });
+
         unsafe {
             self.icon_cache.sync_apps(
                 &self.cfg.apps,
@@ -12276,8 +12503,7 @@ impl DesktopWidgets {
             if let Some(ref dw) = self.dwrite_factory {
                 if self.cfg.show_datetime {
                     let s = u * (self.cfg.dt_scale_pct as f32 / 100.0);
-                    let dx = self.cfg.dt_x as f32 * u;
-                    let dy = self.cfg.dt_y as f32 * u;
+                    let (dx, dy) = dt_pos;
                     let fg_gen = self.fg_bmp_cache.cache_gen;
                     draw_datetime_widget_full_cached(
                         dc_rt,
@@ -12297,8 +12523,7 @@ impl DesktopWidgets {
 
                 if self.cfg.show_apps {
                     let s = u * (self.cfg.apps_scale_pct as f32 / 100.0);
-                    let bx = self.cfg.apps_x as f32 * u;
-                    let by = self.cfg.apps_y as f32 * u;
+                    let (bx, by) = apps_pos;
                     let show_add = self.cfg.apps_show_add_tile && self.cfg.apps.len() < 12;
                     let total_tiles = self.cfg.apps.len() + usize::from(show_add);
                     if total_tiles > 0 {
@@ -12344,8 +12569,7 @@ impl DesktopWidgets {
 
                 if self.cfg.show_vitals {
                     let s = u * (self.cfg.vitals_scale_pct as f32 / 100.0);
-                    let vx = self.cfg.vitals_x as f32 * u;
-                    let vy = self.cfg.vitals_y as f32 * u;
+                    let (vx, vy) = vitals_pos;
                     let (v_cpu, v_gpu, v_ram, v_temp) = if self.cfg.vitals_style == 4 {
                         (self.hud_smooth[0], self.hud_smooth[1], self.hud_smooth[2], self.hud_smooth[3])
                     } else {
@@ -12372,8 +12596,7 @@ impl DesktopWidgets {
 
                 if self.cfg.show_cc {
                     let s = u * (self.cfg.cc_scale_pct as f32 / 100.0);
-                    let cx = self.cfg.cc_x as f32 * u;
-                    let cy = self.cfg.cc_y as f32 * u;
+                    let (cx, cy) = cc_pos;
                     draw_control_center_widget_live_with_viz(
                         dc_rt,
                         dw,
@@ -12394,8 +12617,7 @@ impl DesktopWidgets {
 
                 if self.cfg.show_music {
                     let s = u * (self.cfg.music_scale_pct as f32 / 100.0);
-                    let mx = self.cfg.music_x as f32 * u;
-                    let my = self.cfg.music_y as f32 * u;
+                    let (mx, my) = music_pos;
                     let fg_gen = self.fg_bmp_cache.cache_gen;
                     draw_music_widget_with_viz_cached(
                         dc_rt,
@@ -12420,8 +12642,7 @@ impl DesktopWidgets {
                     let wcfg = &self.cfg.ext_widgets[id.idx()];
                     if wcfg.enabled {
                         let s = u * (wcfg.scale_pct as f32 / 100.0);
-                        let wx = wcfg.x as f32 * u;
-                        let wy = wcfg.y as f32 * u;
+                        let (wx, wy) = ext_pos[id.idx()];
                         let fg_gen = self.fg_bmp_cache.cache_gen;
                         draw_ext_widget_with_viz_cached(
                             dc_rt,
@@ -12659,8 +12880,7 @@ impl DesktopWidgets {
 
         if self.cfg.show_music {
             let s = u * (self.cfg.music_scale_pct as f32 / 100.0);
-            let mx = self.cfg.music_x as f32 * u;
-            let my = self.cfg.music_y as f32 * u;
+            let (mx, my) = self.widget_music_pos();
             let (mlw, mlh) = music_logical_size(&self.cfg);
             if x >= mx && x <= mx + mlw * s && y >= my && y <= my + mlh * s {
                 let lx = (x - mx) / s;
@@ -12681,8 +12901,7 @@ impl DesktopWidgets {
 
         if self.cfg.show_cc {
             let s = u * (self.cfg.cc_scale_pct as f32 / 100.0);
-            let cx = self.cfg.cc_x as f32 * u;
-            let cy = self.cfg.cc_y as f32 * u;
+            let (cx, cy) = self.widget_cc_pos();
             if x >= cx && x <= cx + 388.0 * s && y >= cy && y <= cy + 298.0 * s {
                 let lx = (x - cx) / s;
                 let ly = (y - cy) / s;
@@ -12724,8 +12943,7 @@ impl DesktopWidgets {
 
         if self.cfg.show_datetime {
             let s = u * (self.cfg.dt_scale_pct as f32 / 100.0);
-            let dx = self.cfg.dt_x as f32 * u;
-            let dy = self.cfg.dt_y as f32 * u;
+            let (dx, dy) = self.widget_dt_pos();
             let (lw, lh) = dt_logical_size(&self.cfg);
             let mut min_x = dx;
             let mut min_y = dy;
@@ -12749,8 +12967,7 @@ impl DesktopWidgets {
 
         if self.cfg.show_apps {
             let s = u * (self.cfg.apps_scale_pct as f32 / 100.0);
-            let bx = self.cfg.apps_x as f32 * u;
-            let by = self.cfg.apps_y as f32 * u;
+            let (bx, by) = self.widget_apps_pos();
             let show_add = self.cfg.apps_show_add_tile && self.cfg.apps.len() < 12;
             let total_tiles = self.cfg.apps.len() + usize::from(show_add);
             if total_tiles > 0 {
@@ -12784,8 +13001,7 @@ impl DesktopWidgets {
 
         if self.cfg.show_vitals {
             let s = u * (self.cfg.vitals_scale_pct as f32 / 100.0);
-            let vx = self.cfg.vitals_x as f32 * u;
-            let vy = self.cfg.vitals_y as f32 * u;
+            let (vx, vy) = self.widget_vitals_pos();
             let (vw_log, vh_log) = vitals_logical_size(&self.cfg);
             let vw = vw_log * s;
             let vh = vh_log * s;
@@ -12851,8 +13067,7 @@ impl DesktopWidgets {
             let wcfg = &self.cfg.ext_widgets[id.idx()];
             if wcfg.enabled {
                 let s = (u * (wcfg.scale_pct as f32 / 100.0)).max(0.25);
-                let wx = wcfg.x as f32 * u;
-                let wy = wcfg.y as f32 * u;
+                let (wx, wy) = self.widget_ext_pos(id);
                 let lx = (x - wx) / s;
                 let ly = (y - wy) / s;
                 let hz = hit_test_ext_widget(id, wcfg, lx, ly);
@@ -13021,8 +13236,7 @@ impl DesktopWidgets {
 
     fn apply_cc_drag(&mut self, pt: POINT, mode: CcDragMode) {
         let s = (self.u * (self.cfg.cc_scale_pct as f32 / 100.0)).max(0.25);
-        let cx = self.cfg.cc_x as f32 * self.u;
-        let cy = self.cfg.cc_y as f32 * self.u;
+        let (cx, cy) = self.widget_cc_pos();
         let lx = ((pt.x - self.mon_left) as f32 - cx) / s;
         let ly = ((pt.y - self.mon_top) as f32 - cy) / s;
         match mode {
@@ -13274,8 +13488,9 @@ unsafe extern "system" fn widgets_wnd_proc(
                     WidgetHitZone::ClockCard if dw.cfg.dt_style.is_realistic_interactive() => {
                         let s = u * (dw.cfg.dt_scale_pct as f32 / 100.0);
                         let (lw, lh) = dt_logical_size(&dw.cfg);
-                        let nx = ((mx - dw.cfg.dt_x as f32 * u) / (lw * s).max(1.0)).clamp(0.0, 1.0);
-                        let ny = ((my - dw.cfg.dt_y as f32 * u) / (lh * s).max(1.0)).clamp(0.0, 1.0);
+                        let (dx, dy) = dw.widget_dt_pos();
+                        let nx = ((mx - dx) / (lw * s).max(1.0)).clamp(0.0, 1.0);
+                        let ny = ((my - dy) / (lh * s).max(1.0)).clamp(0.0, 1.0);
                         dw.widget_sims[0].spawn_impulse(nx, ny, 1.25, 1.35);
                         dw.viz_dirty = true;
                         dw.notify_viz_wake();
@@ -13288,8 +13503,9 @@ unsafe extern "system" fn widgets_wnd_proc(
                     {
                         let s = u * (dw.cfg.music_scale_pct as f32 / 100.0);
                         let (lw, lh) = music_logical_size(&dw.cfg);
-                        let nx = ((mx - dw.cfg.music_x as f32 * u) / (lw * s).max(1.0)).clamp(0.0, 1.0);
-                        let ny = ((my - dw.cfg.music_y as f32 * u) / (lh * s).max(1.0)).clamp(0.0, 1.0);
+                        let (mpx, mpy) = dw.widget_music_pos();
+                        let nx = ((mx - mpx) / (lw * s).max(1.0)).clamp(0.0, 1.0);
+                        let ny = ((my - mpy) / (lh * s).max(1.0)).clamp(0.0, 1.0);
                         dw.widget_sims[3].spawn_impulse(nx, ny, 1.25, 1.35);
                         dw.viz_dirty = true;
                         dw.notify_viz_wake();
@@ -13297,11 +13513,15 @@ unsafe extern "system" fn widgets_wnd_proc(
                     WidgetHitZone::ExtCard(id) | WidgetHitZone::ExtBtn(id, _)
                         if dw.cfg.ext_widgets[id.idx()].theme.is_realistic_interactive() =>
                     {
-                        let wcfg = &dw.cfg.ext_widgets[id.idx()];
-                        let s = u * (wcfg.scale_pct as f32 / 100.0);
-                        let (lw, lh) = wcfg.logical_size(id);
-                        let nx = ((mx - wcfg.x as f32 * u) / (lw * s).max(1.0)).clamp(0.0, 1.0);
-                        let ny = ((my - wcfg.y as f32 * u) / (lh * s).max(1.0)).clamp(0.0, 1.0);
+                        let (scale_pct, lw, lh) = {
+                            let wcfg = &dw.cfg.ext_widgets[id.idx()];
+                            let (lw, lh) = wcfg.logical_size(id);
+                            (wcfg.scale_pct, lw, lh)
+                        };
+                        let s = u * (scale_pct as f32 / 100.0);
+                        let (wx, wy) = dw.widget_ext_pos(id);
+                        let nx = ((mx - wx) / (lw * s).max(1.0)).clamp(0.0, 1.0);
+                        let ny = ((my - wy) / (lh * s).max(1.0)).clamp(0.0, 1.0);
                         dw.widget_sims[5 + id.idx()].spawn_impulse(nx, ny, 1.25, 1.35);
                         dw.viz_dirty = true;
                         dw.notify_viz_wake();
@@ -13400,9 +13620,11 @@ unsafe extern "system" fn widgets_wnd_proc(
                     | WidgetHitZone::CtxBg => None,
                 };
                 if let Some((dk, start_xy)) = kind {
+                    let (start_px, _, _, _) = dw.widget_drag_info(dk);
                     dw.drag_widget = Some(dk);
                     dw.drag_start_cursor = pt;
                     dw.drag_start_xy = start_xy;
+                    dw.drag_start_px = start_px;
                     dw.drag_moved = false;
                     SetCapture(hwnd);
                 }
@@ -13430,8 +13652,14 @@ unsafe extern "system" fn widgets_wnd_proc(
                     dw.drag_moved = true;
                 }
                 if dw.drag_moved {
-                    let nx = (dw.drag_start_xy.0 + (dx as f32 / dw.u).round() as i32).clamp(-40, 1250);
-                    let ny = (dw.drag_start_xy.1 + (dy as f32 / dw.u).round() as i32).clamp(-10, 770);
+                    let (_, lw, lh, scale_pct) = dw.widget_drag_info(dk);
+                    let target_px = (dw.drag_start_px.0 + dx as f32)
+                        .clamp(-40.0 * dw.u, (dw.screen_w as f32 - 30.0 * dw.u).max(0.0));
+                    let target_py = (dw.drag_start_px.1 + dy as f32)
+                        .clamp(-10.0 * dw.u, (dw.screen_h as f32 - 30.0 * dw.u).max(0.0));
+                    let (ux, uy) = dw.viewport.unproject_pos(target_px, target_py, lw, lh, scale_pct);
+                    let nx = ux.clamp(-40, 1250);
+                    let ny = uy.clamp(-10, 770);
                     match dk {
                         DragWidgetKind::DateTime => {
                             dw.cfg.dt_x = nx;
@@ -13445,20 +13673,22 @@ unsafe extern "system" fn widgets_wnd_proc(
                             let show_add = dw.cfg.apps_show_add_tile && dw.cfg.apps.len() < 12;
                             let total_tiles = dw.cfg.apps.len() + usize::from(show_add);
                             let (offsets, _, _) = apps_layout_offsets(total_tiles.max(1), 6);
+                            let (apps_px, apps_py) = dw.widget_apps_pos();
+                            let u = dw.u.max(0.25);
                             if let (Some(app), Some(&(rx, ry))) =
                                 (dw.cfg.apps.get_mut(idx), offsets.get(idx))
                             {
-                                let ox = dw.drag_start_xy.0 + (dx as f32 / dw.u).round() as i32;
-                                let oy = dw.drag_start_xy.1 + (dy as f32 / dw.u).round() as i32;
+                                let ox = dw.drag_start_xy.0 + (dx as f32 / u).round() as i32;
+                                let oy = dw.drag_start_xy.1 + (dy as f32 / u).round() as i32;
                                 let scale = (dw.cfg.apps_scale_pct as f32 / 100.0).max(0.5);
-                                let screen_x = (dw.cfg.apps_x as f32 + (rx + ox as f32) * scale)
-                                    .clamp(0.0, (1280.0 - 64.0 * scale).max(0.0));
-                                let screen_y = (dw.cfg.apps_y as f32 + (ry + oy as f32) * scale)
-                                    .clamp(0.0, (800.0 - 94.0 * scale).max(0.0));
-                                app.offset_x = (((screen_x - dw.cfg.apps_x as f32) / scale - rx)
+                                let px_x = (apps_px + (rx + ox as f32) * scale * u)
+                                    .clamp(0.0, (dw.screen_w as f32 - 64.0 * scale * u).max(0.0));
+                                let px_y = (apps_py + (ry + oy as f32) * scale * u)
+                                    .clamp(0.0, (dw.screen_h as f32 - 94.0 * scale * u).max(0.0));
+                                app.offset_x = (((px_x - apps_px) / (scale * u) - rx)
                                     .round() as i32)
                                     .clamp(-1280, 1280);
-                                app.offset_y = (((screen_y - dw.cfg.apps_y as f32) / scale - ry)
+                                app.offset_y = (((px_y - apps_py) / (scale * u) - ry)
                                     .round() as i32)
                                     .clamp(-800, 800);
                             }
@@ -14096,6 +14326,129 @@ mod fg_cache_tests {
 
             cache.invalidate();
             CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn viewport_layout_adapts_all_54_suites_to_every_aspect_ratio_and_roundtrips_drag() {
+        let monitors: &[(&str, i32, i32, i32)] = &[
+            ("1366x768_16x9", 1366, 768, 48),
+            ("1920x1080_16x9", 1920, 1080, 60),
+            ("2560x1440_16x9", 2560, 1440, 72),
+            ("3840x2160_16x9", 3840, 2160, 96),
+            ("1920x1200_16x10", 1920, 1200, 60),
+            ("2560x1600_16x10", 2560, 1600, 72),
+            ("2256x1504_3x2", 2256, 1504, 72),
+            ("2560x1080_21x9", 2560, 1080, 60),
+            ("3440x1440_21x9", 3440, 1440, 72),
+            ("5120x1440_32x9", 5120, 1440, 72),
+            ("1280x1024_5x4", 1280, 1024, 48),
+        ];
+
+        for &(label, mw, mh, tb_h) in monitors {
+            let mon = RECT { left: 0, top: 0, right: mw, bottom: mh };
+            let work = RECT { left: 0, top: 0, right: mw, bottom: mh - tb_h };
+
+            for suite in &crate::suites::SUITES {
+                let mut cfg = AppConfig::default();
+                crate::suites::apply_suite_to_config(suite, &mut cfg);
+                let vp = ViewportLayout::compute(mon, work, &cfg);
+
+                // 16:10 virtual-dock suites must remain 100% identical to original 1280x800 scale
+                if mw * 10 == mh * 16 && cfg.mac_dock_enabled {
+                    assert!(vp.extra_w.abs() < 0.01 && vp.extra_h.abs() < 0.01);
+                    assert!((vp.u - (mw as f32 / 1280.0)).abs() < 0.001);
+                }
+
+                let boxes = crate::suites::suite_widget_preview_items(suite);
+                let mut projected: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(boxes.len());
+                let max_bottom = if !cfg.mac_dock_enabled && cfg.mode == TaskbarMode::AlwaysVisible {
+                    (mh - tb_h) as f32
+                } else {
+                    mh as f32
+                };
+
+                for (idx, &(_, cx, cy, lw, lh)) in boxes.iter().enumerate() {
+                    let (px, py) = vp.project_pos(cx, cy, lw, lh, 100);
+                    let pw = lw * vp.u;
+                    let ph = lh * vp.u;
+                    assert!(
+                        px >= -1.0 && py >= -1.0 && px + pw <= mw as f32 + 1.0 && py + ph <= max_bottom + 1.0,
+                        "Monitor '{}' suite '{}' widget #{} clipped: rect=({:.1},{:.1},{:.1}x{:.1}) vs bounds {}x{:.0}",
+                        label,
+                        suite.id,
+                        idx,
+                        px,
+                        py,
+                        pw,
+                        ph,
+                        mw,
+                        max_bottom
+                    );
+                    projected.push((px, py, pw, ph));
+
+                    // Bijective inverse drag round-trip
+                    let (rx, ry) = vp.unproject_pos(px, py, lw, lh, 100);
+                    assert!(
+                        (rx - cx).abs() <= 1 && (ry - cy).abs() <= 1,
+                        "Monitor '{}' suite '{}' drag roundtrip mismatch: ({},{}) -> ({:.1},{:.1}) -> ({},{})",
+                        label,
+                        suite.id,
+                        cx,
+                        cy,
+                        px,
+                        py,
+                        rx,
+                        ry
+                    );
+                }
+
+                // Zero widget overlap across all projected widgets on every aspect ratio
+                for i in 0..projected.len() {
+                    for j in (i + 1)..projected.len() {
+                        let (ax, ay, aw, ah) = projected[i];
+                        let (bx, by, bw, bh) = projected[j];
+                        let ox = ax < bx + bw - 1.0 && bx < ax + aw - 1.0;
+                        let oy = ay < by + bh - 1.0 && by < ay + ah - 1.0;
+                        assert!(
+                            !(ox && oy),
+                            "Monitor '{}' suite '{}' overlap between #{} ({:.1},{:.1},{:.1}x{:.1}) and #{} ({:.1},{:.1},{:.1}x{:.1})",
+                            label,
+                            suite.id,
+                            i,
+                            ax,
+                            ay,
+                            aw,
+                            ah,
+                            j,
+                            bx,
+                            by,
+                            bw,
+                            bh
+                        );
+                    }
+                }
+            }
+        }
+
+        // Verify Kyoto Paper Studio centered FlipMech clock stays centered on 16:9 and 21:9
+        let kyoto = crate::suites::find_suite_by_id("kyoto_paper_studio").unwrap();
+        let mut cfg = AppConfig::default();
+        crate::suites::apply_suite_to_config(kyoto, &mut cfg);
+        let (lw, lh) = dt_logical_size(&cfg);
+        for (mw, mh) in [(1920, 1080), (3440, 1440)] {
+            let mon = RECT { left: 0, top: 0, right: mw, bottom: mh };
+            let vp = ViewportLayout::compute(mon, mon, &cfg);
+            let (px, _) = vp.project_pos(cfg.dt_x, cfg.dt_y, lw, lh, 100);
+            let center_x = px + 0.5 * lw * vp.u;
+            assert!(
+                (center_x - mw as f32 * 0.5).abs() < 4.0 * vp.u,
+                "Centered clock drifted on {}x{}: center_x={:.1} vs {:.1}",
+                mw,
+                mh,
+                center_x,
+                mw as f32 * 0.5
+            );
         }
     }
 }

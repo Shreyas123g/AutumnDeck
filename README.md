@@ -52,11 +52,10 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 
 #### ⚠️ Windows Security & Advanced Boot Troubleshooting
-Normally, clicking **"More info" ➔ "Run anyway"** (or unblocking the `.zip`) is all that's required. If your Windows 11 PC has strict security or Smart App Control blocking standalone apps:
+Normally, clicking **"More info" ➔ "Run anyway"** (or unblocking the `.zip`) is all that's required. If your Windows 11 PC has strict security blocking standalone unsigned apps:
 
 1. **Unblock the Download:** Right-click `.zip` or `.exe` ➔ **Properties** ➔ check **Unblock** at the bottom ➔ click **Apply**.
-2. **Smart App Control:** Open **Windows Settings** ➔ **Privacy & security** ➔ **Windows Security** ➔ **App & browser control** ➔ **Smart App Control** ➔ switch to **Evaluation** or **Off** (or use **Option 1: Microsoft Store** which is pre-whitelisted).
-3. **Advanced Boot (Disable Signature Enforcement):**
+2. **Advanced Boot (Disable Signature Enforcement):**
    - Hold the `Shift` key on your keyboard and click **Start ➔ Power ➔ Restart**.
    - Your PC will reboot to the blue recovery screen. Select:
      **Troubleshoot** ➔ **Advanced options** ➔ **Startup Settings** ➔ click **Restart**.

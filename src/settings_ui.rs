@@ -1198,6 +1198,10 @@ enum HitZone {
     BtnAddNoteRow,
     BtnClearDoneNotes,
     BtnResetDefaultNotes,
+    WcSelectSlot(usize),
+    WcPickCity(usize),
+    WcCityPage(i8),
+    WcResetDefault,
     ExtFontBtn(ExtFontStyle),
     PickExtColorSwatch(u32),
     ToggleExtPlate,
@@ -1552,6 +1556,8 @@ pub struct SettingsController {
     ext_folder: ExtThemeFolder,
     ext_theme_page: usize,
     ext_sub_tab: ExtSubTab,
+    wc_selected_slot: usize,
+    wc_city_page: usize,
     preview_ext_state: ExtRuntimeState,
     widget_preview_sims: Option<Box<[VizSnapshot; 19]>>,
     ext_theme_sims: Option<Box<[VizSnapshot; ExtWidgetTheme::ALL.len()]>>,
@@ -1807,7 +1813,9 @@ impl SettingsController {
             ext_folder: ExtThemeFolder::InteractiveElements,
             ext_theme_page: 0,
             ext_sub_tab: ExtSubTab::Layout,
-            preview_ext_state: ExtRuntimeState::new(),
+            wc_selected_slot: 0,
+            wc_city_page: 0,
+            preview_ext_state: ExtRuntimeState::new_studio_preview(),
             widget_preview_sims: None,
             ext_theme_sims: None,
             last_widget_anim_tick: Instant::now(),
@@ -4325,6 +4333,8 @@ impl SettingsController {
                 if id == ExtWidgetId::Notes {
                     cfg.notes_title = src.notes_title.clone();
                     cfg.notes_items = src.notes_items.clone();
+                } else if id == ExtWidgetId::WorldClock {
+                    cfg.world_clock_cities = src.world_clock_cities.clone();
                 }
             }
         }
@@ -6563,7 +6573,14 @@ impl SettingsController {
                     } else {
                         3
                     };
-                    self.draft_cfg.ext_widgets[id.idx()].mode_idx = m.min(max_m);
+                    let clamped = m.min(max_m);
+                    self.draft_cfg.ext_widgets[id.idx()].mode_idx = clamped;
+                    if id == ExtWidgetId::WorldClock {
+                        let pack = crate::widgets_extra::world_clock_preset_cities(clamped);
+                        for i in 0..4 {
+                            self.draft_cfg.world_clock_cities[i] = pack[i].to_string();
+                        }
+                    }
                     self.applied_flash = false;
                 }
                 SettingsCommand::None
@@ -6632,6 +6649,41 @@ impl SettingsController {
                 self.draft_cfg.notes_items = crate::widgets_extra::default_notes_items();
                 self.editing_note_slot = None;
                 self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Ext(ExtWidgetId::Notes));
+                self.applied_flash = false;
+                SettingsCommand::WidgetsConfigUpdated
+            }
+            HitZone::WcSelectSlot(slot) => {
+                if slot < 4 {
+                    self.wc_selected_slot = slot;
+                    if slot == 3 && !self.draft_cfg.ext_widgets[ExtWidgetId::WorldClock.idx()].feats[5] {
+                        self.draft_cfg.ext_widgets[ExtWidgetId::WorldClock.idx()].feats[5] = true;
+                        self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Ext(ExtWidgetId::WorldClock));
+                        self.applied_flash = false;
+                        return SettingsCommand::WidgetsConfigUpdated;
+                    }
+                }
+                SettingsCommand::None
+            }
+            HitZone::WcCityPage(delta) => {
+                let total_pages = (crate::widgets_extra::WORLD_CLOCK_CITIES.len() + 11) / 12;
+                let cur = self.wc_city_page as isize;
+                self.wc_city_page = (cur + delta as isize).rem_euclid(total_pages as isize) as usize;
+                SettingsCommand::None
+            }
+            HitZone::WcPickCity(city_idx) => {
+                if let Some(city) = crate::widgets_extra::WORLD_CLOCK_CITIES.get(city_idx) {
+                    let slot = self.wc_selected_slot.min(3);
+                    self.draft_cfg.world_clock_cities[slot] = city.name.to_string();
+                    self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Ext(ExtWidgetId::WorldClock));
+                    self.applied_flash = false;
+                    return SettingsCommand::WidgetsConfigUpdated;
+                }
+                SettingsCommand::None
+            }
+            HitZone::WcResetDefault => {
+                self.draft_cfg.world_clock_cities = crate::widgets_extra::default_world_clock_cities();
+                self.draft_cfg.ext_widgets[ExtWidgetId::WorldClock.idx()].mode_idx = 0;
+                self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Ext(ExtWidgetId::WorldClock));
                 self.applied_flash = false;
                 SettingsCommand::WidgetsConfigUpdated
             }
@@ -9256,7 +9308,12 @@ impl SettingsController {
                         return HitZone::OpenWidgetCanvasEditor(WidgetCanvasTarget::Ext(id));
                     }
                     // Sub-Tabs (302..334)
-                    if id == ExtWidgetId::Notes {
+                    if id == ExtWidgetId::Notes || id == ExtWidgetId::WorldClock {
+                        let fourth_tab = if id == ExtWidgetId::Notes {
+                            ExtSubTab::NotesText
+                        } else {
+                            ExtSubTab::WorldClockCities
+                        };
                         if in_rect(x, y, 26.0, 302.0, 196.0, 334.0) {
                             return HitZone::ExtSubTabBtn(ExtSubTab::Layout);
                         }
@@ -9267,7 +9324,7 @@ impl SettingsController {
                             return HitZone::ExtSubTabBtn(ExtSubTab::Appearance);
                         }
                         if in_rect(x, y, 560.0, 302.0, 734.0, 334.0) {
-                            return HitZone::ExtSubTabBtn(ExtSubTab::NotesText);
+                            return HitZone::ExtSubTabBtn(fourth_tab);
                         }
                     } else {
                         if in_rect(x, y, 26.0, 302.0, 254.0, 334.0) {
@@ -9396,6 +9453,37 @@ impl SettingsController {
                             }
                             if in_rect(x, y, 488.0, 530.0, 720.0, 564.0) {
                                 return HitZone::BtnResetDefaultNotes;
+                            }
+                        }
+                        ExtSubTab::WorldClockCities => {
+                            for slot in 0..4usize {
+                                let sx0 = 40.0 + (slot as f32) * 172.0;
+                                if in_rect(x, y, sx0, 348.0, sx0 + 164.0, 384.0) {
+                                    return HitZone::WcSelectSlot(slot);
+                                }
+                            }
+                            if in_rect(x, y, 456.0, 390.0, 540.0, 416.0) {
+                                return HitZone::WcCityPage(-1);
+                            }
+                            if in_rect(x, y, 548.0, 390.0, 632.0, 416.0) {
+                                return HitZone::WcCityPage(1);
+                            }
+                            if in_rect(x, y, 640.0, 390.0, 720.0, 416.0) {
+                                return HitZone::WcResetDefault;
+                            }
+                            let base = self.wc_city_page * 12;
+                            for i in 0..12usize {
+                                let city_idx = base + i;
+                                if city_idx >= crate::widgets_extra::WORLD_CLOCK_CITIES.len() {
+                                    break;
+                                }
+                                let col = i % 4;
+                                let row = i / 4;
+                                let cx0 = 40.0 + (col as f32) * 172.0;
+                                let cy0 = 422.0 + (row as f32) * 48.0;
+                                if in_rect(x, y, cx0, cy0, cx0 + 164.0, cy0 + 42.0) {
+                                    return HitZone::WcPickCity(city_idx);
+                                }
                             }
                         }
                         ExtSubTab::Appearance => {
@@ -15952,7 +16040,7 @@ impl SettingsController {
                 draw_switch_r(rt, r, 667.0, 99.0, u, wcfg.enabled);
 
                 // Folder 1: Realistic & Calm Materials
-                let rm_has = ExtWidgetTheme::REALISTIC_FOLDER.contains(&wcfg.theme);
+                let rm_has = wcfg.enabled && ExtWidgetTheme::REALISTIC_FOLDER.contains(&wcfg.theme);
                 let rm_cnt = format!("{} Themes", ExtWidgetTheme::REALISTIC_FOLDER.len());
                 let rm_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::AbyssalTrench);
                 let pv_rm = self.draw_folder_card_shell_with_pal(
@@ -16012,7 +16100,7 @@ impl SettingsController {
                 rt.PopAxisAlignedClip();
 
                 // Folder 2: Interactive Elements
-                let ie_has = ExtWidgetTheme::INTERACTIVE_FOLDER.contains(&wcfg.theme);
+                let ie_has = wcfg.enabled && ExtWidgetTheme::INTERACTIVE_FOLDER.contains(&wcfg.theme);
                 let ie_cnt = format!("{} Themes", ExtWidgetTheme::INTERACTIVE_FOLDER.len());
                 let ie_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::CosmicLens);
                 let pv_ie = self.draw_folder_card_shell_with_pal(
@@ -16069,7 +16157,7 @@ impl SettingsController {
                 rt.PopAxisAlignedClip();
 
                 // Folder 3: Glass & Minimal
-                let gm_has = ExtWidgetTheme::GLASS_FOLDER.contains(&wcfg.theme);
+                let gm_has = wcfg.enabled && ExtWidgetTheme::GLASS_FOLDER.contains(&wcfg.theme);
                 let gm_cnt = format!("{} Themes", ExtWidgetTheme::GLASS_FOLDER.len());
                 let gm_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::FloatingIsland);
                 let pv_gm = self.draw_folder_card_shell_with_pal(
@@ -16098,7 +16186,7 @@ impl SettingsController {
                 rt.PopAxisAlignedClip();
 
                 // Folder 4: Cyber & Editorial
-                let ce_has = ExtWidgetTheme::CYBER_FOLDER.contains(&wcfg.theme);
+                let ce_has = wcfg.enabled && ExtWidgetTheme::CYBER_FOLDER.contains(&wcfg.theme);
                 let ce_cnt = format!("{} Themes", ExtWidgetTheme::CYBER_FOLDER.len());
                 let ce_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::CyberHud);
                 let pv_ce = self.draw_folder_card_shell_with_pal(
@@ -16374,12 +16462,17 @@ impl SettingsController {
                 rt.PopAxisAlignedClip();
 
                 // Sub-Tabs (302..334)
-                if id == ExtWidgetId::Notes {
+                if id == ExtWidgetId::Notes || id == ExtWidgetId::WorldClock {
+                    let (fourth_tab, fourth_lbl) = if id == ExtWidgetId::Notes {
+                        (ExtSubTab::NotesText, "4. Edit Text")
+                    } else {
+                        (ExtSubTab::WorldClockCities, "4. Choose Cities")
+                    };
                     let sub_tabs = [
                         (ExtSubTab::Layout, "1. Layout", 26.0, 196.0),
                         (ExtSubTab::Features, "2. Features", 204.0, 374.0),
                         (ExtSubTab::Appearance, "3. Colors & Fonts", 382.0, 552.0),
-                        (ExtSubTab::NotesText, "4. Edit Text", 560.0, 734.0),
+                        (fourth_tab, fourth_lbl, 560.0, 734.0),
                     ];
                     for (st, lbl, x0, x1) in sub_tabs {
                         let act = self.ext_sub_tab == st;
@@ -16588,6 +16681,163 @@ impl SettingsController {
                         rt.FillRoundedRectangle(&rst_rr, if rst_hov { &r.card_hover } else { &r.card_active });
                         rt.DrawRoundedRectangle(&rst_rr, if rst_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
                         draw_txt(rt, "Reset Default Tasks", &r.tf_btn, rst_rr.rect, if rst_hov { &r.sun_gold } else { &r.warm_sub });
+                    }
+
+                    ExtSubTab::WorldClockCities => {
+                        let sel_slot = self.wc_selected_slot.min(3);
+                        for slot in 0..4usize {
+                            let sx0 = 40.0 + (slot as f32) * 172.0;
+                            let s_rr = rrect(sx0, 348.0, sx0 + 164.0, 384.0, 8.0, u);
+                            let act = sel_slot == slot;
+                            let hov = self.hovered == HitZone::WcSelectSlot(slot);
+                            let slot_off = slot == 3 && !wcfg.feats[5];
+                            rt.FillRoundedRectangle(
+                                &s_rr,
+                                if act {
+                                    &r.sun_gold
+                                } else if hov {
+                                    &r.card_hover
+                                } else {
+                                    &r.card_active
+                                },
+                            );
+                            rt.DrawRoundedRectangle(
+                                &s_rr,
+                                if act || hov { &r.sun_gold } else { &r.card_border },
+                                if act { 1.4 * u } else { 1.0 * u },
+                                None,
+                            );
+                            let city = crate::widgets_extra::resolve_world_clock_city(
+                                &self.draft_cfg.world_clock_cities[slot],
+                            );
+                            let s_lbl = if slot_off {
+                                format!("{}. {} (Hidden)", slot + 1, city.name)
+                            } else {
+                                format!("{}. {} ({})", slot + 1, city.name, city.tz_abbr)
+                            };
+                            draw_txt(
+                                rt,
+                                &s_lbl,
+                                &r.tf_badge,
+                                s_rr.rect,
+                                if act {
+                                    &r.dark_ink
+                                } else if slot_off {
+                                    &r.muted_txt
+                                } else {
+                                    &r.cream
+                                },
+                            );
+                        }
+
+                        let total_pages = (crate::widgets_extra::WORLD_CLOCK_CITIES.len() + 11) / 12;
+                        let page = self.wc_city_page.min(total_pages.saturating_sub(1));
+                        let page_title = match page {
+                            0 => "Global Hubs",
+                            1 => "Americas",
+                            2 => "Europe & Africa",
+                            _ => "Asia & Pacific",
+                        };
+                        draw_txt(
+                            rt,
+                            &format!(
+                                "Assign Slot {} • {} (Page {}/{})",
+                                sel_slot + 1,
+                                page_title,
+                                page + 1,
+                                total_pages
+                            ),
+                            &r.tf_sub,
+                            rect_f(40.0, 390.0, 448.0, 416.0, u),
+                            &r.sun_gold,
+                        );
+
+                        let prev_rr = rrect(456.0, 390.0, 540.0, 416.0, 7.0, u);
+                        let p_hov = self.hovered == HitZone::WcCityPage(-1);
+                        rt.FillRoundedRectangle(&prev_rr, if p_hov { &r.card_hover } else { &r.card_active });
+                        rt.DrawRoundedRectangle(&prev_rr, if p_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                        draw_txt(rt, "◀ Prev", &r.tf_badge, prev_rr.rect, if p_hov { &r.sun_gold } else { &r.cream });
+
+                        let next_rr = rrect(548.0, 390.0, 632.0, 416.0, 7.0, u);
+                        let n_hov = self.hovered == HitZone::WcCityPage(1);
+                        rt.FillRoundedRectangle(&next_rr, if n_hov { &r.card_hover } else { &r.card_active });
+                        rt.DrawRoundedRectangle(&next_rr, if n_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                        draw_txt(rt, "Next ▶", &r.tf_badge, next_rr.rect, if n_hov { &r.sun_gold } else { &r.cream });
+
+                        let rst_rr = rrect(640.0, 390.0, 720.0, 416.0, 7.0, u);
+                        let r_hov = self.hovered == HitZone::WcResetDefault;
+                        rt.FillRoundedRectangle(&rst_rr, if r_hov { &r.card_hover } else { &r.card_active });
+                        rt.DrawRoundedRectangle(&rst_rr, if r_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                        draw_txt(rt, "Reset", &r.tf_badge, rst_rr.rect, if r_hov { &r.sun_gold } else { &r.warm_sub });
+
+                        let base = page * 12;
+                        let cur_slot_city = &self.draft_cfg.world_clock_cities[sel_slot];
+                        for i in 0..12usize {
+                            let city_idx = base + i;
+                            let Some(city) = crate::widgets_extra::WORLD_CLOCK_CITIES.get(city_idx) else {
+                                break;
+                            };
+                            let col = i % 4;
+                            let row = i / 4;
+                            let cx0 = 40.0 + (col as f32) * 172.0;
+                            let cy0 = 422.0 + (row as f32) * 48.0;
+                            let c_rr = rrect(cx0, cy0, cx0 + 164.0, cy0 + 42.0, 8.0, u);
+                            let is_cur = cur_slot_city.eq_ignore_ascii_case(city.name);
+                            let is_other = !is_cur
+                                && self
+                                    .draft_cfg
+                                    .world_clock_cities
+                                    .iter()
+                                    .any(|s| s.eq_ignore_ascii_case(city.name));
+                            let hov = self.hovered == HitZone::WcPickCity(city_idx);
+                            rt.FillRoundedRectangle(
+                                &c_rr,
+                                if is_cur {
+                                    &r.sun_gold
+                                } else if hov {
+                                    &r.card_hover
+                                } else if is_other {
+                                    &r.amber_dim
+                                } else {
+                                    &r.card_active
+                                },
+                            );
+                            rt.DrawRoundedRectangle(
+                                &c_rr,
+                                if is_cur || hov || is_other {
+                                    &r.sun_gold
+                                } else {
+                                    &r.card_border
+                                },
+                                if is_cur { 1.4 * u } else { 1.0 * u },
+                                None,
+                            );
+                            draw_txt(
+                                rt,
+                                city.name,
+                                &r.tf_badge,
+                                rect_f(cx0 + 6.0, cy0 + 2.0, cx0 + 158.0, cy0 + 23.0, u),
+                                if is_cur { &r.dark_ink } else { &r.cream },
+                            );
+                            let sub_lbl = format!(
+                                "{} • {}",
+                                city.tz_abbr,
+                                crate::widgets_extra::format_utc_offset(city.offset_mins)
+                            );
+                            draw_txt(
+                                rt,
+                                &sub_lbl,
+                                &r.tf_sub,
+                                rect_f(cx0 + 6.0, cy0 + 20.0, cx0 + 158.0, cy0 + 40.0, u),
+                                if is_cur {
+                                    &r.dark_ink
+                                } else if is_other {
+                                    &r.sun_gold
+                                } else {
+                                    &r.muted_txt
+                                },
+                            );
+                        }
                     }
 
                     ExtSubTab::Appearance => {
@@ -22945,6 +23195,60 @@ mod tests {
         );
         assert_eq!(sc.taskbar_page, TaskbarPage::Customize);
         assert!(cfg.w_clock.show_seconds);
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn world_clock_city_picker_and_drives_processes_folder_previews_render_cleanly() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(1140, 972));
+
+        // 1. Studio preview_ext_state must already have realistic Drives & Processes mock telemetry
+        assert!(sc.preview_ext_state.drives.len() >= 2);
+        assert!(sc.preview_ext_state.top_procs.len() >= 3);
+
+        let mut cfg = AppConfig::default();
+        sc.draft_cfg = cfg.clone();
+        sc.active_tab = StudioTab::DesktopWidgets;
+
+        // 2. Render Disk Drives Folders (disabled vs enabled) & Process Killer Folders cleanly
+        sc.draft_cfg.ext_widgets[ExtWidgetId::Drives.idx()].enabled = false;
+        sc.widget_page = WidgetPage::ExtFolders(ExtWidgetId::Drives);
+        assert!(sc.render_d2d(&cfg), "Disk Drives Folders (disabled) must render cleanly");
+
+        sc.draft_cfg.ext_widgets[ExtWidgetId::Processes.idx()].enabled = true;
+        sc.widget_page = WidgetPage::ExtFolders(ExtWidgetId::Processes);
+        assert!(sc.render_d2d(&cfg), "Process Killer Folders (enabled) must render cleanly");
+
+        // 3. World Clock 4th sub-tab ("4. Choose Cities") hit-test, pagination, slot selection, and live update
+        sc.widget_page = WidgetPage::CustomizeExt(ExtWidgetId::WorldClock);
+        assert_eq!(sc.hit_test(640.0, 318.0), HitZone::ExtSubTabBtn(ExtSubTab::WorldClockCities));
+        sc.activate_zone(HitZone::ExtSubTabBtn(ExtSubTab::WorldClockCities), &mut cfg);
+        assert_eq!(sc.ext_sub_tab, ExtSubTab::WorldClockCities);
+        assert!(sc.render_d2d(&cfg), "World Clock Choose Cities sub-tab must render cleanly");
+
+        // Select Slot 4 -> auto-enables Show 4 Cities (feats[5])
+        assert_eq!(sc.hit_test(630.0, 366.0), HitZone::WcSelectSlot(3));
+        sc.activate_zone(HitZone::WcSelectSlot(3), &mut cfg);
+        assert_eq!(sc.wc_selected_slot, 3);
+        assert!(sc.draft_cfg.ext_widgets[ExtWidgetId::WorldClock.idx()].feats[5]);
+
+        // Page to Asia & Pacific (page 3) and pick Bengaluru (index 37 -> col 1, row 0 on page 3)
+        sc.wc_city_page = 3;
+        assert!(sc.render_d2d(&cfg));
+        assert_eq!(sc.hit_test(290.0, 442.0), HitZone::WcPickCity(37));
+        let cmd = sc.activate_zone(HitZone::WcPickCity(37), &mut cfg);
+        assert!(matches!(cmd, SettingsCommand::WidgetsConfigUpdated));
+        assert_eq!(sc.draft_cfg.world_clock_cities[3], "Bengaluru");
+        assert_eq!(cfg.world_clock_cities[3], "Bengaluru");
 
         sc.release_idle_resources();
         unsafe {

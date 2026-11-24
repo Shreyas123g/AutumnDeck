@@ -104,8 +104,8 @@ use crate::theme::{
     tint_u64_key, ThemePalette, AUTUMN_ICON_TINT,
 };
 use crate::widgets_extra::{
-    draw_ext_widget_with_viz_cached, hit_test_ext_widget, ExtRuntimeState, ExtWidgetId,
-    EXT_WIDGET_COUNT,
+    audio_switcher_layout, draw_ext_widget_with_viz_cached, hit_test_ext_widget_with_audio,
+    ExtRuntimeState, ExtWidgetId, EXT_WIDGET_COUNT,
 };
 use crate::widgets_phase2::{
     cc_tile_pos, draw_control_center_widget_live_with_viz, draw_music_widget_with_viz_cached,
@@ -10224,6 +10224,7 @@ enum DragWidgetKind {
 enum CcDragMode {
     BrightSlider,
     VolSlider,
+    AudioSwitcherVolSlider,
     ScrollThumb,
 }
 
@@ -10466,6 +10467,7 @@ pub struct DesktopWidgets {
     vol_drag: Option<(f32, bool, Instant)>,
     last_sent_bright_pct: Option<u8>,
     last_sent_vol_pct: Option<u8>,
+    audio_output_count: usize,
     cc_scroll_y: f32,
     wheel_accum_bright: i32,
     wheel_accum_vol: i32,
@@ -10779,6 +10781,7 @@ impl DesktopWidgets {
             vol_drag: None,
             last_sent_bright_pct: None,
             last_sent_vol_pct: None,
+            audio_output_count: 0,
             cc_scroll_y: 0.0,
             wheel_accum_bright: 0,
             wheel_accum_vol: 0,
@@ -10822,6 +10825,10 @@ impl DesktopWidgets {
         };
 
         instance.media_engine.set_anim_fps(instance.cfg.anim_fps);
+        instance.media_engine.set_audio_outputs_active(
+            instance.cfg.widgets_enabled
+                && instance.cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].enabled,
+        );
         instance.query_fast_baseline();
         instance.hud_smooth = [instance.cpu_pct, instance.gpu_pct, instance.ram_pct, instance.temp_c];
         instance
@@ -11109,7 +11116,8 @@ impl DesktopWidgets {
         if !self.visible || self.hwnd.0.is_null() {
             return;
         }
-        if (self.cfg.show_music || self.cfg.show_cc)
+        let audio_sw_on = self.cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].enabled;
+        if (self.cfg.show_music || self.cfg.show_cc || audio_sw_on)
             && self.drag_widget.is_none()
             && self.cc_drag.is_none()
         {
@@ -11977,6 +11985,9 @@ impl DesktopWidgets {
         self.cfg = cfg.clone();
         self.visible = cfg.widgets_enabled;
         self.media_engine.set_cc_active(cfg.widgets_enabled && cfg.show_cc);
+        self.media_engine.set_audio_outputs_active(
+            cfg.widgets_enabled && cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].enabled,
+        );
         self.media_engine.set_anim_fps(cfg.anim_fps);
         if self.telemetry_needed() && !self.covered_by_maximized {
             self.ensure_pdh_started();
@@ -12445,8 +12456,10 @@ impl DesktopWidgets {
         };
         let vol_t_override = match self.vol_drag {
             Some((t, muted, at))
-                if self.cc_drag == Some(CcDragMode::VolSlider)
-                    || now_inst.duration_since(at) < Duration::from_millis(450) =>
+                if matches!(
+                    self.cc_drag,
+                    Some(CcDragMode::VolSlider | CcDragMode::AudioSwitcherVolSlider)
+                ) || now_inst.duration_since(at) < Duration::from_millis(450) =>
             {
                 Some((t, muted))
             }
@@ -12455,6 +12468,12 @@ impl DesktopWidgets {
                 None
             }
         };
+        let mut ext_cc_snap = cc_snap.clone();
+        if let Some((t, muted)) = vol_t_override {
+            ext_cc_snap.vol_pct = (t * 100.0).round().clamp(0.0, 100.0) as u8;
+            ext_cc_snap.vol_muted = muted;
+        }
+        self.audio_output_count = ext_cc_snap.audio_outputs.len();
 
         let dt_pos = if self.cfg.show_datetime { self.widget_dt_pos() } else { (0.0, 0.0) };
         let apps_pos = if self.cfg.show_apps { self.widget_apps_pos() } else { (0.0, 0.0) };
@@ -12655,7 +12674,7 @@ impl DesktopWidgets {
                             id,
                             &self.cfg,
                             &self.ext_state,
-                            &cc_snap,
+                            &ext_cc_snap,
                             self.hover_zone,
                             Some(&self.widget_sims[5 + id.idx()]),
                             &mut self.fg_bmp_cache.ext[id.idx()],
@@ -13070,7 +13089,7 @@ impl DesktopWidgets {
                 let (wx, wy) = self.widget_ext_pos(id);
                 let lx = (x - wx) / s;
                 let ly = (y - wy) / s;
-                let hz = hit_test_ext_widget(id, wcfg, lx, ly);
+                let hz = hit_test_ext_widget_with_audio(id, wcfg, self.audio_output_count, lx, ly);
                 if hz != WidgetHitZone::None {
                     return hz;
                 }
@@ -13187,22 +13206,12 @@ impl DesktopWidgets {
                     self.send_media_action(a);
                 }
             }
-            WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, btn) if btn <= 2 => {
-                match btn {
-                    0 => {
-                        let cur = self.media_engine.cc_snapshot().vol_pct;
-                        let step = ((self.cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].param1_pct as u8) / 10).clamp(2, 12);
-                        self.send_media_action(CcAction::SetVolume(cur.saturating_sub(step)));
-                    }
-                    1 => self.send_media_action(CcAction::ToggleMute),
-                    2 => {
-                        let cur = self.media_engine.cc_snapshot().vol_pct;
-                        let step = ((self.cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].param1_pct as u8) / 10).clamp(2, 12);
-                        self.send_media_action(CcAction::SetVolume((cur + step).min(100)));
-                    }
-                    _ => {}
-                }
+            WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, btn)
+                if matches!(btn, 0 | 1 | 2 | 3 | 4 | 6) =>
+            {
+                self.handle_audio_switcher_click(btn);
             }
+            WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 7) => {}
             WidgetHitZone::ExtBtn(id, btn) => {
                 let changed = self.ext_state.handle_desktop_click(id, btn, &mut self.cfg);
                 self.sync_keyboard_focus_style();
@@ -13234,6 +13243,70 @@ impl DesktopWidgets {
         }
     }
 
+    fn handle_audio_switcher_click(&mut self, btn: u8) {
+        let now = Instant::now();
+        let snap = self.media_engine.cc_snapshot();
+        let (cur_vol, cur_muted) = match self.vol_drag {
+            Some((t, m, at)) if now.duration_since(at) < Duration::from_millis(600) => {
+                ((t * 100.0).round().clamp(0.0, 100.0) as u8, m)
+            }
+            _ => (snap.vol_pct, snap.vol_muted),
+        };
+        let step = ExtRuntimeState::audio_vol_step(
+            &self.cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()],
+        );
+        match btn {
+            0 => {
+                let next = cur_vol.saturating_sub(step);
+                self.vol_drag = Some((next as f32 / 100.0, false, now));
+                self.last_sent_vol_pct = Some(next);
+                self.send_media_action(CcAction::SetVolume(next));
+            }
+            1 => {
+                let next_muted = !cur_muted;
+                self.vol_drag = Some((cur_vol as f32 / 100.0, next_muted, now));
+                self.send_media_action(CcAction::ToggleMute);
+            }
+            2 => {
+                let next = (cur_vol.saturating_add(step)).min(100);
+                self.vol_drag = Some((next as f32 / 100.0, false, now));
+                self.last_sent_vol_pct = Some(next);
+                self.send_media_action(CcAction::SetVolume(next));
+            }
+            3 | 4 => {
+                let slot = if btn == 3 { 0 } else { 1 };
+                if let Some(dev) =
+                    ExtRuntimeState::audio_slot_device(&snap, self.ext_state.audio_output_page, slot)
+                {
+                    self.vol_drag = None;
+                    self.last_sent_vol_pct = None;
+                    self.ext_state.active_audio_out = slot;
+                    self.send_media_action(CcAction::SetAudioOutput(dev.id.clone()));
+                } else if snap.audio_outputs.len() == 1 && slot == 1 {
+                    unsafe {
+                        let _ = ShellExecuteW(
+                            None,
+                            w!("open"),
+                            w!("ms-settings:sound"),
+                            PCWSTR::null(),
+                            PCWSTR::null(),
+                            SW_SHOWNORMAL,
+                        );
+                    }
+                } else {
+                    self.ext_state.active_audio_out = slot;
+                    self.render();
+                }
+            }
+            6 => {
+                let pages = (snap.audio_outputs.len().saturating_add(1) / 2).max(1);
+                self.ext_state.audio_output_page = (self.ext_state.audio_output_page + 1) % pages;
+                self.render();
+            }
+            _ => {}
+        }
+    }
+
     fn apply_cc_drag(&mut self, pt: POINT, mode: CcDragMode) {
         let s = (self.u * (self.cfg.cc_scale_pct as f32 / 100.0)).max(0.25);
         let (cx, cy) = self.widget_cc_pos();
@@ -13258,6 +13331,30 @@ impl DesktopWidgets {
             }
             CcDragMode::VolSlider => {
                 let t = ((lx - 54.0) / 274.0).clamp(0.0, 1.0);
+                let pct = (t * 100.0).round() as u8;
+                let moved = self
+                    .vol_drag
+                    .map(|(old, m, _)| m || (old - t).abs() > 0.001)
+                    .unwrap_or(true);
+                self.vol_drag = Some((t, false, Instant::now()));
+                if self.last_sent_vol_pct != Some(pct) {
+                    self.last_sent_vol_pct = Some(pct);
+                    self.media_engine.send_action(CcAction::SetVolume(pct));
+                }
+                if moved {
+                    self.render();
+                }
+            }
+            CcDragMode::AudioSwitcherVolSlider => {
+                let wcfg = &self.cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()];
+                let as_s = (self.u * (wcfg.scale_pct as f32 / 100.0)).max(0.25);
+                let (wx, _) = self.widget_ext_pos(ExtWidgetId::AudioSwitcher);
+                let alx = ((pt.x - self.mon_left) as f32 - wx) / as_s;
+                let lay = audio_switcher_layout(wcfg, self.audio_output_count);
+                let (tx0, _, tx1, _) = lay
+                    .slider_track
+                    .unwrap_or((lay.x0, 0.0, lay.x1, 0.0));
+                let t = ((alx - tx0) / (tx1 - tx0).max(1.0)).clamp(0.0, 1.0);
                 let pct = (t * 100.0).round() as u8;
                 let moved = self
                     .vol_drag
@@ -13566,6 +13663,13 @@ unsafe extern "system" fn widgets_wnd_proc(
                     SetCapture(hwnd);
                     return LRESULT(0);
                 }
+                WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 7) => {
+                    dw.cc_drag = Some(CcDragMode::AudioSwitcherVolSlider);
+                    dw.last_sent_vol_pct = None;
+                    dw.apply_cc_drag(pt, CcDragMode::AudioSwitcherVolSlider);
+                    SetCapture(hwnd);
+                    return LRESULT(0);
+                }
                 WidgetHitZone::CcScrollTrack => {
                     dw.cc_drag = Some(CcDragMode::ScrollThumb);
                     dw.apply_cc_drag(pt, CcDragMode::ScrollThumb);
@@ -13765,7 +13869,7 @@ unsafe extern "system" fn widgets_wnd_proc(
                             dw.bright_drag = Some((t, Instant::now()));
                         }
                     }
-                    CcDragMode::VolSlider => {
+                    CcDragMode::VolSlider | CcDragMode::AudioSwitcherVolSlider => {
                         if let Some((t, m, _)) = dw.vol_drag {
                             dw.vol_drag = Some((t, m, Instant::now()));
                         }
@@ -13801,7 +13905,10 @@ unsafe extern "system" fn widgets_wnd_proc(
                     dw.wheel_step_bright(delta);
                     LRESULT(0)
                 }
-                WidgetHitZone::CcVolSlider | WidgetHitZone::CcMuteBtn => {
+                WidgetHitZone::CcVolSlider
+                | WidgetHitZone::CcMuteBtn
+                | WidgetHitZone::ExtCard(ExtWidgetId::AudioSwitcher)
+                | WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, _) => {
                     dw.wheel_step_vol(delta);
                     LRESULT(0)
                 }

@@ -15,6 +15,7 @@
 panic.txt
 GEMINI_HANDOFF_PROMPT*.txt
 BUGS_AND_FIXES_PLAN.md
+BUG_FIXING_DISCUSSION.md
 AUTUMN_DECK_PLAN*.md
 verify_modular_widgets.*
 modular_verify_*.png

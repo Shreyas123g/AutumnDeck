@@ -52,7 +52,7 @@ use crate::desktop_widgets::{
     resolve_elem_grad_colors, rgba_u8, ClockElemBox, FgKeyHasher, WidgetFgCacheSlot,
     WidgetHitZone, PT_TO_PX,
 };
-use crate::system_media::CcSnapshot;
+use crate::system_media::{AudioOutputDevice, CcSnapshot};
 use crate::taskbar_styler::{paint_widget_elemental_fx, VizSnapshot};
 use crate::theme::{resolve_palette_for, u32_to_rgb, ThemePalette};
 
@@ -625,6 +625,120 @@ pub enum ExtSubTab {
     Features,
     Appearance,
     NotesText,
+    WorldClockCities,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WorldClockCity {
+    pub name: &'static str,
+    pub offset_mins: i32,
+    pub tz_abbr: &'static str,
+}
+
+/// Curated 48-city global timezone database for user-selectable World Clock slots.
+pub const WORLD_CLOCK_CITIES: [WorldClockCity; 48] = [
+    // Core Global Hubs (Page 1: 0..12)
+    WorldClockCity { name: "New York", offset_mins: -300, tz_abbr: "EST" },
+    WorldClockCity { name: "London", offset_mins: 0, tz_abbr: "GMT" },
+    WorldClockCity { name: "Mumbai", offset_mins: 330, tz_abbr: "IST" },
+    WorldClockCity { name: "Tokyo", offset_mins: 540, tz_abbr: "JST" },
+    WorldClockCity { name: "San Francisco", offset_mins: -480, tz_abbr: "PST" },
+    WorldClockCity { name: "Dubai", offset_mins: 240, tz_abbr: "GST" },
+    WorldClockCity { name: "Singapore", offset_mins: 480, tz_abbr: "SGT" },
+    WorldClockCity { name: "Sydney", offset_mins: 660, tz_abbr: "AEDT" },
+    WorldClockCity { name: "UTC", offset_mins: 0, tz_abbr: "UTC" },
+    WorldClockCity { name: "Paris", offset_mins: 60, tz_abbr: "CET" },
+    WorldClockCity { name: "Berlin", offset_mins: 60, tz_abbr: "CET" },
+    WorldClockCity { name: "Toronto", offset_mins: -300, tz_abbr: "EST" },
+    // Americas (Page 2: 12..24)
+    WorldClockCity { name: "Los Angeles", offset_mins: -480, tz_abbr: "PST" },
+    WorldClockCity { name: "Seattle", offset_mins: -480, tz_abbr: "PST" },
+    WorldClockCity { name: "Chicago", offset_mins: -360, tz_abbr: "CST" },
+    WorldClockCity { name: "Denver", offset_mins: -420, tz_abbr: "MST" },
+    WorldClockCity { name: "Miami", offset_mins: -300, tz_abbr: "EST" },
+    WorldClockCity { name: "Vancouver", offset_mins: -480, tz_abbr: "PST" },
+    WorldClockCity { name: "Mexico City", offset_mins: -360, tz_abbr: "CST" },
+    WorldClockCity { name: "Sao Paulo", offset_mins: -180, tz_abbr: "BRT" },
+    WorldClockCity { name: "Buenos Aires", offset_mins: -180, tz_abbr: "ART" },
+    WorldClockCity { name: "Bogota", offset_mins: -300, tz_abbr: "COT" },
+    WorldClockCity { name: "Honolulu", offset_mins: -600, tz_abbr: "HST" },
+    WorldClockCity { name: "Anchorage", offset_mins: -540, tz_abbr: "AKST" },
+    // Europe & Africa (Page 3: 24..36)
+    WorldClockCity { name: "Amsterdam", offset_mins: 60, tz_abbr: "CET" },
+    WorldClockCity { name: "Madrid", offset_mins: 60, tz_abbr: "CET" },
+    WorldClockCity { name: "Rome", offset_mins: 60, tz_abbr: "CET" },
+    WorldClockCity { name: "Zurich", offset_mins: 60, tz_abbr: "CET" },
+    WorldClockCity { name: "Stockholm", offset_mins: 60, tz_abbr: "CET" },
+    WorldClockCity { name: "Dublin", offset_mins: 0, tz_abbr: "GMT" },
+    WorldClockCity { name: "Lisbon", offset_mins: 0, tz_abbr: "WET" },
+    WorldClockCity { name: "Athens", offset_mins: 120, tz_abbr: "EET" },
+    WorldClockCity { name: "Istanbul", offset_mins: 180, tz_abbr: "TRT" },
+    WorldClockCity { name: "Cairo", offset_mins: 120, tz_abbr: "EET" },
+    WorldClockCity { name: "Johannesburg", offset_mins: 120, tz_abbr: "SAST" },
+    WorldClockCity { name: "Nairobi", offset_mins: 180, tz_abbr: "EAT" },
+    // Asia & Pacific (Page 4: 36..48)
+    WorldClockCity { name: "New Delhi", offset_mins: 330, tz_abbr: "IST" },
+    WorldClockCity { name: "Bengaluru", offset_mins: 330, tz_abbr: "IST" },
+    WorldClockCity { name: "Kathmandu", offset_mins: 345, tz_abbr: "NPT" },
+    WorldClockCity { name: "Dhaka", offset_mins: 360, tz_abbr: "BST" },
+    WorldClockCity { name: "Riyadh", offset_mins: 180, tz_abbr: "AST" },
+    WorldClockCity { name: "Bangkok", offset_mins: 420, tz_abbr: "ICT" },
+    WorldClockCity { name: "Hong Kong", offset_mins: 480, tz_abbr: "HKT" },
+    WorldClockCity { name: "Shanghai", offset_mins: 480, tz_abbr: "CST" },
+    WorldClockCity { name: "Taipei", offset_mins: 480, tz_abbr: "CST" },
+    WorldClockCity { name: "Seoul", offset_mins: 540, tz_abbr: "KST" },
+    WorldClockCity { name: "Melbourne", offset_mins: 660, tz_abbr: "AEDT" },
+    WorldClockCity { name: "Auckland", offset_mins: 780, tz_abbr: "NZDT" },
+];
+
+pub fn default_world_clock_cities() -> [String; 4] {
+    [
+        "New York".to_string(),
+        "London".to_string(),
+        "Tokyo".to_string(),
+        "Sydney".to_string(),
+    ]
+}
+
+pub fn world_clock_preset_cities(mode_idx: u8) -> [&'static str; 4] {
+    match mode_idx {
+        1 => ["San Francisco", "Berlin", "Dubai", "Singapore"],
+        2 => ["UTC", "New York", "Mumbai", "Tokyo"],
+        3 => ["London", "Paris", "Mumbai", "Kathmandu"],
+        _ => ["New York", "London", "Tokyo", "Sydney"],
+    }
+}
+
+pub fn resolve_world_clock_city(name: &str) -> WorldClockCity {
+    let key = name.trim();
+    if let Some(&c) = WORLD_CLOCK_CITIES
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(key))
+    {
+        return c;
+    }
+    WORLD_CLOCK_CITIES[8] // UTC fallback
+}
+
+pub fn resolve_world_clock_slots(cfg: &AppConfig) -> [WorldClockCity; 4] {
+    [
+        resolve_world_clock_city(&cfg.world_clock_cities[0]),
+        resolve_world_clock_city(&cfg.world_clock_cities[1]),
+        resolve_world_clock_city(&cfg.world_clock_cities[2]),
+        resolve_world_clock_city(&cfg.world_clock_cities[3]),
+    ]
+}
+
+pub fn format_utc_offset(offset_mins: i32) -> String {
+    let sign = if offset_mins >= 0 { '+' } else { '-' };
+    let abs = offset_mins.abs();
+    let h = abs / 60;
+    let m = abs % 60;
+    if m == 0 {
+        format!("UTC{}{}", sign, h)
+    } else {
+        format!("UTC{}{}:{:02}", sign, h, m)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1549,6 +1663,7 @@ pub struct ExtRuntimeState {
     pub editing_note_row: Option<usize>,
     pub user_name: String,
     pub quote_idx: usize,
+    pub quote_date_key: (i32, u32, u32),
 
     // Network
     pub down_bps: f32,
@@ -1573,6 +1688,9 @@ pub struct ExtRuntimeState {
 
     // Audio Switcher
     pub active_audio_out: usize,
+    pub audio_output_page: usize,
+    pub audio_vol_preview: u8,
+    pub audio_muted_preview: bool,
 
     // Calendar
     pub cal_year: i32,
@@ -1605,41 +1723,156 @@ pub struct ExtRuntimeState {
     last_weather_refresh: Instant,
 }
 
-const QUOTES_STOIC: [(&str, &str); 6] = [
+pub const DAILY_QUOTE_POOL_LEN: usize = 31;
+
+const QUOTES_STOIC: [(&str, &str); DAILY_QUOTE_POOL_LEN] = [
     ("The impediment to action advances action. What stands in the way becomes the way.", "Marcus Aurelius"),
     ("We suffer more often in imagination than in reality.", "Seneca"),
     ("Waste no more time arguing what a good man should be. Be one.", "Marcus Aurelius"),
     ("He who has a why to live can bear almost any how.", "Friedrich Nietzsche"),
     ("No man is free who is not master of himself.", "Epictetus"),
     ("Luck is what happens when preparation meets opportunity.", "Seneca"),
+    ("You have power over your mind—not outside events. Realize this, and you will find strength.", "Marcus Aurelius"),
+    ("Wealth consists not in having great possessions, but in having few wants.", "Epictetus"),
+    ("Begin at once to live, and count each separate day as a separate life.", "Seneca"),
+    ("The happiness of your life depends upon the quality of your thoughts.", "Marcus Aurelius"),
+    ("First say to yourself what you would be; and then do what you have to do.", "Epictetus"),
+    ("Difficulties strengthen the mind, as labor does the body.", "Seneca"),
+    ("Very little is needed to make a happy life; it is all within yourself.", "Marcus Aurelius"),
+    ("It is not what happens to you, but how you react to it that matters.", "Epictetus"),
+    ("As long as you live, keep learning how to live.", "Seneca"),
+    ("Dwell on the beauty of life. Watch the stars, and see yourself running with them.", "Marcus Aurelius"),
+    ("Make the best use of what is in your power, and take the rest as it happens.", "Epictetus"),
+    ("If it is not right, do not do it; if it is not true, do not say it.", "Marcus Aurelius"),
+    ("He who is brave is free.", "Seneca"),
+    ("No great thing is created suddenly.", "Epictetus"),
+    ("The best revenge is not to be like your enemy.", "Marcus Aurelius"),
+    ("True happiness is to enjoy the present, without anxious dependence upon the future.", "Seneca"),
+    ("How long are you going to wait before you demand the best for yourself?", "Epictetus"),
+    ("Receive without pride, let go without attachment.", "Marcus Aurelius"),
+    ("While we wait for life, life passes.", "Seneca"),
+    ("Curb your desire—don't set your heart on so many things and you will get what you need.", "Epictetus"),
+    ("The soul becomes dyed with the color of its thoughts.", "Marcus Aurelius"),
+    ("Every new beginning comes from some other beginning's end.", "Seneca"),
+    ("We have two ears and one mouth so that we can listen twice as much as we speak.", "Epictetus"),
+    ("Look well into thyself; there is a source of strength which will always spring up.", "Marcus Aurelius"),
+    ("A gem cannot be polished without friction, nor a person perfected without trials.", "Seneca"),
 ];
 
-const QUOTES_TECH: [(&str, &str); 6] = [
+const QUOTES_TECH: [(&str, &str); DAILY_QUOTE_POOL_LEN] = [
     ("Simplicity is the ultimate sophistication in craft and code.", "Leonardo da Vinci"),
     ("First, solve the problem. Then, write the code.", "John Johnson"),
     ("The best way to predict the future is to invent it.", "Alan Kay"),
     ("Details matter; it's worth waiting to get it right.", "Steve Jobs"),
     ("Make it work, make it right, make it fast.", "Kent Beck"),
     ("Perfection is achieved when there is nothing left to take away.", "Antoine de Saint-Exupery"),
+    ("Good design is as little design as possible.", "Dieter Rams"),
+    ("Simplicity is prerequisite for reliability.", "Edsger W. Dijkstra"),
+    ("Programs must be written for people to read, and only incidentally for machines.", "Harold Abelson"),
+    ("Talk is cheap. Show me the code.", "Linus Torvalds"),
+    ("The most damaging phrase in the language is: we've always done it this way.", "Grace Hopper"),
+    ("Premature optimization is the root of all evil.", "Donald Knuth"),
+    ("Any sufficiently advanced technology is indistinguishable from magic.", "Arthur C. Clarke"),
+    ("Measuring programming progress by lines of code is like measuring aircraft by weight.", "Bill Gates"),
+    ("Design is not just what it looks like and feels like. Design is how it works.", "Steve Jobs"),
+    ("What I cannot create, I do not understand.", "Richard Feynman"),
+    ("Code is like humor. When you have to explain it, it's bad.", "Cory House"),
+    ("Before software can be reusable it first has to be usable.", "Ralph Johnson"),
+    ("Controlling complexity is the essence of computer programming.", "Brian Kernighan"),
+    ("Debugging is twice as hard as writing the code in the first place.", "Brian Kernighan"),
+    ("A ship in port is safe, but that's not what ships are built for.", "Grace Hopper"),
+    ("Good software, like wine, takes time.", "Joel Spolsky"),
+    ("Knowledge is power, but clarity is speed.", "Engineering Maxim"),
+    ("Clean code always looks like it was written by someone who cares.", "Robert C. Martin"),
+    ("Small, sharp tools composed cleanly outlast monoliths.", "Unix Philosophy"),
+    ("If you can't explain it simply, you don't understand it well enough.", "Albert Einstein"),
+    ("Every great developer you know got there by solving problems they weren't qualified for.", "Patrick McKenzie"),
+    ("Reliability is a feature that users feel before they ever name it.", "Systems Maxim"),
+    ("Ship small, measure honestly, and refine relentlessly.", "Craftsman Principle"),
+    ("The function of good software is to make the complex appear to be simple.", "Grady Booch"),
+    ("Great tools disappear beneath your hands so your ideas take center stage.", "Studio Ethos"),
 ];
 
-const QUOTES_ZEN: [(&str, &str); 6] = [
+const QUOTES_ZEN: [(&str, &str); DAILY_QUOTE_POOL_LEN] = [
     ("Nature does not hurry, yet everything is accomplished.", "Lao Tzu"),
     ("In the midst of movement and chaos, keep stillness inside of you.", "Deepak Chopra"),
     ("Autumn shows us how beautiful it is to let things go.", "Unknown"),
     ("Quiet the mind, and the soul will speak.", "Ma Jaya Sati"),
     ("Wherever you are, be there totally.", "Eckhart Tolle"),
     ("The clearer your glass, the brighter the autumn light.", "Zen Proverb"),
+    ("When walking, walk. When eating, eat.", "Zen Proverb"),
+    ("Do not dwell in the past, do not dream of the future, concentrate on the present moment.", "Buddha"),
+    ("A journey of a thousand miles begins with a single step.", "Lao Tzu"),
+    ("Smile, breathe, and go slowly.", "Thich Nhat Hanh"),
+    ("In the beginner's mind there are many possibilities; in the expert's there are few.", "Shunryu Suzuki"),
+    ("Muddy water is best cleared by leaving it alone.", "Alan Watts"),
+    ("Let go or be dragged.", "Zen Proverb"),
+    ("The obstacle is the path.", "Zen Proverb"),
+    ("Peace comes from within. Do not seek it without.", "Buddha"),
+    ("He who knows that enough is enough will always have enough.", "Lao Tzu"),
+    ("Be content with what you have; rejoice in the way things are.", "Lao Tzu"),
+    ("Silence is not an absence, but a presence.", "Gordon Hempton"),
+    ("Sitting quietly, doing nothing, spring comes, and the grass grows by itself.", "Basho"),
+    ("Before enlightenment, chop wood, carry water. After enlightenment, chop wood, carry water.", "Zen Proverb"),
+    ("Tension is who you think you should be. Relaxation is who you are.", "Chinese Proverb"),
+    ("Let everything happen to you: beauty and terror. Just keep going.", "Rainer Maria Rilke"),
+    ("Breathe in calm, breathe out haste.", "Mindful Maxim"),
+    ("When you realize nothing is lacking, the whole world belongs to you.", "Lao Tzu"),
+    ("Stillness is where creativity and solutions are found.", "Eckhart Tolle"),
+    ("The quieter you become, the more you can hear.", "Ram Dass"),
+    ("Walk as if you are kissing the Earth with your feet.", "Thich Nhat Hanh"),
+    ("Simplicity is the natural result of profound thought.", "Zen Maxim"),
+    ("No snowflake ever falls in the wrong place.", "Zen Proverb"),
+    ("To the mind that is still, the whole universe surrenders.", "Lao Tzu"),
+    ("Each morning we are born again. What we do today is what matters most.", "Buddha"),
 ];
 
-const QUOTES_LIT: [(&str, &str); 6] = [
+const QUOTES_LIT: [(&str, &str); DAILY_QUOTE_POOL_LEN] = [
     ("All that is gold does not glitter; not all those who wander are lost.", "J.R.R. Tolkien"),
     ("To live is the rarest thing in the world. Most people exist, that is all.", "Oscar Wilde"),
     ("There is no charm equal to tenderness of heart.", "Jane Austen"),
     ("Forever is composed of nows.", "Emily Dickinson"),
     ("Whatever our souls are made of, yours and mine are the same.", "Emily Bronte"),
     ("It is never too late to be what you might have been.", "George Eliot"),
+    ("Keep your face always toward the sunshine—and shadows will fall behind you.", "Walt Whitman"),
+    ("In three words I can sum up everything I've learned about life: it goes on.", "Robert Frost"),
+    ("You cannot find peace by avoiding life.", "Virginia Woolf"),
+    ("Beauty is not in the face; beauty is a light in the heart.", "Khalil Gibran"),
+    ("Clouds come floating into my life, no longer to carry rain, but to add color to my sunset sky.", "Rabindranath Tagore"),
+    ("We are all in the gutter, but some of us are looking at the stars.", "Oscar Wilde"),
+    ("I took the one less traveled by, and that has made all the difference.", "Robert Frost"),
+    ("Hope is the thing with feathers that perches in the soul.", "Emily Dickinson"),
+    ("Nothing is so strong as gentleness, nothing so gentle as real strength.", "Saint Francis de Sales"),
+    ("It matters not what someone is born, but what they grow to be.", "J.K. Rowling"),
+    ("We accept the love we think we deserve.", "Stephen Chbosky"),
+    ("Real courage is when you know you're licked before you begin, but you begin anyway.", "Harper Lee"),
+    ("Not all those who pause are idle; some are listening for the wind.", "Autumn Almanac"),
+    ("A room without books is like a body without a soul.", "Marcus Tullius Cicero"),
+    ("Tell me, what is it you plan to do with your one wild and precious life?", "Mary Oliver"),
+    ("To be yourself in a world constantly trying to make you something else is greatness.", "Ralph Waldo Emerson"),
+    ("Even the darkest night will end and the sun will rise.", "Victor Hugo"),
+    ("Go confidently in the direction of your dreams. Live the life you have imagined.", "Henry David Thoreau"),
+    ("Light tomorrow with today.", "Elizabeth Barrett Browning"),
+    ("And now here is my secret: it is only with the heart that one can see rightly.", "Antoine de Saint-Exupery"),
+    ("There is always light, if only we're brave enough to see it.", "Amanda Gorman"),
+    ("Words are, in my not-so-humble opinion, our most inexhaustible source of magic.", "J.K. Rowling"),
+    ("Let us live for the beauty of our own reality.", "Charles Lamb"),
+    ("What lies behind us and what lies before us are tiny matters compared to what lies within us.", "Ralph Waldo Emerson"),
+    ("Stay curious; every season writes a fresh page for those who look closely.", "Literary Note"),
 ];
+
+pub fn day_of_year(year: i32, month: u32, day: u32) -> u32 {
+    let m = month.clamp(1, 12);
+    let mut total = 0u32;
+    for prev_m in 1..m {
+        total += days_in_month(year, prev_m);
+    }
+    total + day.clamp(1, days_in_month(year, m))
+}
+
+pub fn daily_quote_index_for_date(year: i32, month: u32, day: u32) -> usize {
+    (day_of_year(year, month, day).saturating_sub(1) as usize) % DAILY_QUOTE_POOL_LEN
+}
 
 impl ExtRuntimeState {
     pub fn new() -> Self {
@@ -1743,6 +1976,7 @@ impl ExtRuntimeState {
         let live_weather: Arc<Mutex<Option<WeatherSnap>>> = Arc::new(Mutex::new(None));
         let weather_fetching = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+        let now_month = month_name_to_num(now.month_name);
         Self {
             weather,
             search_query: String::new(),
@@ -1751,7 +1985,8 @@ impl ExtRuntimeState {
             note_focused: false,
             editing_note_row: None,
             user_name,
-            quote_idx: (now.day as usize) % 6,
+            quote_idx: daily_quote_index_for_date(now.year, now_month, now.day),
+            quote_date_key: (now.year, now_month, now.day),
             down_bps: 148_000.0,
             up_bps: 32_000.0,
             net_history: [
@@ -1778,6 +2013,9 @@ impl ExtRuntimeState {
             ],
             dxgi_cached_adapter: None,
             active_audio_out: 0,
+            audio_output_page: 0,
+            audio_vol_preview: 50,
+            audio_muted_preview: false,
             cal_year: now.year,
             cal_month: month_name_to_num(now.month_name),
             pomo_running: false,
@@ -1804,6 +2042,51 @@ impl ExtRuntimeState {
             weather_started: false,
             last_weather_refresh: Instant::now() - Duration::from_secs(1200),
         }
+    }
+
+    /// Studio preview runtime state pre-populated with realistic sample drives, top processes,
+    /// and recycle bin telemetry so folder cards and theme galleries never render empty shells.
+    pub fn new_studio_preview() -> Self {
+        let mut st = Self::new();
+        st.drives = vec![
+            DriveInfo {
+                letter: 'C',
+                used_gb: 284.0,
+                total_gb: 512.0,
+                pct: 55.5,
+            },
+            DriveInfo {
+                letter: 'D',
+                used_gb: 742.0,
+                total_gb: 1000.0,
+                pct: 74.2,
+            },
+        ];
+        st.top_procs = vec![
+            ProcInfo {
+                pid: 4120,
+                name: "Edge".to_string(),
+                mem_mb: 486.0,
+            },
+            ProcInfo {
+                pid: 8844,
+                name: "Code".to_string(),
+                mem_mb: 342.0,
+            },
+            ProcInfo {
+                pid: 5216,
+                name: "Spotify".to_string(),
+                mem_mb: 184.0,
+            },
+            ProcInfo {
+                pid: 6390,
+                name: "Discord".to_string(),
+                mem_mb: 148.0,
+            },
+        ];
+        st.bin_items = 14;
+        st.bin_bytes = 268 * 1024 * 1024;
+        st
     }
 
     pub fn trigger_weather_refresh(&mut self) {
@@ -1847,9 +2130,30 @@ impl ExtRuntimeState {
         }
     }
 
+    /// Updates `quote_idx` automatically whenever the local calendar date crosses midnight.
+    pub fn sync_daily_quote_for_date(&mut self, year: i32, month: u32, day: u32) -> bool {
+        let key = (year, month, day);
+        if key != self.quote_date_key {
+            self.quote_date_key = key;
+            self.quote_idx = daily_quote_index_for_date(year, month, day);
+            return true;
+        }
+        false
+    }
+
     pub fn tick(&mut self, cfg: &AppConfig, cpu_pct: f32) -> bool {
         let mut changed = false;
         self.tick_counter = self.tick_counter.wrapping_add(1);
+
+        // 0. Daily Quote midnight rollover detection
+        let now_local = chrono_local();
+        if self.sync_daily_quote_for_date(
+            now_local.year,
+            month_name_to_num(now_local.month_name),
+            now_local.day,
+        ) {
+            changed = true;
+        }
 
         if let Ok(mut g) = self.live_weather.try_lock() {
             if let Some(w) = g.take() {
@@ -1880,26 +2184,25 @@ impl ExtRuntimeState {
             changed = true;
         }
 
-        // 1. Pomodoro countdown
+        // 1. Pomodoro countdown (drift-free elapsed-second advancement)
         if self.pomo_running {
             let now = Instant::now();
-            if now.duration_since(self.pomo_last_tick) >= Duration::from_secs(1) {
-                self.pomo_last_tick = now;
-                if self.pomo_rem_secs > 0 {
-                    self.pomo_rem_secs -= 1;
-                } else {
-                    if !self.pomo_break {
-                        self.pomo_sessions = (self.pomo_sessions + 1).min(12);
-                        self.pomo_break = true;
-                        self.pomo_rem_secs = Self::pomo_break_secs(pomo_preset);
-                        if !cfg.ext_widgets[ExtWidgetId::Pomodoro.idx()].feats[4] {
-                            self.pomo_running = false;
-                        }
-                    } else {
-                        self.pomo_break = false;
-                        self.pomo_rem_secs = Self::pomo_work_secs(pomo_preset);
+            let elapsed = now.duration_since(self.pomo_last_tick).as_secs() as u32;
+            if elapsed >= 1 {
+                self.pomo_last_tick += Duration::from_secs(elapsed as u64);
+                if self.pomo_rem_secs > elapsed {
+                    self.pomo_rem_secs -= elapsed;
+                } else if !self.pomo_break {
+                    self.pomo_sessions = (self.pomo_sessions + 1).min(12);
+                    self.pomo_break = true;
+                    self.pomo_rem_secs = Self::pomo_break_secs(pomo_preset);
+                    if !cfg.ext_widgets[ExtWidgetId::Pomodoro.idx()].feats[4] {
                         self.pomo_running = false;
                     }
+                } else {
+                    self.pomo_break = false;
+                    self.pomo_rem_secs = Self::pomo_work_secs(pomo_preset);
+                    self.pomo_running = false;
                 }
                 changed = true;
             }
@@ -1978,12 +2281,15 @@ impl ExtRuntimeState {
             }
         }
 
-        // 5. Slow metrics (Drives, Processes, Recycle Bin) every 4 seconds (only when needed)
+        // 5. Slow metrics (Drives, Processes, Recycle Bin) every 4 seconds, or immediately if newly enabled
         let need_drives = cfg.ext_widgets[ExtWidgetId::Drives.idx()].enabled;
         let need_procs = cfg.ext_widgets[ExtWidgetId::Processes.idx()].enabled;
         let need_bin = cfg.ext_widgets[ExtWidgetId::RecycleBin.idx()].enabled;
+        let missing_initial =
+            (need_drives && self.drives.is_empty()) || (need_procs && self.top_procs.is_empty());
         if (need_drives || need_procs || need_bin)
-            && Instant::now().duration_since(self.last_slow_poll) >= Duration::from_secs(4)
+            && (missing_initial
+                || Instant::now().duration_since(self.last_slow_poll) >= Duration::from_secs(4))
         {
             self.poll_slow_metrics_masked(need_drives, need_procs, need_bin);
             self.last_slow_poll = Instant::now();
@@ -2165,8 +2471,9 @@ impl ExtRuntimeState {
             }
         }
 
-        // 2. Top Processes by Working Set RAM
+        // 2. Top Processes by Working Set RAM (never list AutumnDeck itself)
         if poll_procs {
+            let self_pid = std::process::id();
             let mut procs = Vec::new();
             unsafe {
                 if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
@@ -2177,7 +2484,7 @@ impl ExtRuntimeState {
                     if Process32FirstW(snap, &mut pe).is_ok() {
                         loop {
                             let pid = pe.th32ProcessID;
-                            if pid > 4 {
+                            if pid > 4 && pid != self_pid {
                                 let len = pe
                                     .szExeFile
                                     .iter()
@@ -2280,6 +2587,36 @@ impl ExtRuntimeState {
         self.search_focused = false;
     }
 
+    pub fn audio_vol_step(wcfg: &ExtWidgetConfig) -> u8 {
+        ((wcfg.param1_pct as u8) / 10).clamp(2, 12)
+    }
+
+    /// Resolves the two visible audio output devices for `page` (0-based) from `cc_snap.audio_outputs`.
+    /// When 3+ real devices exist, pages smoothly through pairs so both pills always show a valid output.
+    pub fn audio_slot_device<'a>(
+        cc_snap: &'a CcSnapshot,
+        page: usize,
+        slot: usize,
+    ) -> Option<&'a AudioOutputDevice> {
+        let outs = &cc_snap.audio_outputs;
+        if outs.is_empty() || slot > 1 {
+            return None;
+        }
+        if outs.len() == 1 {
+            return if slot == 0 { outs.first() } else { None };
+        }
+        if outs.len() == 2 {
+            return outs.get(slot);
+        }
+        let num_pages = (outs.len() + 1) / 2;
+        let p = page % num_pages;
+        let mut base = p * 2;
+        if base + 1 >= outs.len() {
+            base = outs.len().saturating_sub(2);
+        }
+        outs.get(base + slot)
+    }
+
     pub fn handle_desktop_click(&mut self, id: ExtWidgetId, btn: u8, cfg: &mut AppConfig) -> bool {
         let wcfg = &mut cfg.ext_widgets[id.idx()];
         match id {
@@ -2318,7 +2655,7 @@ impl ExtRuntimeState {
             },
             ExtWidgetId::Greeting => match btn {
                 0 => {
-                    self.quote_idx = (self.quote_idx + 1) % 6;
+                    self.quote_idx = (self.quote_idx + 1) % DAILY_QUOTE_POOL_LEN;
                     true
                 }
                 1 => {
@@ -2368,6 +2705,22 @@ impl ExtRuntimeState {
                 _ => false,
             },
             ExtWidgetId::AudioSwitcher => match btn {
+                0 => {
+                    let step = Self::audio_vol_step(wcfg);
+                    self.audio_vol_preview = self.audio_vol_preview.saturating_sub(step);
+                    self.audio_muted_preview = false;
+                    true
+                }
+                1 => {
+                    self.audio_muted_preview = !self.audio_muted_preview;
+                    true
+                }
+                2 => {
+                    let step = Self::audio_vol_step(wcfg);
+                    self.audio_vol_preview = (self.audio_vol_preview + step).min(100);
+                    self.audio_muted_preview = false;
+                    true
+                }
                 3 => {
                     self.active_audio_out = 0;
                     true
@@ -2388,6 +2741,10 @@ impl ExtRuntimeState {
                         );
                     }
                     false
+                }
+                6 => {
+                    self.audio_output_page = self.audio_output_page.wrapping_add(1);
+                    true
                 }
                 _ => false,
             },
@@ -2457,6 +2814,13 @@ impl ExtRuntimeState {
             },
             ExtWidgetId::Pomodoro => match btn {
                 0 => {
+                    if !self.pomo_running && self.pomo_rem_secs == 0 {
+                        self.pomo_rem_secs = if self.pomo_break {
+                            Self::pomo_break_secs(wcfg.mode_idx)
+                        } else {
+                            Self::pomo_work_secs(wcfg.mode_idx)
+                        };
+                    }
                     self.pomo_running = !self.pomo_running;
                     self.pomo_last_tick = Instant::now();
                     true
@@ -2465,6 +2829,7 @@ impl ExtRuntimeState {
                     self.pomo_running = false;
                     self.pomo_break = false;
                     self.pomo_rem_secs = Self::pomo_work_secs(wcfg.mode_idx);
+                    self.pomo_last_tick = Instant::now();
                     true
                 }
                 2 => {
@@ -2474,6 +2839,7 @@ impl ExtRuntimeState {
                     } else {
                         Self::pomo_work_secs(wcfg.mode_idx)
                     };
+                    self.pomo_last_tick = Instant::now();
                     true
                 }
                 _ => false,
@@ -2485,6 +2851,32 @@ impl ExtRuntimeState {
                 }
                 1 => {
                     wcfg.mode_idx = (wcfg.mode_idx + 1) % 4;
+                    let pack = world_clock_preset_cities(wcfg.mode_idx);
+                    for i in 0..4 {
+                        cfg.world_clock_cities[i] = pack[i].to_string();
+                    }
+                    true
+                }
+                10..=13 => {
+                    let slot = (btn - 10) as usize;
+                    let cur_name = cfg.world_clock_cities[slot].clone();
+                    let cur_idx = WORLD_CLOCK_CITIES
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(cur_name.trim()))
+                        .unwrap_or(0);
+                    let len = WORLD_CLOCK_CITIES.len();
+                    for step in 1..=len {
+                        let cand = WORLD_CLOCK_CITIES[(cur_idx + step) % len].name;
+                        let used_elsewhere = cfg
+                            .world_clock_cities
+                            .iter()
+                            .enumerate()
+                            .any(|(j, s)| j != slot && s.eq_ignore_ascii_case(cand));
+                        if !used_elsewhere {
+                            cfg.world_clock_cities[slot] = cand.to_string();
+                            break;
+                        }
+                    }
                     true
                 }
                 _ => false,
@@ -2535,14 +2927,18 @@ impl ExtRuntimeState {
             ExtWidgetId::Processes => match btn {
                 0..=3 => {
                     if wcfg.feats[2] {
-                        if let Some(p) = self.top_procs.get(btn as usize) {
+                        if let Some(p) = self.top_procs.get(btn as usize).cloned() {
+                            let mut killed = false;
                             unsafe {
                                 if let Ok(hp) = OpenProcess(PROCESS_TERMINATE, false, p.pid) {
-                                    let _ = TerminateProcess(hp, 1);
+                                    killed = TerminateProcess(hp, 1).is_ok();
                                     let _ = CloseHandle(hp);
                                 }
                             }
-                            self.poll_slow_metrics();
+                            if killed {
+                                self.top_procs.retain(|item| item.pid != p.pid);
+                            }
+                            self.poll_slow_metrics_masked(false, true, false);
                             return true;
                         }
                     }
@@ -2677,9 +3073,197 @@ fn format_speed(bps: f32, mode_idx: u8) -> String {
     }
 }
 
+#[inline]
+fn rect_contains(r: (f32, f32, f32, f32), x: f32, y: f32) -> bool {
+    x >= r.0 && x <= r.2 && y >= r.1 && y <= r.3
+}
+
+/// Single-source-of-truth logical geometry for the Audio Output & Mixer widget.
+/// Shared by Direct2D rendering, hit-testing, and volume track dragging so buttons and
+/// slider tracks align accurately at every padding, scale, compact mode, and feature toggle.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioSwitcherLayout {
+    pub x0: f32,
+    pub x1: f32,
+    pub hdr_rect: Option<(f32, f32, f32, f32)>,
+    pub mixer_btn: Option<(f32, f32, f32, f32)>,
+    pub dev_btn_0: Option<(f32, f32, f32, f32)>,
+    pub dev_btn_1: Option<(f32, f32, f32, f32)>,
+    pub dev_cycle_btn: Option<(f32, f32, f32, f32)>,
+    pub divider_y: Option<f32>,
+    pub vol_label_rect: Option<(f32, f32, f32, f32)>,
+    pub vol_minus_btn: Option<(f32, f32, f32, f32)>,
+    pub vol_mute_btn: Option<(f32, f32, f32, f32)>,
+    pub vol_plus_btn: Option<(f32, f32, f32, f32)>,
+    pub slider_track: Option<(f32, f32, f32, f32)>,
+    pub slider_hit: Option<(f32, f32, f32, f32)>,
+}
+
+pub fn audio_switcher_layout(
+    wcfg: &ExtWidgetConfig,
+    audio_output_count: usize,
+) -> AudioSwitcherLayout {
+    let (lw, lh) = wcfg.logical_size(ExtWidgetId::AudioSwitcher);
+    let pad = (wcfg.padding as f32).clamp(4.0, 28.0);
+    let x0 = pad;
+    let x1 = (lw - pad).max(x0 + 116.0);
+    let mut y_cur = pad * 0.75;
+
+    let mut hdr_rect = None;
+    let mut mixer_btn = None;
+    if wcfg.show_header {
+        hdr_rect = Some((x0, y_cur, (x1 - 54.0).max(x0 + 40.0), y_cur + 16.0));
+        if wcfg.feats[5] {
+            mixer_btn = Some((x1 - 48.0, y_cur, x1, y_cur + 16.0));
+        }
+        y_cur += 20.0;
+    }
+
+    let mut dev_btn_0 = None;
+    let mut dev_btn_1 = None;
+    let mut dev_cycle_btn = None;
+    if wcfg.feats[0] && wcfg.mode_idx != 3 && wcfg.show_footer {
+        let has_more = audio_output_count > 2;
+        let dev_x1 = if has_more { x1 - 26.0 } else { x1 };
+        let mid = (x0 + dev_x1) * 0.5;
+        dev_btn_0 = Some((x0, y_cur, mid - 4.0, y_cur + 24.0));
+        dev_btn_1 = Some((mid + 4.0, y_cur, dev_x1, y_cur + 24.0));
+        if has_more {
+            dev_cycle_btn = Some((x1 - 22.0, y_cur, x1, y_cur + 24.0));
+        }
+        y_cur += 28.0;
+    }
+
+    let mut divider_y = None;
+    if wcfg.show_dividers {
+        divider_y = Some(y_cur);
+        y_cur += 5.0;
+    }
+
+    let mut vol_label_rect = None;
+    let mut vol_minus_btn = None;
+    let mut vol_mute_btn = None;
+    let mut vol_plus_btn = None;
+    let mut vol_btn_bottom = y_cur;
+    if wcfg.feats[1] && (wcfg.show_primary || wcfg.show_icon) {
+        let lbl_right = if wcfg.feats[2] {
+            (x1 - 112.0).max(x0 + 36.0)
+        } else {
+            x1
+        };
+        vol_label_rect = Some((x0, y_cur, lbl_right, y_cur + 24.0));
+        if wcfg.feats[2] {
+            vol_minus_btn = Some((x1 - 106.0, y_cur + 1.0, x1 - 76.0, y_cur + 23.0));
+            vol_mute_btn = Some((x1 - 72.0, y_cur + 1.0, x1 - 34.0, y_cur + 23.0));
+            vol_plus_btn = Some((x1 - 30.0, y_cur + 1.0, x1, y_cur + 23.0));
+            vol_btn_bottom = y_cur + 23.0;
+        }
+        y_cur += 25.0;
+    }
+
+    let mut slider_track = None;
+    let mut slider_hit = None;
+    if (wcfg.feats[3] || wcfg.feats[1]) && y_cur + 4.5 <= lh - 1.5 {
+        let track_top = y_cur;
+        let track_bot = (y_cur + 5.0).min(lh - 1.5);
+        slider_track = Some((x0, track_top, x1, track_bot));
+        let hit_top = (track_top - 3.0).max(vol_btn_bottom + 0.5);
+        let hit_bot = (track_bot + 6.0).min(lh);
+        slider_hit = Some(((x0 - 4.0).max(0.0), hit_top, (x1 + 4.0).min(lw), hit_bot));
+    }
+
+    AudioSwitcherLayout {
+        x0,
+        x1,
+        hdr_rect,
+        mixer_btn,
+        dev_btn_0,
+        dev_btn_1,
+        dev_cycle_btn,
+        divider_y,
+        vol_label_rect,
+        vol_minus_btn,
+        vol_mute_btn,
+        vol_plus_btn,
+        slider_track,
+        slider_hit,
+    }
+}
+
+/// Single-source-of-truth logical button geometry for the Pomodoro Focus Timer widget.
+/// Shared by Direct2D rendering and hit-testing so Start/Pause, Reset, and Skip align
+/// identically across ring visibility, padding, compact mode, and DPI scaling.
+#[derive(Clone, Copy, Debug)]
+pub struct PomodoroButtonLayout {
+    pub start_btn: Option<(f32, f32, f32, f32)>,
+    pub reset_btn: Option<(f32, f32, f32, f32)>,
+    pub skip_btn: Option<(f32, f32, f32, f32)>,
+}
+
+pub fn pomodoro_button_layout(wcfg: &ExtWidgetConfig) -> PomodoroButtonLayout {
+    let (lw, lh) = wcfg.logical_size(ExtWidgetId::Pomodoro);
+    let pad = (wcfg.padding as f32).clamp(4.0, 28.0);
+    let x0 = pad;
+    let x1 = (lw - pad).max(x0 + 80.0);
+    let mut text_x = x0;
+    if wcfg.feats[0] && wcfg.show_icon {
+        let r_rad = 26.0;
+        text_x += r_rad * 2.0 + 16.0;
+    }
+    if !wcfg.feats[2] {
+        return PomodoroButtonLayout {
+            start_btn: None,
+            reset_btn: None,
+            skip_btn: None,
+        };
+    }
+    let by0 = (lh - 28.0).max(0.0);
+    let by1 = (lh - 8.0).max(by0 + 14.0);
+    let gap = 4.0;
+    let avail = (x1 - text_x).max(60.0);
+    if wcfg.feats[3] {
+        let reset_w = (avail * 0.22).clamp(24.0, 36.0);
+        let rem = (avail - reset_w - gap * 2.0).max(40.0);
+        let start_w = (rem * 0.54).max(30.0);
+        let r0_x0 = text_x;
+        let r0_x1 = r0_x0 + start_w;
+        let r1_x0 = r0_x1 + gap;
+        let r1_x1 = r1_x0 + reset_w;
+        let r2_x0 = r1_x1 + gap;
+        let r2_x1 = x1.max(r2_x0 + 24.0);
+        PomodoroButtonLayout {
+            start_btn: Some((r0_x0, by0, r0_x1, by1)),
+            reset_btn: Some((r1_x0, by0, r1_x1, by1)),
+            skip_btn: Some((r2_x0, by0, r2_x1, by1)),
+        }
+    } else {
+        let reset_w = (avail * 0.28).clamp(26.0, 42.0);
+        let r0_x0 = text_x;
+        let r0_x1 = (x1 - reset_w - gap).max(r0_x0 + 36.0);
+        let r1_x0 = r0_x1 + gap;
+        let r1_x1 = x1.max(r1_x0 + 24.0);
+        PomodoroButtonLayout {
+            start_btn: Some((r0_x0, by0, r0_x1, by1)),
+            reset_btn: Some((r1_x0, by0, r1_x1, by1)),
+            skip_btn: None,
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn hit_test_ext_widget(
     id: ExtWidgetId,
     wcfg: &ExtWidgetConfig,
+    lx: f32,
+    ly: f32,
+) -> WidgetHitZone {
+    hit_test_ext_widget_with_audio(id, wcfg, 0, lx, ly)
+}
+
+pub fn hit_test_ext_widget_with_audio(
+    id: ExtWidgetId,
+    wcfg: &ExtWidgetConfig,
+    audio_output_count: usize,
     lx: f32,
     ly: f32,
 ) -> WidgetHitZone {
@@ -2709,11 +3293,18 @@ pub fn hit_test_ext_widget(
             return WidgetHitZone::ExtBtn(id, 0); // Focus input
         }
         ExtWidgetId::Greeting => {
-            if ly <= 30.0 && lx >= lw - 44.0 && wcfg.feats[4] {
-                return WidgetHitZone::ExtBtn(id, 0); // Next quote
-            }
-            if ly <= 30.0 && lx >= lw - 128.0 && lx < lw - 44.0 {
-                return WidgetHitZone::ExtBtn(id, 1); // Cycle topic
+            if wcfg.feats[4] {
+                let pad = (wcfg.padding as f32).clamp(4.0, 28.0);
+                let x1 = (lw - pad).max(pad + 120.0);
+                let y0 = pad * 0.75;
+                if ly >= (y0 - 2.0) && ly <= (y0 + 20.0) {
+                    if lx >= x1 - 28.0 && lx <= x1 + 2.0 {
+                        return WidgetHitZone::ExtBtn(id, 0); // Next quote
+                    }
+                    if lx >= x1 - 110.0 && lx <= x1 - 32.0 {
+                        return WidgetHitZone::ExtBtn(id, 1); // Cycle topic
+                    }
+                }
             }
         }
         ExtWidgetId::Network => {
@@ -2733,25 +3324,45 @@ pub fn hit_test_ext_widget(
             }
         }
         ExtWidgetId::AudioSwitcher => {
-            if ly <= 32.0 && lx >= lw - 38.0 {
-                return WidgetHitZone::ExtBtn(id, 5); // Sound settings
+            let lay = audio_switcher_layout(wcfg, audio_output_count);
+            if let Some(r) = lay.mixer_btn {
+                if rect_contains(r, lx, ly) {
+                    return WidgetHitZone::ExtBtn(id, 5); // Sound settings
+                }
             }
-            if (34.0..=68.0).contains(&ly) {
-                if lx < lw * 0.5 {
+            if let Some(r) = lay.dev_btn_0 {
+                if rect_contains(r, lx, ly) {
                     return WidgetHitZone::ExtBtn(id, 3); // Output 0
-                } else {
+                }
+            }
+            if let Some(r) = lay.dev_btn_1 {
+                if rect_contains(r, lx, ly) {
                     return WidgetHitZone::ExtBtn(id, 4); // Output 1
                 }
             }
-            if ly > 68.0 && wcfg.feats[2] {
-                if (lw - 104.0..lw - 72.0).contains(&lx) {
+            if let Some(r) = lay.dev_cycle_btn {
+                if rect_contains(r, lx, ly) {
+                    return WidgetHitZone::ExtBtn(id, 6); // Cycle device page
+                }
+            }
+            if let Some(r) = lay.vol_minus_btn {
+                if rect_contains(r, lx, ly) {
                     return WidgetHitZone::ExtBtn(id, 0); // Vol -
                 }
-                if (lw - 70.0..lw - 38.0).contains(&lx) {
-                    return WidgetHitZone::ExtBtn(id, 1); // Mute
+            }
+            if let Some(r) = lay.vol_mute_btn {
+                if rect_contains(r, lx, ly) {
+                    return WidgetHitZone::ExtBtn(id, 1); // Mute / Unmute
                 }
-                if lx >= lw - 36.0 {
+            }
+            if let Some(r) = lay.vol_plus_btn {
+                if rect_contains(r, lx, ly) {
                     return WidgetHitZone::ExtBtn(id, 2); // Vol +
+                }
+            }
+            if let Some(r) = lay.slider_hit {
+                if rect_contains(r, lx, ly) {
+                    return WidgetHitZone::ExtBtn(id, 7); // Volume slider track
                 }
             }
         }
@@ -2788,25 +3399,53 @@ pub fn hit_test_ext_widget(
             }
         }
         ExtWidgetId::Pomodoro => {
-            if ly >= lh - 38.0 && wcfg.feats[2] {
-                if lx >= lw - 134.0 && lx < lw - 74.0 {
-                    return WidgetHitZone::ExtBtn(id, 0); // Start/Pause
+            let play = pomodoro_button_layout(wcfg);
+            // Slightly pad vertical grab area (+2px) so clicks near pill rims always register
+            let hit_pad = |r: (f32, f32, f32, f32)| -> bool {
+                lx >= r.0 && lx <= r.2 && ly >= (r.1 - 2.0) && ly <= (r.3 + 2.0)
+            };
+            if let Some(r) = play.start_btn {
+                if hit_pad(r) {
+                    return WidgetHitZone::ExtBtn(id, 0); // Start / Pause
                 }
-                if lx >= lw - 72.0 && lx < lw - 38.0 {
+            }
+            if let Some(r) = play.reset_btn {
+                if hit_pad(r) {
                     return WidgetHitZone::ExtBtn(id, 1); // Reset
                 }
-                if lx >= lw - 36.0 {
+            }
+            if let Some(r) = play.skip_btn {
+                if hit_pad(r) {
                     return WidgetHitZone::ExtBtn(id, 2); // Skip
                 }
             }
         }
         ExtWidgetId::WorldClock => {
-            if ly <= 30.0 {
-                if lx >= lw - 52.0 {
-                    return WidgetHitZone::ExtBtn(id, 0); // 12h/24h
+            let pad = (wcfg.padding as f32).clamp(4.0, 28.0);
+            let x1 = (lw - pad).max(pad + 96.0);
+            let mut y_cur = pad * 0.75;
+            if wcfg.show_header {
+                if ly >= (y_cur - 2.0) && ly <= (y_cur + 18.0) {
+                    if lx >= x1 - 38.0 && lx <= x1 + 2.0 {
+                        return WidgetHitZone::ExtBtn(id, 0); // 12h/24h
+                    }
+                    if lx >= x1 - 88.0 && lx <= x1 - 42.0 {
+                        return WidgetHitZone::ExtBtn(id, 1); // Cycle City pack
+                    }
                 }
-                if lx >= lw - 116.0 {
-                    return WidgetHitZone::ExtBtn(id, 1); // City pack
+                y_cur += 19.0;
+                if wcfg.show_dividers {
+                    y_cur += 4.0;
+                }
+            }
+            if ly >= y_cur {
+                let max_c = if wcfg.feats[5] { 4 } else { 3 };
+                let spacing_mul = (0.78 + (wcfg.param1_pct as f32 / 100.0) * 0.42).clamp(0.75, 1.25);
+                let row_h = (((lh - 6.0 - y_cur) / max_c as f32) * spacing_mul).clamp(16.0, 28.0);
+                let row = ((ly - y_cur) / row_h).floor() as i32;
+                if row >= 0 && (row as usize) < max_c && y_cur + (row as f32 + 1.0) * row_h <= lh - 2.0
+                {
+                    return WidgetHitZone::ExtBtn(id, 10 + row as u8); // Cycle slot city
                 }
             }
         }
@@ -2822,21 +3461,57 @@ pub fn hit_test_ext_widget(
             }
         }
         ExtWidgetId::Drives => {
-            if ly <= 28.0 && lx >= lw - 68.0 {
-                return WidgetHitZone::ExtBtn(id, 4); // Toggle style
+            let pad = (wcfg.padding as f32).clamp(4.0, 28.0);
+            let x0 = pad;
+            let x1 = (lw - pad).max(x0 + 64.0);
+            let mut y_cur = pad * 0.75;
+            if wcfg.show_header {
+                if ly >= (y_cur - 2.0) && ly <= (y_cur + 18.0) && lx >= x1 - 58.0 && lx <= x1 + 2.0 {
+                    return WidgetHitZone::ExtBtn(id, 4); // Toggle style
+                }
+                y_cur += 19.0;
+                if wcfg.show_dividers {
+                    y_cur += 4.0;
+                }
             }
-            if ly > 30.0 {
-                let col = ((lx / (lw * 0.5)).floor() as i32).clamp(0, 1);
-                return WidgetHitZone::ExtBtn(id, col as u8);
+            if ly >= y_cur && lx >= x0 && lx <= x1 {
+                if wcfg.mode_idx == 1 || wcfg.mode_idx == 2 {
+                    let thick = (3.0 + (wcfg.param1_pct as f32 / 100.0) * 5.0).clamp(5.0, 11.0);
+                    let row_step = thick + 26.0;
+                    let row = ((ly - y_cur) / row_step).floor() as i32;
+                    if (0..=1).contains(&row) {
+                        return WidgetHitZone::ExtBtn(id, row as u8);
+                    }
+                } else if wcfg.mode_idx == 3 {
+                    let row = ((ly - y_cur) / 28.0).floor() as i32;
+                    if (0..=1).contains(&row) {
+                        return WidgetHitZone::ExtBtn(id, row as u8);
+                    }
+                } else {
+                    let col = if lx < (x0 + x1) * 0.5 { 0 } else { 1 };
+                    return WidgetHitZone::ExtBtn(id, col);
+                }
             }
         }
         ExtWidgetId::Processes => {
-            if ly <= 28.0 {
-                return WidgetHitZone::ExtBtn(id, 4); // TaskMgr
+            let pad = (wcfg.padding as f32).clamp(4.0, 28.0);
+            let x1 = (lw - pad).max(pad + 64.0);
+            let mut y_cur = pad * 0.75;
+            if wcfg.show_header {
+                if ly >= (y_cur - 2.0) && ly <= (y_cur + 18.0) && lx >= x1 - 50.0 && lx <= x1 + 2.0 {
+                    return WidgetHitZone::ExtBtn(id, 4); // TaskMgr pill only (header title drags card)
+                }
+                y_cur += 19.0;
+                if wcfg.show_dividers {
+                    y_cur += 4.0;
+                }
             }
-            if ly > 30.0 && lx >= lw - 34.0 && wcfg.feats[2] {
-                let row = ((ly - 32.0) / 28.0).floor() as i32;
-                if (0..=2).contains(&row) {
+            if ly >= y_cur && lx >= x1 - 24.0 && lx <= x1 + 2.0 && wcfg.feats[2] {
+                let max_p = if wcfg.mode_idx == 3 { 4 } else { 3 };
+                let row_h = ((lh - 6.0 - y_cur) / max_p as f32).clamp(20.0, 28.0);
+                let row = ((ly - y_cur) / row_h).floor() as i32;
+                if row >= 0 && (row as usize) < max_p && y_cur + (row as f32 + 1.0) * row_h <= lh - 4.0
+                {
                     return WidgetHitZone::ExtBtn(id, row as u8);
                 }
             }
@@ -3031,9 +3706,16 @@ unsafe fn ext_widget_fg_key(
         }
         ExtWidgetId::AudioSwitcher => {
             h.mix_usize(state.active_audio_out);
+            h.mix_usize(state.audio_output_page);
             h.mix_u8(cc_snap.vol_pct);
             h.mix_bool(cc_snap.vol_muted);
             h.mix_str(&cc_snap.bt_sub);
+            h.mix_usize(cc_snap.audio_outputs.len());
+            for dev in &cc_snap.audio_outputs {
+                h.mix_str(&dev.id);
+                h.mix_str(&dev.name);
+                h.mix_bool(dev.is_default);
+            }
         }
         ExtWidgetId::Notes => {
             h.mix_str(&cfg.notes_title);
@@ -3068,6 +3750,9 @@ unsafe fn ext_widget_fg_key(
             h.mix_u64(utc.wDay as u64);
             h.mix_u64(utc.wHour as u64);
             h.mix_u64(utc.wMinute as u64);
+            for c in &cfg.world_clock_cities {
+                h.mix_str(c);
+            }
         }
         ExtWidgetId::Clipboard => {
             h.mix_usize(state.clip_items.len());
@@ -5159,7 +5844,13 @@ unsafe fn draw_ext_widget_with_boxes_inner(
         // 6. QUICK AUDIO OUTPUT & DEVICE SWITCHER
         // =====================================================================
         ExtWidgetId::AudioSwitcher => {
-            if wcfg.show_header {
+            let lay = audio_switcher_layout(wcfg, cc_snap.audio_outputs.len());
+            let map_rc = |r: (f32, f32, f32, f32)| -> (f32, f32, f32, f32) {
+                (x + r.0 * s, y + r.1 * s, x + r.2 * s, y + r.3 * s)
+            };
+
+            if let Some(hr) = lay.hdr_rect {
+                let (l, t, ri, b) = map_rc(hr);
                 let hdr_lbl = if wcfg.feats[4] {
                     "AUDIO OUTPUT • 24-BIT"
                 } else {
@@ -5169,35 +5860,79 @@ unsafe fn draw_ext_widget_with_boxes_inner(
                     rt,
                     hdr_lbl,
                     &tf_hdr,
-                    D2D_RECT_F { left: x0, top: y_cur, right: x1 - 54.0 * s, bottom: y_cur + 16.0 * s },
+                    D2D_RECT_F { left: l, top: t, right: ri, bottom: b },
                     &br_acc,
                 );
-                if wcfg.feats[5] {
-                    draw_pill(x1 - 48.0 * s, y_cur, x1, y_cur + 16.0 * s, "Mixer", false, is_btn_hov(5));
+                if let Some(mr) = lay.mixer_btn {
+                    let (ml, mt, mri, mb) = map_rc(mr);
+                    draw_pill(ml, mt, mri, mb, "Mixer", false, is_btn_hov(5));
                 }
-                y_cur += 20.0 * s;
             }
 
-            if wcfg.feats[0] && wcfg.mode_idx != 3 && wcfg.show_footer {
-                let mid = (x0 + x1) * 0.5;
-                let bt_lbl = if !cc_snap.bt_sub.is_empty() && cc_snap.bt_sub != "Bluetooth" {
-                    cc_snap.bt_sub.as_str()
+            if let (Some(r0), Some(r1)) = (lay.dev_btn_0, lay.dev_btn_1) {
+                let dev0 = ExtRuntimeState::audio_slot_device(cc_snap, state.audio_output_page, 0);
+                let dev1 = ExtRuntimeState::audio_slot_device(cc_snap, state.audio_output_page, 1);
+
+                let (lbl0, act0) = if let Some(d) = dev0 {
+                    let text = if d.is_default {
+                        format!("● {}", d.name)
+                    } else {
+                        d.name.clone()
+                    };
+                    (text, d.is_default)
                 } else {
-                    "Headphones / BT"
+                    let is_act = state.active_audio_out == 0;
+                    (
+                        if is_act { "● Speakers" } else { "Speakers" }.to_string(),
+                        is_act,
+                    )
                 };
-                draw_pill(x0, y_cur, mid - 4.0 * s, y_cur + 24.0 * s, "● Speakers", state.active_audio_out == 0, is_btn_hov(3));
-                draw_pill(mid + 4.0 * s, y_cur, x1, y_cur + 24.0 * s, bt_lbl, state.active_audio_out == 1, is_btn_hov(4));
-                y_cur += 28.0 * s;
+
+                let (lbl1, act1) = if let Some(d) = dev1 {
+                    let text = if d.is_default {
+                        format!("● {}", d.name)
+                    } else {
+                        d.name.clone()
+                    };
+                    (text, d.is_default)
+                } else {
+                    let bt_base = if !cc_snap.bt_sub.is_empty()
+                        && !cc_snap.bt_sub.eq_ignore_ascii_case("Bluetooth")
+                        && !cc_snap.bt_sub.eq_ignore_ascii_case("Off")
+                        && !cc_snap.bt_sub.eq_ignore_ascii_case("On")
+                    {
+                        cc_snap.bt_sub.as_str()
+                    } else {
+                        "Headphones / BT"
+                    };
+                    let is_act = cc_snap.audio_outputs.is_empty() && state.active_audio_out == 1;
+                    let text = if is_act {
+                        format!("● {}", bt_base)
+                    } else {
+                        bt_base.to_string()
+                    };
+                    (text, is_act)
+                };
+
+                let (l0, t0, ri0, b0) = map_rc(r0);
+                let (l1, t1, ri1, b1) = map_rc(r1);
+                draw_pill(l0, t0, ri0, b0, &lbl0, act0, is_btn_hov(3));
+                draw_pill(l1, t1, ri1, b1, &lbl1, act1, is_btn_hov(4));
+
+                if let Some(rc) = lay.dev_cycle_btn {
+                    let (cl, ct, cri, cb) = map_rc(rc);
+                    draw_pill(cl, ct, cri, cb, "▸", false, is_btn_hov(6));
+                }
             }
 
-            if wcfg.show_dividers {
-                draw_ext_divider(y_cur);
-                y_cur += 5.0 * s;
+            if let Some(dy) = lay.divider_y {
+                draw_ext_divider(y + dy * s);
             }
 
-            if wcfg.feats[1] && (wcfg.show_primary || wcfg.show_icon) {
+            if let Some(vr) = lay.vol_label_rect {
+                let (vl, vt, vri, vb) = map_rc(vr);
                 let vol_lbl = if cc_snap.vol_muted {
-                    "Muted (0%)".to_string()
+                    format!("Muted ({}%)", cc_snap.vol_pct)
                 } else {
                     format!("Master: {}%", cc_snap.vol_pct)
                 };
@@ -5205,43 +5940,76 @@ unsafe fn draw_ext_widget_with_boxes_inner(
                     rt,
                     &vol_lbl,
                     &tf_body,
-                    D2D_RECT_F { left: x0, top: y_cur, right: x1 - 112.0 * s, bottom: y_cur + 24.0 * s },
+                    D2D_RECT_F { left: vl, top: vt, right: vri, bottom: vb },
                     &br_txt,
                 );
-                if wcfg.feats[2] {
-                    draw_pill(x1 - 106.0 * s, y_cur + 1.0 * s, x1 - 76.0 * s, y_cur + 23.0 * s, "−", false, is_btn_hov(0));
+                if let (Some(rm), Some(ru), Some(rp)) =
+                    (lay.vol_minus_btn, lay.vol_mute_btn, lay.vol_plus_btn)
+                {
+                    let (l, t, ri, b) = map_rc(rm);
+                    draw_pill(l, t, ri, b, "−", false, is_btn_hov(0));
+                    let (l, t, ri, b) = map_rc(ru);
                     draw_pill(
-                        x1 - 72.0 * s,
-                        y_cur + 1.0 * s,
-                        x1 - 34.0 * s,
-                        y_cur + 23.0 * s,
+                        l,
+                        t,
+                        ri,
+                        b,
                         if cc_snap.vol_muted { "Unmute" } else { "Mute" },
                         cc_snap.vol_muted,
                         is_btn_hov(1),
                     );
-                    draw_pill(x1 - 30.0 * s, y_cur + 1.0 * s, x1, y_cur + 23.0 * s, "+", false, is_btn_hov(2));
+                    let (l, t, ri, b) = map_rc(rp);
+                    draw_pill(l, t, ri, b, "+", false, is_btn_hov(2));
                 }
-                y_cur += 25.0 * s;
             }
 
-            if wcfg.feats[3] && y_cur + 5.0 * s <= y + h - 4.0 * s {
-                let sens = (0.5 + (wcfg.param2_pct as f32 / 100.0)).clamp(0.5, 1.5);
+            if let Some(sr) = lay.slider_track {
+                let (sl, st, sri, sb) = map_rc(sr);
                 let frac = if cc_snap.vol_muted {
                     0.0
                 } else {
-                    ((cc_snap.vol_pct as f32 / 100.0) * sens).clamp(0.05, 1.0)
+                    (cc_snap.vol_pct as f32 / 100.0).clamp(0.0, 1.0)
                 };
-                with_slot4!(x0, y_cur, x1, y_cur + 5.0 * s, {
+                let tr_h = (sb - st).max(3.5 * s);
+                let rad_t = tr_h * 0.5;
+                let track_hov = is_btn_hov(7);
+                with_slot4!(sl, st, sri, sb, {
                     rt.FillRoundedRectangle(
-                        &D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: x0, top: y_cur, right: x1, bottom: y_cur + 4.5 * s }, radiusX: 2.2 * s, radiusY: 2.2 * s },
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F { left: sl, top: st, right: sri, bottom: sb },
+                            radiusX: rad_t,
+                            radiusY: rad_t,
+                        },
                         &br_acc_dim,
                     );
-                    if frac > 0.01 {
+                    if frac > 0.005 {
+                        let fill_r = (sl + (sri - sl) * frac).max(sl + tr_h);
                         rt.FillRoundedRectangle(
-                            &D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: x0, top: y_cur, right: x0 + (x1 - x0) * frac, bottom: y_cur + 4.5 * s }, radiusX: 2.2 * s, radiusY: 2.2 * s },
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: sl,
+                                    top: st,
+                                    right: fill_r.min(sri),
+                                    bottom: sb,
+                                },
+                                radiusX: rad_t,
+                                radiusY: rad_t,
+                            },
                             br_div_fill,
                         );
                     }
+                    // Interactive slider thumb knob
+                    let knob_cx = sl + (sri - sl) * frac;
+                    let knob_cy = (st + sb) * 0.5;
+                    let knob_r = if track_hov { 4.8 * s } else { 3.6 * s };
+                    rt.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: Vector2 { X: knob_cx, Y: knob_cy },
+                            radiusX: knob_r,
+                            radiusY: knob_r,
+                        },
+                        if track_hov { &br_txt } else { br_div_fill },
+                    );
                 });
             }
         }
@@ -5600,22 +6368,39 @@ unsafe fn draw_ext_widget_with_boxes_inner(
                 );
             }
 
-            if wcfg.feats[2] {
-                let by0 = y + h - 28.0 * s;
-                let by1 = y + h - 8.0 * s;
+            let play = pomodoro_button_layout(wcfg);
+            if let Some(r0) = play.start_btn {
                 draw_pill(
-                    text_x,
-                    by0,
-                    text_x + 56.0 * s,
-                    by1,
+                    x + r0.0 * s,
+                    y + r0.1 * s,
+                    x + r0.2 * s,
+                    y + r0.3 * s,
                     if state.pomo_running { "⏸ Pause" } else { "▶ Start" },
                     state.pomo_running,
                     is_btn_hov(0),
                 );
-                draw_pill(text_x + 60.0 * s, by0, text_x + 96.0 * s, by1, "↻", false, is_btn_hov(1));
-                if wcfg.feats[3] {
-                    draw_pill(text_x + 100.0 * s, by0, x1, by1, "Skip →", false, is_btn_hov(2));
-                }
+            }
+            if let Some(r1) = play.reset_btn {
+                draw_pill(
+                    x + r1.0 * s,
+                    y + r1.1 * s,
+                    x + r1.2 * s,
+                    y + r1.3 * s,
+                    "↻",
+                    false,
+                    is_btn_hov(1),
+                );
+            }
+            if let Some(r2) = play.skip_btn {
+                draw_pill(
+                    x + r2.0 * s,
+                    y + r2.1 * s,
+                    x + r2.2 * s,
+                    y + r2.3 * s,
+                    "Skip →",
+                    false,
+                    is_btn_hov(2),
+                );
             }
         }
 
@@ -5650,21 +6435,22 @@ unsafe fn draw_ext_widget_with_boxes_inner(
 
             let utc = unsafe { GetSystemTime() };
             let utc_mins = (utc.wHour as i32) * 60 + (utc.wMinute as i32);
-            let cities: [(&str, i32, &str); 4] = match wcfg.mode_idx {
-                1 => [("San Francisco", -420, "PST"), ("Berlin", 60, "CET"), ("Dubai", 240, "GST"), ("Singapore", 480, "SGT")],
-                2 => [("UTC", 0, "UTC"), ("New York", -300, "EST"), ("Mumbai", 330, "IST"), ("Tokyo", 540, "JST")],
-                3 => [("London", 0, "GMT"), ("Paris", 60, "CET"), ("Mumbai", 330, "IST"), ("Kathmandu", 345, "NPT")],
-                _ => [("New York", -300, "EST"), ("London", 0, "GMT"), ("Tokyo", 540, "JST"), ("Sydney", 660, "AEDT")],
-            };
+            let cities = resolve_world_clock_slots(cfg);
 
             let max_c = if wcfg.feats[5] { 4 } else { 3 };
             let spacing_mul = (0.78 + (wcfg.param1_pct as f32 / 100.0) * 0.42).clamp(0.75, 1.25);
             let row_h = (((y + h - 6.0 * s - y_cur) / max_c as f32) * spacing_mul).clamp(16.0 * s, 28.0 * s);
             let dial_r = (5.0 + (wcfg.param2_pct as f32 / 100.0) * 3.5) * s;
-            for &(city, offset_m, tz_lbl) in cities.iter().take(max_c) {
+            for (row_i, wc) in cities.iter().take(max_c).enumerate() {
                 if y_cur + row_h > y + h - 2.0 * s {
                     break;
                 }
+                if is_btn_hov(10 + row_i as u8) {
+                    draw_sub_box(x0 - 3.0 * s, y_cur + 1.0 * s, x1 + 3.0 * s, y_cur + row_h - 1.0 * s, 4.0 * s, false, true, false);
+                }
+                let city = wc.name;
+                let offset_m = wc.offset_mins;
+                let tz_lbl = wc.tz_abbr;
                 let raw_m = utc_mins + offset_m;
                 let day_shift = if raw_m < 0 { " -1d" } else if raw_m >= 1440 { " +1d" } else { "" };
                 let tot_m = raw_m.rem_euclid(1440);
@@ -5810,6 +6596,15 @@ unsafe fn draw_ext_widget_with_boxes_inner(
                 }
             }
 
+            if state.drives.is_empty() {
+                draw_txt_clipped(
+                    rt,
+                    "Scanning storage drives...",
+                    &tf_body,
+                    D2D_RECT_F { left: x0, top: y_cur + 8.0 * s, right: x1, bottom: y_cur + 32.0 * s },
+                    &br_sub,
+                );
+            }
             let count = state.drives.len().clamp(1, 2);
             let slot_w = (x1 - x0) / count as f32;
             let warn_thr = 60.0 + (wcfg.param2_pct as f32 / 100.0) * 35.0;
@@ -5921,6 +6716,15 @@ unsafe fn draw_ext_widget_with_boxes_inner(
                 }
             }
 
+            if state.top_procs.is_empty() {
+                draw_txt_clipped(
+                    rt,
+                    "Scanning running processes...",
+                    &tf_body,
+                    D2D_RECT_F { left: x0, top: y_cur + 8.0 * s, right: x1, bottom: y_cur + 32.0 * s },
+                    &br_sub,
+                );
+            }
             let max_p = if wcfg.mode_idx == 3 { 4 } else { 3 };
             let row_h = ((y + h - 6.0 * s - y_cur) / max_p as f32).clamp(20.0 * s, 28.0 * s);
             let max_mb = state.top_procs.iter().map(|p| p.mem_mb).fold(128.0f32, f32::max);
@@ -6663,5 +7467,336 @@ mod weather_geo_tests {
         assert!(csv.contains("celestial_sun_dial"));
         let round = ExtWidgetConfig::from_csv(ExtWidgetId::Weather, &csv);
         assert_eq!(round.theme, ExtWidgetTheme::CelestialSunDial);
+    }
+
+    #[test]
+    fn audio_switcher_layout_hit_tests_and_controls_align_across_configs() {
+        let center = |r: (f32, f32, f32, f32)| -> (f32, f32) {
+            ((r.0 + r.2) * 0.5, (r.1 + r.3) * 0.5)
+        };
+        let mut cfg = AppConfig::default();
+
+        // Test default, large padding, compact mode, and header-off configurations
+        for (pad, compact, show_hdr, dev_cnt) in [
+            (12u8, false, true, 2usize),
+            (22u8, false, true, 3usize),
+            (12u8, true, true, 2usize),
+            (14u8, false, false, 2usize),
+        ] {
+            let mut wcfg = ExtWidgetConfig::default_for(ExtWidgetId::AudioSwitcher);
+            wcfg.padding = pad;
+            wcfg.compact_mode = compact;
+            wcfg.show_header = show_hdr;
+
+            let lay = audio_switcher_layout(&wcfg, dev_cnt);
+            if let Some(r) = lay.mixer_btn {
+                let (cx, cy) = center(r);
+                assert_eq!(
+                    hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, cx, cy),
+                    WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 5)
+                );
+            }
+            let (cx0, cy0) = center(lay.dev_btn_0.expect("dev 0 rect"));
+            assert_eq!(
+                hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, cx0, cy0),
+                WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 3)
+            );
+            let (cx1, cy1) = center(lay.dev_btn_1.expect("dev 1 rect"));
+            assert_eq!(
+                hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, cx1, cy1),
+                WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 4)
+            );
+            if dev_cnt > 2 {
+                let (ccx, ccy) = center(lay.dev_cycle_btn.expect("cycle btn for 3+ outputs"));
+                assert_eq!(
+                    hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, ccx, ccy),
+                    WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 6)
+                );
+            }
+            let (mx, my) = center(lay.vol_minus_btn.expect("vol - rect"));
+            assert_eq!(
+                hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, mx, my),
+                WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 0)
+            );
+            let (ux, uy) = center(lay.vol_mute_btn.expect("mute rect"));
+            assert_eq!(
+                hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, ux, uy),
+                WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 1)
+            );
+            let (px, py) = center(lay.vol_plus_btn.expect("vol + rect"));
+            assert_eq!(
+                hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, px, py),
+                WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 2)
+            );
+            if let Some(sr) = lay.slider_hit {
+                let (sx, sy) = center(sr);
+                assert_eq!(
+                    hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, &wcfg, dev_cnt, sx, sy),
+                    WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 7)
+                );
+            }
+        }
+
+        // Verify buttons 0 (-), 1 (Mute), 2 (+), 3/4 (Outputs), 6 (Page) are wired in handle_desktop_click
+        let mut st = ExtRuntimeState::new();
+        st.audio_vol_preview = 50;
+        st.audio_muted_preview = false;
+        assert!(st.handle_desktop_click(ExtWidgetId::AudioSwitcher, 0, &mut cfg));
+        assert!(st.audio_vol_preview < 50 && !st.audio_muted_preview);
+        assert!(st.handle_desktop_click(ExtWidgetId::AudioSwitcher, 1, &mut cfg));
+        assert!(st.audio_muted_preview);
+        let after_dec = st.audio_vol_preview;
+        assert!(st.handle_desktop_click(ExtWidgetId::AudioSwitcher, 2, &mut cfg));
+        assert!(st.audio_vol_preview > after_dec && !st.audio_muted_preview);
+        assert!(st.handle_desktop_click(ExtWidgetId::AudioSwitcher, 4, &mut cfg));
+        assert_eq!(st.active_audio_out, 1);
+        assert!(st.handle_desktop_click(ExtWidgetId::AudioSwitcher, 3, &mut cfg));
+        assert_eq!(st.active_audio_out, 0);
+        assert!(st.handle_desktop_click(ExtWidgetId::AudioSwitcher, 6, &mut cfg));
+        assert_eq!(st.audio_output_page, 1);
+
+        // Verify audio_slot_device paging across 3 devices
+        let snap3 = CcSnapshot {
+            audio_outputs: vec![
+                AudioOutputDevice { id: "1".into(), name: "Speakers".into(), is_default: true },
+                AudioOutputDevice { id: "2".into(), name: "realme Buds Air7".into(), is_default: false },
+                AudioOutputDevice { id: "3".into(), name: "HDMI Monitor".into(), is_default: false },
+            ],
+            ..CcSnapshot::default()
+        };
+        assert_eq!(ExtRuntimeState::audio_slot_device(&snap3, 0, 0).unwrap().id, "1");
+        assert_eq!(ExtRuntimeState::audio_slot_device(&snap3, 0, 1).unwrap().id, "2");
+        assert_eq!(ExtRuntimeState::audio_slot_device(&snap3, 1, 0).unwrap().id, "2");
+        assert_eq!(ExtRuntimeState::audio_slot_device(&snap3, 1, 1).unwrap().id, "3");
+    }
+
+    #[test]
+    fn pomodoro_button_hit_tests_and_state_transitions_match_rendered_layout() {
+        let center = |r: (f32, f32, f32, f32)| -> (f32, f32) {
+            ((r.0 + r.2) * 0.5, (r.1 + r.3) * 0.5)
+        };
+        for (show_ring, compact, show_skip, pad) in [
+            (true, false, true, 12u8),
+            (false, false, true, 12u8),
+            (true, true, true, 12u8),
+            (true, false, false, 18u8),
+        ] {
+            let mut wcfg = ExtWidgetConfig::default_for(ExtWidgetId::Pomodoro);
+            wcfg.feats[0] = show_ring;
+            wcfg.show_icon = show_ring;
+            wcfg.compact_mode = compact;
+            wcfg.feats[3] = show_skip;
+            wcfg.padding = pad;
+
+            let lay = pomodoro_button_layout(&wcfg);
+            let r0 = lay.start_btn.expect("Start button must exist");
+            let r1 = lay.reset_btn.expect("Reset button must exist");
+            assert!(r0.2 < r1.0, "Start and Reset must not overlap");
+
+            let (sx, sy) = center(r0);
+            assert_eq!(
+                hit_test_ext_widget(ExtWidgetId::Pomodoro, &wcfg, sx, sy),
+                WidgetHitZone::ExtBtn(ExtWidgetId::Pomodoro, 0)
+            );
+            let (rx, ry) = center(r1);
+            assert_eq!(
+                hit_test_ext_widget(ExtWidgetId::Pomodoro, &wcfg, rx, ry),
+                WidgetHitZone::ExtBtn(ExtWidgetId::Pomodoro, 1)
+            );
+            if show_skip {
+                let r2 = lay.skip_btn.expect("Skip button must exist");
+                assert!(r1.2 < r2.0, "Reset and Skip must not overlap");
+                let (kx, ky) = center(r2);
+                assert_eq!(
+                    hit_test_ext_widget(ExtWidgetId::Pomodoro, &wcfg, kx, ky),
+                    WidgetHitZone::ExtBtn(ExtWidgetId::Pomodoro, 2)
+                );
+            } else {
+                assert!(lay.skip_btn.is_none());
+            }
+        }
+
+        // Verify Start -> Pause -> Skip -> Reset state transitions
+        let mut cfg = AppConfig::default();
+        let mut st = ExtRuntimeState::new();
+        assert!(!st.pomo_running);
+        assert!(!st.pomo_break);
+        assert_eq!(st.pomo_rem_secs, 25 * 60);
+
+        // Start
+        assert!(st.handle_desktop_click(ExtWidgetId::Pomodoro, 0, &mut cfg));
+        assert!(st.pomo_running);
+        // Pause
+        assert!(st.handle_desktop_click(ExtWidgetId::Pomodoro, 0, &mut cfg));
+        assert!(!st.pomo_running);
+        // Skip to break phase
+        assert!(st.handle_desktop_click(ExtWidgetId::Pomodoro, 2, &mut cfg));
+        assert!(st.pomo_break);
+        assert_eq!(st.pomo_rem_secs, 5 * 60);
+        // Reset back to 25:00 focus
+        st.pomo_rem_secs = 123;
+        st.pomo_running = true;
+        assert!(st.handle_desktop_click(ExtWidgetId::Pomodoro, 1, &mut cfg));
+        assert!(!st.pomo_running);
+        assert!(!st.pomo_break);
+        assert_eq!(st.pomo_rem_secs, 25 * 60);
+    }
+
+    #[test]
+    fn daily_quote_pool_size_and_midnight_rollover_change_every_day() {
+        // 1. All 4 quote categories must have 31 distinct, non-empty quotes
+        for pool in [&QUOTES_STOIC, &QUOTES_TECH, &QUOTES_ZEN, &QUOTES_LIT] {
+            assert_eq!(pool.len(), DAILY_QUOTE_POOL_LEN);
+            assert_eq!(pool.len(), 31);
+            let mut seen = std::collections::HashSet::new();
+            for &(q, author) in pool {
+                assert!(!q.trim().is_empty());
+                assert!(!author.trim().is_empty());
+                assert!(seen.insert(q), "Duplicate quote found: {}", q);
+            }
+        }
+
+        // 2. Every consecutive day across an entire year changes the quote index
+        let mut prev_idx = daily_quote_index_for_date(2025, 12, 31);
+        for m in 1..=12u32 {
+            let dim = days_in_month(2026, m);
+            for d in 1..=dim {
+                let idx = daily_quote_index_for_date(2026, m, d);
+                assert_ne!(
+                    idx, prev_idx,
+                    "Quote index must change on consecutive date 2026-{:02}-{:02}",
+                    m, d
+                );
+                prev_idx = idx;
+            }
+        }
+
+        // 3. Midnight rollover automatically updates quote_idx and signals repaint
+        let mut st = ExtRuntimeState::new();
+        st.quote_date_key = (2026, 11, 24);
+        st.quote_idx = daily_quote_index_for_date(2026, 11, 24);
+        assert!(!st.sync_daily_quote_for_date(2026, 11, 24));
+        let idx_day1 = st.quote_idx;
+        assert!(st.sync_daily_quote_for_date(2026, 11, 25));
+        assert_ne!(st.quote_idx, idx_day1);
+        assert_eq!(st.quote_date_key, (2026, 11, 25));
+
+        // 4. Manual click still cycles across all 31 quotes cleanly
+        let mut cfg = AppConfig::default();
+        let before = st.quote_idx;
+        assert!(st.handle_desktop_click(ExtWidgetId::Greeting, 0, &mut cfg));
+        assert_eq!(st.quote_idx, (before + 1) % DAILY_QUOTE_POOL_LEN);
+    }
+
+    #[test]
+    fn world_clock_48_cities_lookup_ini_roundtrip_and_slot_clicks() {
+        assert_eq!(WORLD_CLOCK_CITIES.len(), 48);
+        let mut names = std::collections::HashSet::new();
+        for c in WORLD_CLOCK_CITIES {
+            assert!(!c.name.is_empty());
+            assert!(!c.tz_abbr.is_empty());
+            assert!(names.insert(c.name.to_ascii_lowercase()), "Duplicate city: {}", c.name);
+        }
+
+        // Case-insensitive lookup + offset formatting + unknown fallback to UTC
+        let blr = resolve_world_clock_city("bengaluru");
+        assert_eq!(blr.name, "Bengaluru");
+        assert_eq!(blr.offset_mins, 330);
+        assert_eq!(format_utc_offset(blr.offset_mins), "UTC+5:30");
+        assert_eq!(format_utc_offset(-300), "UTC-5");
+        assert_eq!(format_utc_offset(345), "UTC+5:45");
+        assert_eq!(resolve_world_clock_city("Atlantis").name, "UTC");
+
+        // INI save/load roundtrip preserves user-chosen cities
+        let mut cfg = AppConfig::default();
+        cfg.world_clock_cities = [
+            "Bengaluru".into(),
+            "Tokyo".into(),
+            "San Francisco".into(),
+            "Zurich".into(),
+        ];
+        let ini = crate::config::serialize_config_ini(&cfg);
+        assert!(ini.contains("world_clock_cities=Bengaluru|Tokyo|San Francisco|Zurich"));
+        let parsed = crate::config::parse_config_ini(&ini).expect("INI must parse");
+        assert_eq!(parsed.world_clock_cities, cfg.world_clock_cities);
+
+        // Desktop clicking a city row cycles that slot cleanly without colliding with other slots
+        let mut st = ExtRuntimeState::new();
+        let before0 = cfg.world_clock_cities[0].clone();
+        assert!(st.handle_desktop_click(ExtWidgetId::WorldClock, 10, &mut cfg));
+        assert_ne!(cfg.world_clock_cities[0], before0);
+        assert!(
+            !cfg.world_clock_cities[1..]
+                .iter()
+                .any(|other| other.eq_ignore_ascii_case(&cfg.world_clock_cities[0])),
+            "Cycling slot 0 must not duplicate another active slot"
+        );
+        // Clicking Cities pack button updates slots from preset pack
+        assert!(st.handle_desktop_click(ExtWidgetId::WorldClock, 1, &mut cfg));
+        assert_eq!(cfg.world_clock_cities[0], "San Francisco");
+    }
+
+    #[test]
+    fn drives_and_processes_preview_state_and_hit_tests_match_all_modes() {
+        // 1. Studio preview state must be pre-populated with non-empty drives, processes & bin
+        let preview = ExtRuntimeState::new_studio_preview();
+        assert!(preview.drives.len() >= 2, "Preview must contain sample drives");
+        assert!(preview.top_procs.len() >= 3, "Preview must contain sample processes");
+        assert!(preview.bin_items > 0 && preview.bin_bytes > 0);
+
+        // 2. Drives hit-tests: Rings (horizontal) vs Bars/Table (vertical) + header pill
+        let mut dcfg = ExtWidgetConfig::default_for(ExtWidgetId::Drives);
+        dcfg.padding = 12;
+        let (dlw, _) = dcfg.logical_size(ExtWidgetId::Drives);
+        let dx1 = dlw - 12.0;
+        assert_eq!(
+            hit_test_ext_widget(ExtWidgetId::Drives, &dcfg, dx1 - 20.0, 14.0),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Drives, 4)
+        );
+        // Rings mode: left half = drive 0, right half = drive 1
+        dcfg.mode_idx = 0;
+        assert_eq!(
+            hit_test_ext_widget(ExtWidgetId::Drives, &dcfg, 50.0, 65.0),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Drives, 0)
+        );
+        assert_eq!(
+            hit_test_ext_widget(ExtWidgetId::Drives, &dcfg, 180.0, 65.0),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Drives, 1)
+        );
+        // Table mode: top row = drive 0, second row = drive 1 (even on left half!)
+        dcfg.mode_idx = 3;
+        assert_eq!(
+            hit_test_ext_widget(ExtWidgetId::Drives, &dcfg, 50.0, 42.0),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Drives, 0)
+        );
+        assert_eq!(
+            hit_test_ext_widget(ExtWidgetId::Drives, &dcfg, 50.0, 70.0),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Drives, 1)
+        );
+
+        // 3. Process Killer hit-tests: title area drags card, TaskMgr pill hits btn 4, × hits rows 0..=3
+        let mut pcfg = ExtWidgetConfig::default_for(ExtWidgetId::Processes);
+        pcfg.padding = 12;
+        pcfg.mode_idx = 3; // 4 processes
+        let (plw, plh) = pcfg.logical_size(ExtWidgetId::Processes);
+        let px1 = plw - 12.0;
+        assert_eq!(
+            hit_test_ext_widget(ExtWidgetId::Processes, &pcfg, 40.0, 14.0),
+            WidgetHitZone::ExtCard(ExtWidgetId::Processes),
+            "Clicking Process Killer title must NOT open TaskMgr (must allow dragging)"
+        );
+        assert_eq!(
+            hit_test_ext_widget(ExtWidgetId::Processes, &pcfg, px1 - 20.0, 14.0),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Processes, 4)
+        );
+        let y_body = 12.0 * 0.75 + 19.0 + 4.0;
+        let row_h = ((plh - 6.0 - y_body) / 4.0).clamp(20.0, 28.0);
+        for row in 0..4u8 {
+            let cy = y_body + (row as f32 + 0.5) * row_h;
+            assert_eq!(
+                hit_test_ext_widget(ExtWidgetId::Processes, &pcfg, px1 - 10.0, cy),
+                WidgetHitZone::ExtBtn(ExtWidgetId::Processes, row)
+            );
+        }
     }
 }

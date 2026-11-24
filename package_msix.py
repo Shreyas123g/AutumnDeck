@@ -8,6 +8,7 @@ DIST_DIR = os.path.join(ROOT_DIR, "dist")
 STAGE_DIR = os.path.join(DIST_DIR, "msix_stage")
 ASSETS_DIR = os.path.join(STAGE_DIR, "Assets")
 MAKEAPPX = r"C:\Program Files (x86)\Windows Kits\10\bin\10.0.28000.0\x64\makeappx.exe"
+VERSION = "2.0.5.0"
 
 # 1. Clean & prepare stage dir
 if os.path.exists(STAGE_DIR):
@@ -63,7 +64,7 @@ if os.path.exists(mp4_src):
     shutil.copy2(mp4_src, os.path.join(wp_dir, "Autumn_Sanctuary_Starter.mp4"))
 
 # 4. Write AppxManifest.xml
-manifest_content = """<?xml version="1.0" encoding="utf-8"?>
+manifest_content = f"""<?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
@@ -73,7 +74,7 @@ manifest_content = """<?xml version="1.0" encoding="utf-8"?>
   <Identity
     Name="AutumnDeck.AutumnDeck"
     Publisher="CN=A81A4B13-F326-4336-838D-AE686E1B75C2"
-    Version="2.0.4.0"
+    Version="{VERSION}"
     ProcessorArchitecture="x64" />
 
   <Properties>
@@ -122,7 +123,7 @@ with open(manifest_path, "w", encoding="utf-8") as f:
 print("Created AppxManifest.xml")
 
 # 5. Build MSIX using makeappx.exe
-output_msix = os.path.join(DIST_DIR, "AutumnDeck_2.0.4.0_x64.msix")
+output_msix = os.path.join(DIST_DIR, f"AutumnDeck_{VERSION}_x64.msix")
 if os.path.exists(output_msix):
     os.remove(output_msix)
 
@@ -138,6 +139,6 @@ if res.returncode != 0:
 print(f"MSIX created successfully: {output_msix} ({os.path.getsize(output_msix)} bytes)")
 
 # 6. Copy to Downloads folder
-downloads_dest = os.path.join(r"C:\Users\rshre\Downloads", "AutumnDeck_2.0.4.0_x64.msix")
+downloads_dest = os.path.join(r"C:\Users\rshre\Downloads", f"AutumnDeck_{VERSION}_x64.msix")
 shutil.copy2(output_msix, downloads_dest)
 print(f"Copied to Downloads: {downloads_dest}")

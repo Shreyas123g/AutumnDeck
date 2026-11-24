@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -28,16 +28,17 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SP_DEVINFO_DATA,
 };
 use windows::Win32::Devices::Properties::DEVPROPTYPE;
-use windows::Win32::Foundation::{CloseHandle, DEVPROPKEY, HWND, LPARAM, POINT, SIZE, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, DEVPROPKEY, HWND, LPARAM, POINT, PROPERTYKEY, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
 };
 use windows::Win32::Media::Audio::Endpoints::{IAudioEndpointVolume, IAudioMeterInformation};
 use windows::Win32::Media::Audio::{
-    eConsole, eMultimedia, eRender, AudioSessionStateActive, IAudioCaptureClient, IAudioClient,
-    IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEXTENSIBLE,
+    eCommunications, eConsole, eMultimedia, eRender, AudioSessionStateActive, ERole,
+    IAudioCaptureClient, IAudioClient, IAudioSessionControl2, IAudioSessionManager2,
+    IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE, WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::NetworkManagement::WiFi::{
     dot11_radio_state_off, dot11_radio_state_on, wlan_intf_opcode_current_connection,
@@ -47,9 +48,10 @@ use windows::Win32::NetworkManagement::WiFi::{
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
+use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToStringAlloc};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, STGM_READ,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -74,6 +76,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_LEFTUP, VIRTUAL_KEY, VK_K, VK_LWIN, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE,
     VK_MEDIA_PREV_TRACK,
 };
+use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::UI::Shell::{
     IShellItemImageFactory, SHCreateItemFromParsingName, ShellExecuteW, SIIGBF_BIGGERSIZEOK,
     SIIGBF_THUMBNAILONLY,
@@ -105,6 +108,13 @@ impl Default for MediaSnapshot {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AudioOutputDevice {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct CcSnapshot {
     pub wifi_on: bool,
@@ -123,6 +133,7 @@ pub struct CcSnapshot {
     pub bright_pct: u8,
     pub vol_pct: u8,
     pub vol_muted: bool,
+    pub audio_outputs: Vec<AudioOutputDevice>,
 }
 
 impl Default for CcSnapshot {
@@ -144,11 +155,12 @@ impl Default for CcSnapshot {
             bright_pct: 65,
             vol_pct: 50,
             vol_muted: false,
+            audio_outputs: Vec::new(),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum CcAction {
     MediaPrev,
     MediaPlayPause,
@@ -169,6 +181,7 @@ pub enum CcAction {
     SetBrightness(u8),
     SetVolume(u8),
     ToggleMute,
+    SetAudioOutput(String),
     OpenTileSettings(usize),
 }
 
@@ -191,6 +204,8 @@ pub struct SystemMediaEngine {
     stop_wake: Arc<(Mutex<bool>, Condvar)>,
     action_wake: Arc<(Mutex<ActionSignal>, Condvar)>,
     cc_active: Arc<AtomicBool>,
+    audio_outputs_active: Arc<AtomicBool>,
+    audio_action_seq: Arc<AtomicU64>,
     viz_frame_ms: Arc<AtomicU32>,
     viz_needed: Arc<AtomicBool>,
     media_thread: Option<JoinHandle<()>>,
@@ -249,6 +264,8 @@ impl SystemMediaEngine {
         let stop_wake = Arc::new((Mutex::new(false), Condvar::new()));
         let action_wake = Arc::new((Mutex::new(ActionSignal::default()), Condvar::new()));
         let cc_active = Arc::new(AtomicBool::new(false));
+        let audio_outputs_active = Arc::new(AtomicBool::new(false));
+        let audio_action_seq = Arc::new(AtomicU64::new(0));
         let viz_frame_ms = Arc::new(AtomicU32::new(crate::config::AppConfig::anim_frame_ms_for(
             crate::config::AppConfig::DEFAULT_ANIM_FPS,
         )));
@@ -260,8 +277,10 @@ impl SystemMediaEngine {
         let st1 = Arc::clone(&stop);
         let awk1 = Arc::clone(&action_wake);
         let cca1 = Arc::clone(&cc_active);
+        let aoa1 = Arc::clone(&audio_outputs_active);
+        let aseq1 = Arc::clone(&audio_action_seq);
         let media_thread = thread::spawn(move || {
-            run_smtc_and_cc_worker(sh1, rx, st1, awk1, cca1, hwnd_raw, notify_msg);
+            run_smtc_and_cc_worker(sh1, rx, st1, awk1, cca1, aoa1, aseq1, hwnd_raw, notify_msg);
         });
 
         let sh2 = Arc::clone(&shared);
@@ -280,6 +299,8 @@ impl SystemMediaEngine {
             stop_wake,
             action_wake,
             cc_active,
+            audio_outputs_active,
+            audio_action_seq,
             viz_frame_ms,
             viz_needed,
             media_thread: Some(media_thread),
@@ -298,6 +319,16 @@ impl SystemMediaEngine {
 
     pub fn set_cc_active(&self, active: bool) {
         let prev = self.cc_active.swap(active, Ordering::Relaxed);
+        if active && !prev {
+            if let Ok(mut g) = self.action_wake.0.lock() {
+                g.pending = true;
+                self.action_wake.1.notify_one();
+            }
+        }
+    }
+
+    pub fn set_audio_outputs_active(&self, active: bool) {
+        let prev = self.audio_outputs_active.swap(active, Ordering::Relaxed);
         if active && !prev {
             if let Ok(mut g) = self.action_wake.0.lock() {
                 g.pending = true;
@@ -337,9 +368,15 @@ impl SystemMediaEngine {
     }
 
     pub fn send_action(&self, act: CcAction) {
-        // Optimistic UI update so toggles and sliders respond at 0ms latency
+        if matches!(
+            act,
+            CcAction::SetVolume(_) | CcAction::ToggleMute | CcAction::SetAudioOutput(_)
+        ) {
+            self.audio_action_seq.fetch_add(1, Ordering::AcqRel);
+        }
+        // Optimistic UI update so toggles, audio outputs, and sliders respond at 0ms latency
         if let Ok(mut g) = self.shared.lock() {
-            match act {
+            match &act {
                 CcAction::ToggleWifi => {
                     g.cc.wifi_on = !g.cc.wifi_on;
                     if !g.cc.wifi_on {
@@ -358,12 +395,17 @@ impl SystemMediaEngine {
                 CcAction::ToggleNightLight => g.cc.night_on = !g.cc.night_on,
                 CcAction::ToggleHotspot => g.cc.hot_on = !g.cc.hot_on,
                 CcAction::ToggleNearby => g.cc.near_on = !g.cc.near_on,
-                CcAction::SetBrightness(b) => g.cc.bright_pct = b.min(100),
+                CcAction::SetBrightness(b) => g.cc.bright_pct = (*b).min(100),
                 CcAction::SetVolume(v) => {
-                    g.cc.vol_pct = v.min(100);
+                    g.cc.vol_pct = (*v).min(100);
                     g.cc.vol_muted = false;
                 }
                 CcAction::ToggleMute => g.cc.vol_muted = !g.cc.vol_muted,
+                CcAction::SetAudioOutput(target_id) => {
+                    for dev in &mut g.cc.audio_outputs {
+                        dev.is_default = dev.id == *target_id;
+                    }
+                }
                 CcAction::MediaPlayPause => g.media.is_playing = !g.media.is_playing,
                 _ => {}
             }
@@ -442,6 +484,8 @@ fn run_smtc_and_cc_worker(
     stop: Arc<AtomicBool>,
     action_wake: Arc<(Mutex<ActionSignal>, Condvar)>,
     cc_active: Arc<AtomicBool>,
+    audio_outputs_active: Arc<AtomicBool>,
+    audio_action_seq: Arc<AtomicU64>,
     hwnd_raw: isize,
     notify_msg: u32,
 ) {
@@ -457,13 +501,14 @@ fn run_smtc_and_cc_worker(
         .ok()
         .and_then(|op| op.join().ok());
 
-    let mut cached_vol_ep: Option<IAudioEndpointVolume> = None;
+    let mut cached_vol = CachedAudioVolume::new();
     let mut cached_sess_mgr: Option<IAudioSessionManager2> = None;
     let active_desktop_hwnd = Arc::new(AtomicIsize::new(0));
     let mut prefer_desktop = false;
     let mut prev_media_key = (String::new(), String::new(), false, 0u64);
 
     let mut last_cc_sync = Instant::now() - Duration::from_secs(10);
+    let mut last_audio_enum = Instant::now() - Duration::from_secs(10);
     let mut last_media_sync = Instant::now() - Duration::from_secs(10);
     let mut cached_player_pids: HashMap<u32, DesktopPlayerKind> = HashMap::new();
     let mut last_player_pid_scan = Instant::now() - Duration::from_secs(10);
@@ -473,19 +518,36 @@ fn run_smtc_and_cc_worker(
     let mut prev_cc: Option<CcSnapshot> = None;
 
     while !stop.load(Ordering::Relaxed) {
-        // Drain queued commands and coalesce rapid slider moves
+        // Drain queued commands: coalesce rapid brightness/volume drags, preserve relative
+        // order of fast audio actions (SetAudioOutput / ToggleMute / SetVolume) so switching
+        // devices and muting execute in <5ms without triggering a slow Control Center scan.
         let mut latest_bright: Option<u8> = None;
-        let mut latest_vol: Option<u8> = None;
+        let mut fast_audio_cmds: Vec<CcAction> = Vec::new();
         let mut other_cmds: Vec<CcAction> = Vec::new();
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
                 CcAction::SetBrightness(b) => latest_bright = Some(b),
-                CcAction::SetVolume(v) => latest_vol = Some(v),
+                CcAction::SetVolume(v) => {
+                    if let Some(CcAction::SetVolume(prev_v)) = fast_audio_cmds.last_mut() {
+                        *prev_v = v;
+                    } else {
+                        fast_audio_cmds.push(CcAction::SetVolume(v));
+                    }
+                }
+                CcAction::ToggleMute => fast_audio_cmds.push(CcAction::ToggleMute),
+                CcAction::SetAudioOutput(id) => {
+                    if let Some(CcAction::SetAudioOutput(prev_id)) = fast_audio_cmds.last_mut() {
+                        *prev_id = id;
+                    } else {
+                        fast_audio_cmds.push(CcAction::SetAudioOutput(id));
+                    }
+                }
                 other => other_cmds.push(other),
             }
         }
 
         let mut slider_dragged = false;
+        let mut audio_fast_changed = false;
         if let Some(b) = latest_bright {
             set_lcd_brightness(b);
             if let Ok(mut g) = shared.lock() {
@@ -493,13 +555,51 @@ fn run_smtc_and_cc_worker(
             }
             slider_dragged = true;
         }
-        if let Some(v) = latest_vol {
-            set_master_volume_cached(&mut cached_vol_ep, v, Some(false));
-            if let Ok(mut g) = shared.lock() {
-                g.cc.vol_pct = v.min(100);
-                g.cc.vol_muted = false;
+        if !fast_audio_cmds.is_empty() {
+            let seq_at_drain = audio_action_seq.load(Ordering::Acquire);
+            let mut switched_endpoint = false;
+            for acmd in fast_audio_cmds {
+                match acmd {
+                    CcAction::SetVolume(v) => {
+                        cached_vol.set_volume(v, Some(false));
+                        slider_dragged = true;
+                    }
+                    CcAction::ToggleMute => {
+                        cached_vol.toggle_mute();
+                    }
+                    CcAction::SetAudioOutput(target_id) => {
+                        let _ = set_default_audio_endpoint(&target_id);
+                        cached_vol.invalidate();
+                        switched_endpoint = true;
+                    }
+                    _ => {}
+                }
             }
-            slider_dragged = true;
+            let (vol_pct, vol_muted, ep_changed) = cached_vol.read_volume();
+            let refreshed_outputs = if switched_endpoint || ep_changed {
+                last_audio_enum = Instant::now();
+                Some(cached_vol.enumerate_outputs())
+            } else {
+                None
+            };
+            // Only overwrite shared audio state if no newer UI click arrived while COM ran
+            if audio_action_seq.load(Ordering::Acquire) == seq_at_drain {
+                if let Ok(mut g) = shared.lock() {
+                    g.cc.vol_pct = vol_pct;
+                    g.cc.vol_muted = vol_muted;
+                    if let Some(ref outs) = refreshed_outputs {
+                        g.cc.audio_outputs = outs.clone();
+                    }
+                }
+                if let Some(ref mut prev) = prev_cc {
+                    prev.vol_pct = vol_pct;
+                    prev.vol_muted = vol_muted;
+                    if let Some(outs) = refreshed_outputs {
+                        prev.audio_outputs = outs;
+                    }
+                }
+            }
+            audio_fast_changed = true;
         }
 
         let mut had_action = false;
@@ -523,6 +623,16 @@ fn run_smtc_and_cc_worker(
         } else if slider_dragged {
             // Confirm hardware state calmly after dragging stops instead of blocking drag frames
             last_cc_sync = Instant::now() - Duration::from_millis(850);
+        }
+        if audio_fast_changed && hwnd_raw != 0 && notify_msg != 0 {
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(hwnd_raw as *mut c_void)),
+                    notify_msg,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
         }
 
         // Poll SMTC + Desktop Media Players (VLC, MPC-HC, PotPlayer, foobar2000, etc.) every ~350ms
@@ -654,29 +764,45 @@ fn run_smtc_and_cc_worker(
             }
         }
 
-        // Poll Control Center hardware/OS state every ~3000ms (or immediately after toggle),
-        // plus ultra-lightweight cached COM volume/mute check on every wake (~160ms, <10us, 0 handles)
-        // so keyboard volume keys and Windows mixer trigger instant dock tray animations.
+        // Poll Control Center hardware/OS state every ~3000ms (or immediately after non-audio toggle),
+        // plus ultra-lightweight cached COM volume/mute/endpoint check on every wake (~160ms, <30us)
+        // so keyboard volume keys, device switches, and Windows mixer update instantly.
+        let want_outputs = audio_outputs_active.load(Ordering::Relaxed);
         if !stop.load(Ordering::Relaxed)
             && (had_action || prev_cc.is_none() || last_cc_sync.elapsed() >= Duration::from_millis(3000))
         {
+            let seq_before = audio_action_seq.load(Ordering::Acquire);
             last_cc_sync = Instant::now();
-            let cc = if had_action || cc_active.load(Ordering::Relaxed) {
-                collect_cc_snapshot()
+            let mut cc = if had_action || cc_active.load(Ordering::Relaxed) {
+                collect_cc_snapshot(&mut cached_vol, want_outputs)
             } else {
                 let seed = prev_cc.as_ref().cloned().unwrap_or_default();
-                collect_cc_snapshot_light(&seed, &mut cached_vol_ep)
+                collect_cc_snapshot_light(&seed, &mut cached_vol, want_outputs)
             };
+            if want_outputs {
+                last_audio_enum = Instant::now();
+            }
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            let cc_changed = prev_cc.as_ref() != Some(&cc);
-            if cc_changed {
-                prev_cc = Some(cc.clone());
-            }
-            if let Ok(mut g) = shared.lock() {
-                g.cc = cc;
-            }
+            let cc_changed = {
+                if let Ok(mut g) = shared.lock() {
+                    // Never clobber newer optimistic volume/mute/endpoint clicks with a stale snapshot
+                    if audio_action_seq.load(Ordering::Acquire) != seq_before {
+                        cc.vol_pct = g.cc.vol_pct;
+                        cc.vol_muted = g.cc.vol_muted;
+                        cc.audio_outputs = g.cc.audio_outputs.clone();
+                    }
+                    let changed = prev_cc.as_ref() != Some(&cc);
+                    g.cc = cc.clone();
+                    if changed {
+                        prev_cc = Some(cc);
+                    }
+                    changed
+                } else {
+                    false
+                }
+            };
             if (had_action || cc_changed) && hwnd_raw != 0 && notify_msg != 0 {
                 unsafe {
                     let _ = PostMessageW(Some(HWND(hwnd_raw as *mut c_void)), notify_msg, WPARAM(0), LPARAM(0));
@@ -684,22 +810,44 @@ fn run_smtc_and_cc_worker(
             }
         } else if !stop.load(Ordering::Relaxed) {
             if let Some(ref mut prev) = prev_cc {
-                let (vol_pct, vol_muted) = get_master_volume_cached(&mut cached_vol_ep);
-                if prev.vol_pct != vol_pct || prev.vol_muted != vol_muted {
-                    prev.vol_pct = vol_pct;
-                    prev.vol_muted = vol_muted;
-                    if let Ok(mut g) = shared.lock() {
-                        g.cc.vol_pct = vol_pct;
-                        g.cc.vol_muted = vol_muted;
-                    }
-                    if hwnd_raw != 0 && notify_msg != 0 {
-                        unsafe {
-                            let _ = PostMessageW(
-                                Some(HWND(hwnd_raw as *mut c_void)),
-                                notify_msg,
-                                WPARAM(0),
-                                LPARAM(0),
-                            );
+                let seq_before = audio_action_seq.load(Ordering::Acquire);
+                let (vol_pct, vol_muted, ep_changed) = cached_vol.read_volume();
+                let need_enum = want_outputs
+                    && (ep_changed
+                        || prev.audio_outputs.is_empty()
+                        || last_audio_enum.elapsed() >= Duration::from_millis(2000));
+                let new_outputs = if need_enum {
+                    last_audio_enum = Instant::now();
+                    Some(cached_vol.enumerate_outputs())
+                } else {
+                    None
+                };
+                if audio_action_seq.load(Ordering::Acquire) == seq_before {
+                    let outputs_changed = new_outputs
+                        .as_ref()
+                        .is_some_and(|outs| *outs != prev.audio_outputs);
+                    if prev.vol_pct != vol_pct || prev.vol_muted != vol_muted || outputs_changed {
+                        prev.vol_pct = vol_pct;
+                        prev.vol_muted = vol_muted;
+                        if let Some(outs) = new_outputs {
+                            prev.audio_outputs = outs;
+                        }
+                        if let Ok(mut g) = shared.lock() {
+                            g.cc.vol_pct = prev.vol_pct;
+                            g.cc.vol_muted = prev.vol_muted;
+                            if outputs_changed {
+                                g.cc.audio_outputs = prev.audio_outputs.clone();
+                            }
+                        }
+                        if hwnd_raw != 0 && notify_msg != 0 {
+                            unsafe {
+                                let _ = PostMessageW(
+                                    Some(HWND(hwnd_raw as *mut c_void)),
+                                    notify_msg,
+                                    WPARAM(0),
+                                    LPARAM(0),
+                                );
+                            }
                         }
                     }
                 }
@@ -1504,6 +1652,342 @@ fn set_lcd_brightness(pct: u8) {
     }
 }
 
+pub fn shorten_audio_device_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "Audio Output".to_string();
+    }
+    let Some(open) = trimmed.find('(') else {
+        return trimmed.to_string();
+    };
+    if !trimmed.ends_with(')') || open == 0 {
+        return trimmed.to_string();
+    }
+    let prefix = trimmed[..open].trim();
+    let mut inner = trimmed[open + 1..trimmed.len() - 1].trim();
+    // Strip Windows duplicate-device numeric prefix like "2- " or "3- "
+    if let Some(dash) = inner.find('-') {
+        if dash > 0 && dash <= 3 && inner[..dash].chars().all(|c| c.is_ascii_digit()) {
+            inner = inner[dash + 1..].trim();
+        }
+    }
+    let pref_low = prefix.to_ascii_lowercase();
+    let inner_low = inner.to_ascii_lowercase();
+
+    if matches!(
+        pref_low.as_str(),
+        "headphones" | "headset" | "earphones" | "earbuds" | "headset earphone"
+    ) {
+        if !inner.is_empty() {
+            let is_hf = inner_low.contains("hands-free");
+            let mut clean = inner.to_string();
+            for suffix in [
+                " Hands-Free AG Audio",
+                " Hands-Free Audio",
+                " Hands-Free",
+                " Stereo",
+                " High Definition Audio",
+                " Audio",
+            ] {
+                if clean.len() > suffix.len()
+                    && clean[clean.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+                {
+                    clean.truncate(clean.len() - suffix.len());
+                    clean = clean.trim().to_string();
+                }
+            }
+            if !clean.is_empty() {
+                return if is_hf {
+                    format!("{} (HF)", clean)
+                } else {
+                    clean
+                };
+            }
+        }
+        return prefix.to_string();
+    }
+
+    if pref_low == "speakers" || pref_low == "speaker" {
+        let onboard = inner_low.is_empty()
+            || inner_low.contains("realtek")
+            || inner_low.contains("high definition audio")
+            || inner_low.contains("intel")
+            || inner_low.contains("conexant")
+            || inner_low.contains("synaptics")
+            || inner_low.contains("senary")
+            || inner_low.contains("sst");
+        if onboard {
+            return "Speakers".to_string();
+        }
+        return inner.to_string();
+    }
+
+    if pref_low.contains("digital output") || pref_low.contains("spdif") {
+        return "Digital Output".to_string();
+    }
+
+    prefix.to_string()
+}
+
+fn read_mmdevice_id(dev: &windows::Win32::Media::Audio::IMMDevice) -> Option<String> {
+    unsafe {
+        let pw = dev.GetId().ok()?;
+        let s = pw.to_string().ok();
+        CoTaskMemFree(Some(pw.0 as *const c_void));
+        s.filter(|v| !v.is_empty())
+    }
+}
+
+fn read_mmdevice_friendly_name(dev: &windows::Win32::Media::Audio::IMMDevice) -> String {
+    const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+        pid: 14,
+    };
+    unsafe {
+        let Ok(store): windows::core::Result<IPropertyStore> = dev.OpenPropertyStore(STGM_READ) else {
+            return "Audio Output".to_string();
+        };
+        let Ok(mut pv) = store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME) else {
+            return "Audio Output".to_string();
+        };
+        let out = if let Ok(pw) = PropVariantToStringAlloc(&pv) {
+            let s = pw.to_string().unwrap_or_default();
+            CoTaskMemFree(Some(pw.0 as *const c_void));
+            s
+        } else {
+            String::new()
+        };
+        let _ = PropVariantClear(&mut pv);
+        if out.trim().is_empty() {
+            "Audio Output".to_string()
+        } else {
+            out
+        }
+    }
+}
+
+/// Switches the Windows default audio playback endpoint across Console, Multimedia, and
+/// Communications roles using the standard `IPolicyConfig` COM interface.
+pub fn set_default_audio_endpoint(device_id: &str) -> bool {
+    if device_id.trim().is_empty() {
+        return false;
+    }
+    const CLSID_POLICY_CONFIG_CLIENT: GUID =
+        GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
+    const IID_POLICY_CONFIG: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
+    const IID_POLICY_CONFIG_VISTA: GUID =
+        GUID::from_u128(0x568b9108_44bf_40b4_9006_86afe5b5a620);
+
+    type SetDefaultEndpointFn =
+        unsafe extern "system" fn(*mut c_void, PCWSTR, ERole) -> HRESULT;
+
+    unsafe {
+        let mut init_ok = false;
+        if CoInitializeEx(None, COINIT_MULTITHREADED).is_ok() {
+            init_ok = true;
+        }
+        let w_id = to_wide(device_id);
+        let ok = (|| -> bool {
+            let Ok(unk): windows::core::Result<windows::core::IUnknown> =
+                CoCreateInstance(&CLSID_POLICY_CONFIG_CLIENT, None, CLSCTX_ALL)
+            else {
+                return false;
+            };
+            let mut p_iface: *mut c_void = null_mut();
+            let vtbl_slot = if unk.query(&IID_POLICY_CONFIG, &mut p_iface).is_ok()
+                && !p_iface.is_null()
+            {
+                13usize
+            } else if unk.query(&IID_POLICY_CONFIG_VISTA, &mut p_iface).is_ok()
+                && !p_iface.is_null()
+            {
+                12usize
+            } else {
+                return false;
+            };
+            // Keep RAII ownership of the queried COM interface pointer so Release runs on exit.
+            let _guard = windows::core::IUnknown::from_raw(p_iface);
+            let vt = *(p_iface as *const *const usize);
+            let set_def: SetDefaultEndpointFn = std::mem::transmute(*vt.add(vtbl_slot));
+            let r1 = set_def(p_iface, PCWSTR(w_id.as_ptr()), eConsole);
+            let r2 = set_def(p_iface, PCWSTR(w_id.as_ptr()), eMultimedia);
+            let r3 = set_def(p_iface, PCWSTR(w_id.as_ptr()), eCommunications);
+            r1.is_ok() || r2.is_ok() || r3.is_ok()
+        })();
+        if init_ok {
+            CoUninitialize();
+        }
+        ok
+    }
+}
+
+/// Fast worker-local CoreAudio cache that tracks the active default render endpoint ID so
+/// volume reads, volume writes, and mute toggles NEVER target a stale device after switching
+/// between Speakers and Bluetooth headphones.
+struct CachedAudioVolume {
+    enumerator: Option<IMMDeviceEnumerator>,
+    default_id: String,
+    ep: Option<IAudioEndpointVolume>,
+}
+
+impl CachedAudioVolume {
+    fn new() -> Self {
+        Self {
+            enumerator: None,
+            default_id: String::new(),
+            ep: None,
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.default_id.clear();
+        self.ep = None;
+    }
+
+    fn ensure_enumerator(&mut self) -> Option<&IMMDeviceEnumerator> {
+        if self.enumerator.is_none() {
+            self.enumerator = unsafe {
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER).ok()
+            };
+        }
+        self.enumerator.as_ref()
+    }
+
+    /// Ensures `self.ep` points to the CURRENT default multimedia render endpoint.
+    /// Returns `Some((ep, endpoint_changed))`.
+    fn ensure_current_ep(&mut self) -> Option<(&IAudioEndpointVolume, bool)> {
+        unsafe {
+            let enumerator = self.ensure_enumerator()?.clone();
+            let dev = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia).ok()?;
+            let cur_id = read_mmdevice_id(&dev).unwrap_or_default();
+            if self.ep.is_some() && !cur_id.is_empty() && cur_id == self.default_id {
+                return self.ep.as_ref().map(|e| (e, false));
+            }
+            let ep: IAudioEndpointVolume = dev.Activate(CLSCTX_INPROC_SERVER, None).ok()?;
+            let changed = !self.default_id.is_empty() && cur_id != self.default_id;
+            self.default_id = cur_id;
+            self.ep = Some(ep);
+            self.ep.as_ref().map(|e| (e, changed))
+        }
+    }
+
+    /// Reads `(vol_pct, vol_muted, default_endpoint_changed)` from the current default output.
+    fn read_volume(&mut self) -> (u8, bool, bool) {
+        unsafe {
+            if let Some((ep, changed)) = self.ensure_current_ep() {
+                if let (Ok(scalar), Ok(muted)) = (ep.GetMasterVolumeLevelScalar(), ep.GetMute()) {
+                    return (
+                        (scalar * 100.0).round().clamp(0.0, 100.0) as u8,
+                        muted.as_bool(),
+                        changed,
+                    );
+                }
+                self.invalidate();
+            }
+            (50, false, false)
+        }
+    }
+
+    fn set_volume(&mut self, pct: u8, mute_opt: Option<bool>) {
+        unsafe {
+            let scalar = (pct.min(100) as f32) / 100.0;
+            if let Some((ep, _)) = self.ensure_current_ep() {
+                let mut ok = ep.SetMasterVolumeLevelScalar(scalar, null()).is_ok();
+                if ok {
+                    if let Some(m) = mute_opt {
+                        ok = ep.SetMute(m, null()).is_ok();
+                    }
+                }
+                if ok {
+                    return;
+                }
+                self.invalidate();
+            }
+            if let Some((ep, _)) = self.ensure_current_ep() {
+                let _ = ep.SetMasterVolumeLevelScalar(scalar, null());
+                if let Some(m) = mute_opt {
+                    let _ = ep.SetMute(m, null());
+                }
+            }
+        }
+    }
+
+    fn toggle_mute(&mut self) {
+        unsafe {
+            if let Some((ep, _)) = self.ensure_current_ep() {
+                if let Ok(muted) = ep.GetMute() {
+                    if ep.SetMute(!muted.as_bool(), null()).is_ok() {
+                        return;
+                    }
+                }
+                self.invalidate();
+            }
+            if let Some((ep, _)) = self.ensure_current_ep() {
+                if let Ok(muted) = ep.GetMute() {
+                    let _ = ep.SetMute(!muted.as_bool(), null());
+                }
+            }
+        }
+    }
+
+    fn enumerate_outputs(&mut self) -> Vec<AudioOutputDevice> {
+        unsafe {
+            let Some(enumerator) = self.ensure_enumerator().cloned() else {
+                return Vec::new();
+            };
+            let default_id = enumerator
+                .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                .ok()
+                .and_then(|d| read_mmdevice_id(&d))
+                .unwrap_or_default();
+            let Ok(coll) = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) else {
+                return Vec::new();
+            };
+            let count = coll.GetCount().unwrap_or(0);
+            let mut raw_list: Vec<(String, String, String, bool)> = Vec::with_capacity(count as usize);
+            for i in 0..count {
+                let Ok(dev) = coll.Item(i) else { continue };
+                let Some(id) = read_mmdevice_id(&dev) else { continue };
+                let raw_name = read_mmdevice_friendly_name(&dev);
+                let short_name = shorten_audio_device_name(&raw_name);
+                let is_def = !default_id.is_empty() && id == default_id;
+                raw_list.push((id, short_name, raw_name, is_def));
+            }
+            // Disambiguate duplicate short names cleanly
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for (_, s, _, _) in &raw_list {
+                *counts.entry(s.to_ascii_lowercase()).or_insert(0) += 1;
+            }
+            let mut out: Vec<AudioOutputDevice> = raw_list
+                .into_iter()
+                .map(|(id, short, raw, is_default)| {
+                    let name = if counts.get(&short.to_ascii_lowercase()).copied().unwrap_or(0) > 1 {
+                        raw
+                    } else {
+                        short
+                    };
+                    AudioOutputDevice {
+                        id,
+                        name,
+                        is_default,
+                    }
+                })
+                .collect();
+            // Stable ordering: built-in Speakers first, then alphabetical by (name, id) so buttons
+            // never swap slots underneath the cursor when switching active output.
+            out.sort_by(|a, b| {
+                let a_spk = a.name.to_ascii_lowercase().starts_with("speaker");
+                let b_spk = b.name.to_ascii_lowercase().starts_with("speaker");
+                b_spk
+                    .cmp(&a_spk)
+                    .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            out
+        }
+    }
+}
+
 fn get_master_volume() -> (u8, bool) {
     unsafe {
         let mut init_ok = false;
@@ -1523,36 +2007,6 @@ fn get_master_volume() -> (u8, bool) {
             CoUninitialize();
         }
         res.unwrap_or((50, false))
-    }
-}
-
-fn get_master_volume_cached(cached: &mut Option<IAudioEndpointVolume>) -> (u8, bool) {
-    unsafe {
-        if let Some(ref ep) = cached {
-            if let (Ok(scalar), Ok(muted)) = (ep.GetMasterVolumeLevelScalar(), ep.GetMute()) {
-                return (
-                    (scalar * 100.0).round().clamp(0.0, 100.0) as u8,
-                    muted.as_bool(),
-                );
-            }
-            *cached = None;
-        }
-        if let Some(ep) = acquire_master_volume_ep() {
-            let res = if let (Ok(scalar), Ok(muted)) = (ep.GetMasterVolumeLevelScalar(), ep.GetMute())
-            {
-                Some((
-                    (scalar * 100.0).round().clamp(0.0, 100.0) as u8,
-                    muted.as_bool(),
-                ))
-            } else {
-                None
-            };
-            *cached = Some(ep);
-            if let Some(v) = res {
-                return v;
-            }
-        }
-        (50, false)
     }
 }
 
@@ -1624,12 +2078,16 @@ fn read_wifi_wlan_fast() -> (bool, String, u8) {
 
 fn collect_cc_snapshot_light(
     prev: &CcSnapshot,
-    cached_vol_ep: &mut Option<IAudioEndpointVolume>,
+    cached_vol: &mut CachedAudioVolume,
+    include_outputs: bool,
 ) -> CcSnapshot {
     let mut next = prev.clone();
-    let (vol_pct, vol_muted) = get_master_volume_cached(cached_vol_ep);
+    let (vol_pct, vol_muted, ep_changed) = cached_vol.read_volume();
     next.vol_pct = vol_pct;
     next.vol_muted = vol_muted;
+    if include_outputs || ep_changed || next.audio_outputs.is_empty() {
+        next.audio_outputs = cached_vol.enumerate_outputs();
+    }
     let (wlan_on, wlan_label, wlan_sig) = read_wifi_wlan_fast();
     if wlan_on {
         next.wifi_on = true;
@@ -1664,54 +2122,23 @@ fn collect_cc_snapshot_light(
 }
 
 fn set_master_volume(pct: u8, mute_opt: Option<bool>) {
-    let mut ep_opt = None;
-    set_master_volume_cached(&mut ep_opt, pct, mute_opt);
-}
-
-fn acquire_master_volume_ep() -> Option<IAudioEndpointVolume> {
     unsafe {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER).ok()?;
-        let dev = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia).ok()?;
-        dev.Activate(CLSCTX_INPROC_SERVER, None).ok()
-    }
-}
-
-fn set_master_volume_cached(
-    cached: &mut Option<IAudioEndpointVolume>,
-    pct: u8,
-    mute_opt: Option<bool>,
-) {
-    unsafe {
-        let scalar = (pct.min(100) as f32) / 100.0;
-        let apply = |ep: &IAudioEndpointVolume| -> windows::core::Result<()> {
-            ep.SetMasterVolumeLevelScalar(scalar, null())?;
-            if let Some(m) = mute_opt {
-                ep.SetMute(m, null())?;
-            }
-            Ok(())
-        };
-        if let Some(ref ep) = cached {
-            if apply(ep).is_ok() {
-                return;
-            }
-            *cached = None;
-        }
         let mut init_ok = false;
         if CoInitializeEx(None, COINIT_MULTITHREADED).is_ok() {
             init_ok = true;
         }
-        if let Some(ep) = acquire_master_volume_ep() {
-            let _ = apply(&ep);
-            *cached = Some(ep);
-        }
+        let mut vol = CachedAudioVolume::new();
+        vol.set_volume(pct, mute_opt);
         if init_ok {
             CoUninitialize();
         }
     }
 }
 
-fn collect_cc_snapshot() -> CcSnapshot {
+fn collect_cc_snapshot(
+    cached_vol: &mut CachedAudioVolume,
+    include_outputs: bool,
+) -> CcSnapshot {
     let (wifi_on, wifi_name) = read_wifi_state();
     let (wlan_conn, _, wlan_sig) = read_wifi_wlan_fast();
     let wifi_signal = if wifi_on {
@@ -1779,7 +2206,12 @@ fn collect_cc_snapshot() -> CcSnapshot {
     });
     let disp_on = unsafe { GetSystemMetrics(SM_CMONITORS) > 1 };
     let bright_pct = get_lcd_brightness();
-    let (vol_pct, vol_muted) = get_master_volume();
+    let (vol_pct, vol_muted, _) = cached_vol.read_volume();
+    let audio_outputs = if include_outputs {
+        cached_vol.enumerate_outputs()
+    } else {
+        Vec::new()
+    };
 
     CcSnapshot {
         wifi_on,
@@ -1798,6 +2230,7 @@ fn collect_cc_snapshot() -> CcSnapshot {
         bright_pct,
         vol_pct,
         vol_muted,
+        audio_outputs,
     }
 }
 
@@ -3433,6 +3866,8 @@ mod tests {
             media_thread: Some(h1),
             audio_thread: Some(h2),
             cc_active: Arc::new(AtomicBool::new(false)),
+            audio_outputs_active: Arc::new(AtomicBool::new(false)),
+            audio_action_seq: Arc::new(AtomicU64::new(0)),
             viz_frame_ms: Arc::new(AtomicU32::new(22)),
             viz_needed: Arc::new(AtomicBool::new(true)),
         };
@@ -3533,5 +3968,92 @@ mod tests {
             0.0 < v10 && v10 < v40 && v40 < v75 && v75 < v100,
             "Post-volume loopback must scale monotonically (never reverse!): 10%={v10}, 40%={v40}, 75%={v75}, 100%={v100}"
         );
+    }
+
+    #[test]
+    fn shorten_audio_device_name_formats_windows_endpoints_cleanly() {
+        assert_eq!(
+            shorten_audio_device_name("Speakers (Realtek(R) Audio)"),
+            "Speakers"
+        );
+        assert_eq!(
+            shorten_audio_device_name("Headphones (realme Buds Air7 Stereo)"),
+            "realme Buds Air7"
+        );
+        assert_eq!(
+            shorten_audio_device_name("Headset (realme Buds Air7 Hands-Free AG Audio)"),
+            "realme Buds Air7 (HF)"
+        );
+        assert_eq!(
+            shorten_audio_device_name("Headphones (2- Sony WH-1000XM5)"),
+            "Sony WH-1000XM5"
+        );
+        assert_eq!(
+            shorten_audio_device_name("DELL U2720Q (NVIDIA High Definition Audio)"),
+            "DELL U2720Q"
+        );
+        assert_eq!(
+            shorten_audio_device_name("Realtek Digital Output (Realtek(R) Audio)"),
+            "Digital Output"
+        );
+        assert_eq!(
+            shorten_audio_device_name("Speakers (JBL Flip 6)"),
+            "JBL Flip 6"
+        );
+    }
+
+    #[test]
+    fn optimistic_audio_actions_update_snapshot_without_blocking() {
+        let shared = Arc::new(Mutex::new(SharedState {
+            media: MediaSnapshot::default(),
+            cc: CcSnapshot {
+                vol_pct: 40,
+                vol_muted: false,
+                audio_outputs: vec![
+                    AudioOutputDevice {
+                        id: "ep-spk".to_string(),
+                        name: "Speakers".to_string(),
+                        is_default: true,
+                    },
+                    AudioOutputDevice {
+                        id: "ep-buds".to_string(),
+                        name: "realme Buds Air7".to_string(),
+                        is_default: false,
+                    },
+                ],
+                ..CcSnapshot::default()
+            },
+            bands: [0.0; 12],
+        }));
+        let (tx, _rx) = mpsc::channel();
+        let engine = SystemMediaEngine {
+            shared: Arc::clone(&shared),
+            tx,
+            stop: Arc::new(AtomicBool::new(true)),
+            stop_wake: Arc::new((Mutex::new(true), Condvar::new())),
+            action_wake: Arc::new((Mutex::new(ActionSignal::default()), Condvar::new())),
+            cc_active: Arc::new(AtomicBool::new(false)),
+            audio_outputs_active: Arc::new(AtomicBool::new(true)),
+            audio_action_seq: Arc::new(AtomicU64::new(0)),
+            viz_frame_ms: Arc::new(AtomicU32::new(22)),
+            viz_needed: Arc::new(AtomicBool::new(false)),
+            media_thread: None,
+            audio_thread: None,
+        };
+
+        engine.send_action(CcAction::SetVolume(72));
+        let s1 = engine.cc_snapshot();
+        assert_eq!(s1.vol_pct, 72);
+        assert!(!s1.vol_muted);
+
+        engine.send_action(CcAction::ToggleMute);
+        let s2 = engine.cc_snapshot();
+        assert!(s2.vol_muted);
+
+        engine.send_action(CcAction::SetAudioOutput("ep-buds".to_string()));
+        let s3 = engine.cc_snapshot();
+        assert!(!s3.audio_outputs[0].is_default);
+        assert!(s3.audio_outputs[1].is_default);
+        assert_eq!(engine.audio_action_seq.load(Ordering::Acquire), 3);
     }
 }

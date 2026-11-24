@@ -1207,6 +1207,8 @@ struct DockMonitorPane {
     cursor_in_dock: bool,
     tracking_leave: bool,
     last_inside_time: Option<Instant>,
+    hover_entered_at: Option<Instant>,
+    tooltip_shown_after_dwell: bool,
     dirty_paint: bool,
     motion_active: bool,
     window_shown: bool,
@@ -1243,6 +1245,8 @@ impl DockMonitorPane {
             cursor_in_dock: false,
             tracking_leave: false,
             last_inside_time: None,
+            hover_entered_at: None,
+            tooltip_shown_after_dwell: false,
             dirty_paint: true,
             motion_active: false,
             window_shown: false,
@@ -1320,6 +1324,8 @@ impl DockMonitorPane {
         self.cur_scales.clear();
         self.slot_expands.clear();
         self.last_inside_time = None;
+        self.hover_entered_at = None;
+        self.tooltip_shown_after_dwell = false;
         self.hovered_idx = None;
         self.pressed_idx = None;
         self.cursor_in_dock = false;
@@ -1363,6 +1369,10 @@ impl DockMonitorPane {
                 6.0 * u
             })
             .round() as i32;
+        // Vertical docks sit directly beside app scrollbars and window edges, so keep their
+        // hover band strictly tight (<=2px outside shelf border) to avoid accidental triggers.
+        let v_slack = (2.0 * u).round().max(2.0) as i32;
+        let v_pad = (2.0 * u).round().max(2.0) as i32;
         match edge {
             MacDockEdge::Bottom => {
                 pt.x >= self.shelf_rect.left - slack
@@ -1377,15 +1387,15 @@ impl DockMonitorPane {
                     && pt.y <= self.shelf_rect.bottom + top_pad
             }
             MacDockEdge::Left => {
-                pt.y >= self.shelf_rect.top - slack
-                    && pt.y <= self.shelf_rect.bottom + slack
+                pt.y >= self.shelf_rect.top - v_slack
+                    && pt.y <= self.shelf_rect.bottom + v_slack
                     && pt.x >= self.mon_rect.left
-                    && pt.x <= self.shelf_rect.right + top_pad
+                    && pt.x <= self.shelf_rect.right + v_pad
             }
             MacDockEdge::Right => {
-                pt.y >= self.shelf_rect.top - slack
-                    && pt.y <= self.shelf_rect.bottom + slack
-                    && pt.x >= self.shelf_rect.left - top_pad
+                pt.y >= self.shelf_rect.top - v_slack
+                    && pt.y <= self.shelf_rect.bottom + v_slack
+                    && pt.x >= self.shelf_rect.left - v_pad
                     && pt.x <= self.mon_rect.right
             }
         }
@@ -2122,11 +2132,12 @@ impl MacDockEngine {
         let got_cursor = unsafe { GetCursorPos(&mut pt).is_ok() };
         let on_edge = got_cursor
             && self.panes.iter().any(|p| {
-                is_point_on_screen_edge(
+                is_point_on_dock_reveal_edge(
                     pt,
                     p.mon_rect,
+                    p.shelf_rect,
                     cfg.mac_dock_edge,
-                    (4.0 * p.dpi_u).round().max(4.0) as i32,
+                    p.dpi_u,
                 )
             });
         let any_shown = self.panes.iter().any(|p| p.window_shown);
@@ -3100,7 +3111,17 @@ impl MacDockEngine {
         let in_thumb = thumb_owned && got_cursor && docked_open && self.thumb_popup.contains_point(pt);
         let in_bridge = thumb_owned && got_cursor && docked_open && self.thumb_popup.in_bridge(pt);
         if got_cursor {
+            let was_in = pane.cursor_in_dock;
             pane.cursor_in_dock = in_band;
+            if in_band {
+                if !was_in || pane.hover_entered_at.is_none() {
+                    pane.hover_entered_at = Some(now);
+                    pane.tooltip_shown_after_dwell = false;
+                }
+            } else {
+                pane.hover_entered_at = None;
+                pane.tooltip_shown_after_dwell = false;
+            }
             if in_band || in_thumb || in_bridge {
                 pane.last_inside_time = Some(now);
             }
@@ -3109,11 +3130,12 @@ impl MacDockEngine {
         let game_fs = cfg.game_mode_pause && is_fullscreen_game_on_monitor(pane.mon_rect);
         let on_edge = !game_fs
             && got_cursor
-            && is_point_on_screen_edge(
+            && is_point_on_dock_reveal_edge(
                 pt,
                 pane.mon_rect,
+                pane.shelf_rect,
                 cfg.mac_dock_edge,
-                (4.0 * u).round().max(4.0) as i32,
+                u,
             );
         let want_visible = if game_fs {
             false
@@ -3171,6 +3193,8 @@ impl MacDockEngine {
             }
             pane.hover_mix = 0.0;
             pane.hovered_idx = None;
+            pane.hover_entered_at = None;
+            pane.tooltip_shown_after_dwell = false;
             pane.motion_active = false;
             return;
         }
@@ -3193,6 +3217,21 @@ impl MacDockEngine {
             lerping = true;
         } else {
             pane.hover_mix = target_hover;
+        }
+
+        // Vertical dock tooltip dwell guard: brief 110ms dwell prevents tooltips from flashing
+        // over active apps when a user briefly passes near the right/left screen edge.
+        if is_vertical && pane.cursor_in_dock && !self.menu_open && cfg.tb_hover_react {
+            if !pane.tooltip_shown_after_dwell {
+                if vertical_tooltip_ready(cfg.mac_dock_edge, pane.cursor_in_dock, pane.hover_entered_at, now) {
+                    pane.tooltip_shown_after_dwell = true;
+                    pane.dirty_paint = true;
+                } else {
+                    lerping = true;
+                }
+            }
+        } else if !is_vertical {
+            pane.tooltip_shown_after_dwell = pane.cursor_in_dock;
         }
 
         if pane.click_ripple_t < 1.0 {
@@ -4317,7 +4356,12 @@ impl MacDockEngine {
         }
         let was_in = self.panes[pi].cursor_in_dock;
         self.panes[pi].cursor_in_dock = true;
-        self.panes[pi].last_inside_time = Some(Instant::now());
+        let now = Instant::now();
+        if !was_in || self.panes[pi].hover_entered_at.is_none() {
+            self.panes[pi].hover_entered_at = Some(now);
+            self.panes[pi].tooltip_shown_after_dwell = false;
+        }
+        self.panes[pi].last_inside_time = Some(now);
         if cfg.tb_hover_react || !was_in {
             self.panes[pi].dirty_paint = true;
         }
@@ -4347,6 +4391,8 @@ impl MacDockEngine {
         let in_bridge = thumb_owned && got && self.thumb_popup.in_bridge(pt);
         if !in_band {
             self.panes[pi].cursor_in_dock = false;
+            self.panes[pi].hover_entered_at = None;
+            self.panes[pi].tooltip_shown_after_dwell = false;
             if !in_thumb && !in_bridge {
                 self.panes[pi].hovered_idx = None;
             }
@@ -6553,8 +6599,13 @@ impl MacDockEngine {
                 }
             }
 
-            // Sleek floating tooltip pill (skipped when label is already shown inline or menu is open)
-            if pane.hover_mix > 0.25 && !self.menu_open {
+            // Sleek floating tooltip pill (skipped when label is already shown inline, menu is open,
+            // or a vertical dock's brief hover dwell has not elapsed yet)
+            let is_vert_edge = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
+            if pane.hover_mix > 0.25
+                && !self.menu_open
+                && (!is_vert_edge || (pane.cursor_in_dock && pane.tooltip_shown_after_dwell))
+            {
                 if let Some(hidx) = pane.hovered_idx {
                     if let Some(hitem) = pane
                         .layout
@@ -7765,6 +7816,57 @@ fn trigger_start_menu() {
     ];
     unsafe {
         let _ = SendInput(&seq, size_of::<INPUT>() as i32);
+    }
+}
+
+const VERTICAL_TOOLTIP_DWELL_MS: u64 = 110;
+
+#[inline]
+fn vertical_tooltip_ready(
+    edge: MacDockEdge,
+    cursor_in_dock: bool,
+    hover_entered_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    if !matches!(edge, MacDockEdge::Left | MacDockEdge::Right) {
+        return true;
+    }
+    cursor_in_dock
+        && hover_entered_at
+            .is_some_and(|at| now.duration_since(at) >= Duration::from_millis(VERTICAL_TOOLTIP_DWELL_MS))
+}
+
+/// Checks whether the cursor touches the screen edge to wake an auto-hidden dock.
+/// On vertical left/right edges, uses a tight 2px edge strip and stays clear of window top/bottom
+/// corner chrome (e.g. maximized Close `×` button) so app edge clicks never trigger the dock.
+fn is_point_on_dock_reveal_edge(
+    pt: POINT,
+    mon: RECT,
+    shelf: RECT,
+    edge: MacDockEdge,
+    u: f32,
+) -> bool {
+    match edge {
+        MacDockEdge::Bottom | MacDockEdge::Top => {
+            let m = (4.0 * u).round().max(4.0) as i32;
+            is_point_on_screen_edge(pt, mon, edge, m)
+        }
+        MacDockEdge::Left | MacDockEdge::Right => {
+            let m = (2.0 * u).round().max(2.0) as i32;
+            if !is_point_on_screen_edge(pt, mon, edge, m) {
+                return false;
+            }
+            let corner_guard = (44.0 * u).round() as i32;
+            let (min_y, max_y) = if shelf.bottom > shelf.top + 40 {
+                (
+                    shelf.top.max(mon.top + corner_guard),
+                    shelf.bottom.min(mon.bottom - corner_guard),
+                )
+            } else {
+                (mon.top + corner_guard, mon.bottom - corner_guard)
+            };
+            pt.y >= min_y && pt.y <= max_y
+        }
     }
 }
 
@@ -10702,5 +10804,115 @@ mod tests {
         unsafe {
             CoUninitialize();
         }
+    }
+
+    #[test]
+    fn vertical_dock_hover_band_and_tooltip_dwell_stay_strictly_tight() {
+        let mon = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let mut right_pane = DockMonitorPane::new(mon, true);
+        right_pane.shelf_rect = RECT { left: 1852, top: 140, right: 1914, bottom: 940 };
+
+        // 1. Right-edge FishEye dock: cursor 10px left of shelf (app scrollbar zone) MUST NOT hover
+        assert!(!right_pane.is_point_in_dock_band(
+            POINT { x: 1842, y: 540 },
+            MacDockEdge::Right,
+            DockLayoutKind::FishEyeShelf,
+            0.0,
+            1.0
+        ));
+        // Cursor 6px above or below vertical shelf ends MUST NOT hover
+        assert!(!right_pane.is_point_in_dock_band(
+            POINT { x: 1880, y: 132 },
+            MacDockEdge::Right,
+            DockLayoutKind::FishEyeShelf,
+            0.0,
+            1.0
+        ));
+        // Cursor directly on shelf or within 2px of shelf left edge MUST hover
+        assert!(right_pane.is_point_in_dock_band(
+            POINT { x: 1850, y: 540 },
+            MacDockEdge::Right,
+            DockLayoutKind::FishEyeShelf,
+            0.0,
+            1.0
+        ));
+        assert!(right_pane.is_point_in_dock_band(
+            POINT { x: 1880, y: 540 },
+            MacDockEdge::Right,
+            DockLayoutKind::FishEyeShelf,
+            0.0,
+            1.0
+        ));
+
+        // 2. Left-edge dock: 12px right of shelf MUST NOT hover; within 2px MUST hover
+        let mut left_pane = DockMonitorPane::new(mon, true);
+        left_pane.shelf_rect = RECT { left: 6, top: 140, right: 68, bottom: 940 };
+        assert!(!left_pane.is_point_in_dock_band(
+            POINT { x: 80, y: 540 },
+            MacDockEdge::Left,
+            DockLayoutKind::FishEyeShelf,
+            0.0,
+            1.0
+        ));
+        assert!(left_pane.is_point_in_dock_band(
+            POINT { x: 70, y: 540 },
+            MacDockEdge::Left,
+            DockLayoutKind::FishEyeShelf,
+            0.0,
+            1.0
+        ));
+
+        // 3. Auto-hide reveal on right edge ignores top-right maximized window Close (×) corner
+        assert!(!is_point_on_dock_reveal_edge(
+            POINT { x: 1919, y: 10 },
+            mon,
+            right_pane.shelf_rect,
+            MacDockEdge::Right,
+            1.0
+        ));
+        // And ignores points 4px away from right edge
+        assert!(!is_point_on_dock_reveal_edge(
+            POINT { x: 1915, y: 540 },
+            mon,
+            right_pane.shelf_rect,
+            MacDockEdge::Right,
+            1.0
+        ));
+        // Only triggers within 2px of right edge inside vertical dock span
+        assert!(is_point_on_dock_reveal_edge(
+            POINT { x: 1919, y: 540 },
+            mon,
+            right_pane.shelf_rect,
+            MacDockEdge::Right,
+            1.0
+        ));
+
+        // 4. Vertical tooltip dwell guard blocks brief cursor grazes (<110ms) and allows intentional hover
+        let t0 = Instant::now();
+        assert!(!vertical_tooltip_ready(
+            MacDockEdge::Right,
+            true,
+            Some(t0),
+            t0 + Duration::from_millis(40)
+        ));
+        assert!(vertical_tooltip_ready(
+            MacDockEdge::Right,
+            true,
+            Some(t0),
+            t0 + Duration::from_millis(120)
+        ));
+        assert!(!vertical_tooltip_ready(
+            MacDockEdge::Right,
+            false,
+            Some(t0),
+            t0 + Duration::from_millis(200)
+        ));
+        // Horizontal bottom dock remains immediate
+        assert!(vertical_tooltip_ready(
+            MacDockEdge::Bottom,
+            true,
+            Some(t0),
+            t0 + Duration::from_millis(10)
+        ));
     }
 }

@@ -35,7 +35,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::widgets_extra::{
-    default_ext_widgets, default_notes_items, ExtWidgetConfig, ExtWidgetId, EXT_WIDGET_COUNT,
+    default_ext_widgets, default_notes_items, default_world_clock_cities, ExtWidgetConfig,
+    ExtWidgetId, EXT_WIDGET_COUNT,
 };
 
 const ABM_GETSTATE_CMD: u32 = 4;
@@ -3326,10 +3327,11 @@ pub struct AppConfig {
     pub game_mode_pause: bool,
     pub onboarding_done: bool,
 
-    // Phase 4: Extended Desktop Widgets Suite (14 widgets + Sticky Notes checklist)
+    // Phase 4: Extended Desktop Widgets Suite (14 widgets + Sticky Notes checklist + World Clock cities)
     pub ext_widgets: [ExtWidgetConfig; EXT_WIDGET_COUNT],
     pub notes_title: String,
     pub notes_items: Vec<(bool, String)>,
+    pub world_clock_cities: [String; 4],
 
     // Phase 5: Virtual Mac Dock Engine (Pure Win32 Shell Hook + Direct2D)
     pub mac_dock_enabled: bool,
@@ -4782,6 +4784,7 @@ impl Default for AppConfig {
             ext_widgets: default_ext_widgets(),
             notes_title: "NOTES & TO-DO".to_string(),
             notes_items: default_notes_items(),
+            world_clock_cities: default_world_clock_cities(),
 
             mac_dock_enabled: false,
             mac_dock_edge: MacDockEdge::Bottom,
@@ -6717,6 +6720,13 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                         if !t.is_empty() {
                             cfg.notes_title = t.to_string();
                         }
+                    } else if key == "world_clock_cities" {
+                        for (i, part) in val.split('|').take(4).enumerate() {
+                            let c = part.trim();
+                            if !c.is_empty() {
+                                cfg.world_clock_cities[i] = c.to_string();
+                            }
+                        }
                     } else if key == "note_item_count" {
                         if let Ok(cnt) = val.parse::<usize>() {
                             cfg.notes_items.truncate(cnt.min(12));
@@ -7060,6 +7070,13 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
             &ew.elem_fonts,
         );
     }
+    out.push_str(&format!(
+        "world_clock_cities={}|{}|{}|{}\n",
+        clean(&cfg.world_clock_cities[0]),
+        clean(&cfg.world_clock_cities[1]),
+        clean(&cfg.world_clock_cities[2]),
+        clean(&cfg.world_clock_cities[3]),
+    ));
     out.push_str(&format!("notes_title={}\n", clean(&cfg.notes_title)));
     let ncnt = cfg.notes_items.len().min(8);
     out.push_str(&format!("note_item_count={}\n", ncnt));

@@ -73,7 +73,7 @@ manifest_content = """<?xml version="1.0" encoding="utf-8"?>
   <Identity
     Name="AutumnDeck.AutumnDeck"
     Publisher="CN=A81A4B13-F326-4336-838D-AE686E1B75C2"
-    Version="2.0.3.0"
+    Version="2.0.4.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
@@ -122,7 +122,7 @@ with open(manifest_path, "w", encoding="utf-8") as f:
 print("Created AppxManifest.xml")
 
 # 5. Build MSIX using makeappx.exe
-output_msix = os.path.join(DIST_DIR, "AutumnDeck_2.0.3.0_x64.msix")
+output_msix = os.path.join(DIST_DIR, "AutumnDeck_2.0.4.0_x64.msix")
 if os.path.exists(output_msix):
     os.remove(output_msix)
 
@@ -138,6 +138,6 @@ if res.returncode != 0:
 print(f"MSIX created successfully: {output_msix} ({os.path.getsize(output_msix)} bytes)")
 
 # 6. Copy to Downloads folder
-downloads_dest = os.path.join(r"C:\Users\rshre\Downloads", "AutumnDeck_2.0.3.0_x64.msix")
+downloads_dest = os.path.join(r"C:\Users\rshre\Downloads", "AutumnDeck_2.0.4.0_x64.msix")
 shutil.copy2(output_msix, downloads_dest)
 print(f"Copied to Downloads: {downloads_dest}")

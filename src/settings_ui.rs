@@ -58,7 +58,8 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::config::{
     apply_win_explorer_pref, apply_win_explorer_pref_checked, default_apps, default_dock_pinned,
     discover_video_wallpapers, discover_wallpapers_fast_local, is_startup_enabled,
-    is_static_image_wallpaper_path, open_app_data_folder, read_win_taskbar_prefs,
+    is_static_image_wallpaper_path, open_app_data_folder, open_kofi_support_page,
+    read_win_taskbar_prefs, KOFI_SUPPORT_URL,
     set_startup_enabled, AppConfig, AppShortcut, CanvasStylePreset,
     ClockAlign, ClockElemId, ClockElemTransform, ClockStyle, ClockThemeFolder, DockArtLayer,
     DockClockEngine, DockClockWheelAction, DockIndicatorStyle, DockLayoutKind, DockShelfShape,
@@ -1229,6 +1230,7 @@ enum HitZone {
     ToggleWidgets24h,
     BtnOpenConfigFolder,
     BtnRunOnboarding,
+    BtnSupportKofi,
 }
 
 pub enum SettingsCommand {
@@ -5108,6 +5110,14 @@ impl SettingsController {
                 self.onboarding_active = true;
                 self.onboarding_step = 0;
                 self.startup_on = is_startup_enabled();
+                SettingsCommand::None
+            }
+            HitZone::BtnSupportKofi => {
+                open_kofi_support_page();
+                self.setup_feedback = Some((
+                    true,
+                    format!("Opened {} in your browser — thank you!", KOFI_SUPPORT_URL),
+                ));
                 SettingsCommand::None
             }
 
@@ -9581,6 +9591,9 @@ impl SettingsController {
                 // Footer (584..622)
                 if in_rect(x, y, 26.0, 584.0, 214.0, 622.0) {
                     return HitZone::BtnSettingsBack;
+                }
+                if in_rect(x, y, 250.0, 584.0, 532.0, 622.0) {
+                    return HitZone::BtnSupportKofi;
                 }
                 if in_rect(x, y, 568.0, 584.0, 734.0, 622.0) {
                     return HitZone::BtnQuitApp;
@@ -18152,6 +18165,23 @@ impl SettingsController {
         );
         draw_txt(rt, "← Back to Studio", &r.tf_btn, bk_rr.rect, &r.cream);
 
+        let kofi_rr = rrect(250.0, 584.0, 532.0, 622.0, 9.0, u);
+        let kofi_hov = self.hovered == HitZone::BtnSupportKofi;
+        rt.FillRoundedRectangle(&kofi_rr, if kofi_hov { &r.sun_gold } else { &r.amber_dim });
+        rt.DrawRoundedRectangle(
+            &kofi_rr,
+            &r.sun_gold,
+            if kofi_hov { 1.4 * u } else { 1.15 * u },
+            None,
+        );
+        draw_txt(
+            rt,
+            "♥  Tip on Ko-fi",
+            &r.tf_btn,
+            kofi_rr.rect,
+            if kofi_hov { &r.dark_ink } else { &r.sun_gold },
+        );
+
         let q_rr = rrect(568.0, 584.0, 734.0, 622.0, 9.0, u);
         let q_hov = self.hovered == HitZone::BtnQuitApp;
         rt.FillRoundedRectangle(&q_rr, if q_hov { &r.coral } else { &r.card_hover });
@@ -21842,7 +21872,23 @@ mod tests {
         assert_eq!(sc.hit_test(600.0, 385.0), HitZone::BtnRunOnboarding);
         assert_eq!(sc.hit_test(140.0, 445.0), HitZone::None);
         assert_eq!(sc.hit_test(100.0, 603.0), HitZone::BtnSettingsBack);
+        assert_eq!(sc.hit_test(232.0, 603.0), HitZone::None);
+        assert_eq!(sc.hit_test(391.0, 603.0), HitZone::BtnSupportKofi);
+        assert_eq!(sc.hit_test(550.0, 603.0), HitZone::None);
         assert_eq!(sc.hit_test(640.0, 603.0), HitZone::BtnQuitApp);
+
+        sc.hovered = HitZone::BtnSupportKofi;
+        assert!(sc.render_d2d(&cfg), "Settings tab with hovered Ko-fi button must render cleanly");
+        let kofi_cmd = sc.activate_zone(HitZone::BtnSupportKofi, &mut cfg);
+        assert!(matches!(kofi_cmd, SettingsCommand::None));
+        assert!(
+            sc.setup_feedback
+                .as_ref()
+                .map(|(ok, msg)| *ok && msg.contains(KOFI_SUPPORT_URL))
+                .unwrap_or(false),
+            "Activating Tip on Ko-fi must set confirmation feedback"
+        );
+        sc.hovered = HitZone::None;
 
         // 3. Toggles update cfg cleanly and sync 24h clock format across widgets & dock
         let c24 = sc.activate_zone(HitZone::ToggleWidgets24h, &mut cfg);

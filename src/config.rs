@@ -6176,20 +6176,36 @@ pub fn pick_import_setup_file(owner: HWND) -> Option<PathBuf> {
     None
 }
 
+/// Canonical URL for optional one-time developer tips on Ko-fi.
+pub const KOFI_SUPPORT_URL: &str = "https://ko-fi.com/autumndeck";
+
+fn open_shell_target(target_wide: &[u16]) {
+    unsafe {
+        let _ = ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(target_wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
 /// Opens `%APPDATA%\AutumnDeck` in Windows File Explorer.
 pub fn open_app_data_folder() {
     let dir = app_data_dir();
     let _ = fs::create_dir_all(&dir);
     let wdir = path_to_wide(&dir);
-    unsafe {
-        let _ = ShellExecuteW(
-            None,
-            w!("open"),
-            PCWSTR(wdir.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        );
+    open_shell_target(&wdir);
+}
+
+/// Opens the developer's one-time Ko-fi tip page in the default browser.
+pub fn open_kofi_support_page() {
+    #[cfg(not(test))]
+    {
+        let wurl = to_wide(KOFI_SUPPORT_URL);
+        open_shell_target(&wurl);
     }
 }
 

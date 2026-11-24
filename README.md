@@ -1,5 +1,9 @@
 # AutumnDeck
 
+<p align="center">
+  <a href="https://apps.microsoft.com/detail/9P6NTH74WSMD"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft Store" height="56" /></a>
+</p>
+
 **Native Windows 11 Taskbar Styler, Interactive PBR Docks, Modular Desktop Widgets & Live Wallpaper Suite**
 
 Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-low memory footprint and zero Chromium/Electron bloat.
@@ -28,8 +32,18 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 ---
 
 ## Download & Installation
-1. Download the latest release from **Releases**:
-   - **Portable Edition (Recommended):** `AutumnDeck-2.0.0-Portable.zip` (right-click `.zip` ➔ Properties ➔ check **Unblock** if present ➔ extract all files together and run `AutumnDeck.exe`).
+
+### Option 1: Microsoft Store (Recommended — Digitally Signed & Auto-Updating)
+[![Download from Microsoft Store](https://get.microsoft.com/images/en-us%20dark.svg)](https://apps.microsoft.com/detail/9P6NTH74WSMD)
+
+- **Official Microsoft Signed Package:** 100% clean install with zero Windows SmartScreen or Smart App Control warnings.
+- **Instant 1-Click Install:** Or open `ms-windows-store://pdp/?productid=9P6NTH74WSMD` directly.
+
+---
+
+### Option 2: Standalone Releases (Portable ZIP & Setup Installer)
+1. Download from **Releases**:
+   - **Portable Edition:** `AutumnDeck-2.0.0-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
    - **Installer:** `AutumnDeck-Setup-2.0.0.exe`
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.

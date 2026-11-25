@@ -24,27 +24,6 @@ try {
         }
     }
 
-    $guardCpp = Join-Path $PSScriptRoot "tap\AutumnGuard.cpp"
-    $guardExe = Join-Path $PSScriptRoot "AutumnGuard.exe"
-    $needGuard = -not (Test-Path $guardExe)
-    if (-not $needGuard -and (Test-Path $guardCpp)) {
-        $needGuard = (Get-Item $guardCpp).LastWriteTime -gt (Get-Item $guardExe).LastWriteTime
-    }
-    if ($needGuard -and (Test-Path $guardCpp)) {
-        $vcvars = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
-        if (Test-Path $vcvars) {
-            Get-Process AutumnGuard -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Milliseconds 80
-            $guardTmp = Join-Path $PSScriptRoot "AutumnGuard.new.exe"
-            if (Test-Path $guardTmp) { Remove-Item $guardTmp -Force -ErrorAction SilentlyContinue }
-            cmd /c "call `"$vcvars`" >nul && cl /nologo /O2 /MT /EHsc /W3 /Fo`"$env:TEMP\guard.obj`" `"$guardCpp`" /Fe:`"$guardTmp`" taskschd.lib ole32.lib oleaut32.lib user32.lib shell32.lib /link /SUBSYSTEM:WINDOWS"
-            if ($LASTEXITCODE -eq 0 -and (Test-Path $guardTmp)) {
-                Move-Item -Path $guardTmp -Destination $guardExe -Force
-                Remove-Item "$env:TEMP\guard.obj" -Force -ErrorAction SilentlyContinue
-            }
-        }
-    }
-
     $rcFile = Join-Path $PSScriptRoot "assets\AutumnDeck.rc"
     $icoFile = Join-Path $PSScriptRoot "assets\AutumnDeck.ico"
     $resFile = Join-Path $PSScriptRoot "assets\AutumnDeck.res"

@@ -336,13 +336,7 @@ fn build_support_report(cfg: &AppConfig, game_mode_active: bool) -> String {
     out.push('\n');
 
     out.push_str("[Components]\n");
-    let guard_path = exe_dir.join("AutumnGuard.exe");
-    let guard_bytes = fs::metadata(&guard_path).map(|m| m.len()).unwrap_or(0);
-    out.push_str(&format!(
-        "autumn_guard_present={} bytes={}\n",
-        guard_path.exists(),
-        guard_bytes
-    ));
+    out.push_str("watchdog_mode=builtin_self_watchdog\n");
     let tap_path = exe_dir.join("AutumnXamlTap.dll");
     let tap_bytes = fs::metadata(&tap_path).map(|m| m.len()).unwrap_or(0);
     let tap_acl = match has_app_package_rx_acl(&tap_path) {

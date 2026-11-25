@@ -4,7 +4,7 @@
 ; restoration + startup task cleanup on uninstall.
 
 #define MyAppName "AutumnDeck"
-#define MyAppVersion "2.0.6"
+#define MyAppVersion "2.0.7"
 #define MyAppPublisher "AutumnDeck"
 #define MyAppExeName "AutumnDeck.exe"
 #define MyAppDesc "Native Windows 11 Taskbar Styler, Interactive PBR Docks, Modular Desktop Widgets & Live Wallpaper Suite"
@@ -35,7 +35,7 @@ SolidCompression=yes
 WizardStyle=modern dynamic
 CloseApplications=no
 RestartIfNeededByRun=no
-VersionInfoVersion=2.0.6.0
+VersionInfoVersion=2.0.7.0
 VersionInfoProductName={#MyAppName}
 VersionInfoDescription={#MyAppName} Setup
 
@@ -48,7 +48,6 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 [Files]
 Source: "..\AutumnDeck.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\AutumnGuard.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\AutumnXamlTap.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 Source: "..\assets\AutumnDeck.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\Autumn_Sanctuary_Starter.mp4"; DestDir: "{app}\Wallpapers"; Flags: ignoreversion
@@ -73,10 +72,14 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags
 ; Cleanly stop running instance, restore native Windows taskbar/workarea, and remove logon task
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-cleanup"; RunOnceId: "AutumnDeckCleanup"; Flags: runhidden waituntilterminated
 
+[InstallDelete]
+Type: files; Name: "{app}\AutumnGuard.exe"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\Themes"
 Type: files; Name: "{app}\AutumnXamlTap.old.dll"
 Type: files; Name: "{app}\AutumnDeck.old.exe"
+Type: files; Name: "{app}\AutumnGuard.exe"
 
 [Code]
 function PrepareToInstall(var NeedsRestart: Boolean): String;

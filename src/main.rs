@@ -315,49 +315,7 @@ fn run_watchdog(ppid: u32) {
     }
 }
 
-fn is_default_desktop() -> bool {
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetThreadDesktop(dw_thread_id: u32) -> isize;
-        fn GetUserObjectInformationW(
-            h_obj: isize,
-            n_index: i32,
-            pv_info: *mut std::ffi::c_void,
-            n_length: u32,
-            lpn_length_needed: *mut u32,
-        ) -> i32;
-    }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetCurrentThreadId() -> u32;
-    }
-    const UOI_NAME: i32 = 2;
-    unsafe {
-        let hdesk = GetThreadDesktop(GetCurrentThreadId());
-        if hdesk == 0 {
-            return true;
-        }
-        let mut buf = [0u16; 128];
-        let mut needed = 0u32;
-        if GetUserObjectInformationW(
-            hdesk,
-            UOI_NAME,
-            buf.as_mut_ptr() as *mut std::ffi::c_void,
-            (buf.len() * 2) as u32,
-            &mut needed,
-        ) == 0
-        {
-            return true;
-        }
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case("Default")
-    }
-}
-
 fn spawn_watchdog() -> HANDLE {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     let pid = std::process::id();
     let ev_name = format!("Local\\AutumnDeckCleanExit_{}", pid);
     let ev_w = to_wide(&ev_name);
@@ -365,29 +323,6 @@ fn spawn_watchdog() -> HANDLE {
         CreateEventW(None, true, false, PCWSTR(ev_w.as_ptr())).unwrap_or_default()
     };
     let ppid_s = pid.to_string();
-
-    let guard_exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("AutumnGuard.exe")));
-
-    if let Some(guard) = guard_exe.filter(|g| g.exists()) {
-        if is_default_desktop() {
-            // Launch AutumnGuard via Windows Task Scheduler (svchost.exe parent, separate exe & job)
-            // so Task Manager "End task" on AutumnDeck's process group never kills the watchdog.
-            let _ = std::process::Command::new(&guard)
-                .args(["--arm", &ppid_s])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
-            return h_ev;
-        }
-        // Isolated non-Default desktops (e.g. test sandboxes) stay strictly inside their own desktop.
-        let _ = std::process::Command::new(&guard)
-            .args(["--watch", &ppid_s])
-            .creation_flags(0x00000008 | 0x00000200 | CREATE_NO_WINDOW)
-            .spawn();
-        return h_ev;
-    }
-
     TaskbarStyler::spawn_detached_self(&["--watchdog", &ppid_s]);
     h_ev
 }

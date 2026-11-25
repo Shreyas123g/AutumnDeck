@@ -80,8 +80,8 @@
 > Standalone binaries distributed on GitHub are compiled directly from open-source code and are **not digitally signed** (commercial certificates cost \$300+/year). For the **official digitally signed edition with zero security warnings**, please use **[Option 1: Microsoft Store](https://apps.microsoft.com/detail/9P6NTH74WSMD)**.
 
 1. Download from **Releases**:
-   - **Portable Edition:** `AutumnDeck-2.0.0-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
-   - **Installer:** `AutumnDeck-Setup-2.0.0.exe`
+   - **Portable Edition:** `AutumnDeck-2.0.6-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
+   - **Installer:** `AutumnDeck-Setup-2.0.6.exe`
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 

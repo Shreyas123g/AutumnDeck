@@ -65,8 +65,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use config::{
-    get_native_autohide, load_config, save_config, start_explorer_pref_watcher, to_wide,
-    AppConfig, MacDockHideMode, PillMode, TaskbarMode,
+    flush_pending_config_save, get_native_autohide, load_config, save_config_async,
+    start_explorer_pref_watcher, to_wide, AppConfig, MacDockHideMode, PillMode, TaskbarMode,
 };
 use mac_dock::{MacDockAction, MacDockEngine};
 use settings_ui::{SettingsCommand, SettingsController, StudioTab, WidgetPage};
@@ -116,6 +116,7 @@ const TIMER_PILL_RECHECK_3: usize = 111;
 const TIMER_DOCK_TICK: usize = 112;
 const TIMER_BOOT_WP: usize = 113;
 const TIMER_DOCK_SYNC_DEBOUNCE: usize = 114;
+const TIMER_CONFIG_SAVE_DEBOUNCE: usize = 115;
 
 static DOCK_SYNC_QUEUED: AtomicBool = AtomicBool::new(false);
 static EVAL_SCHED_QUEUED: AtomicBool = AtomicBool::new(false);
@@ -182,6 +183,7 @@ struct AppState {
     mode_switch_settle_until: Option<Instant>,
     last_eval_recheck: Option<Instant>,
     last_applied_24h: bool,
+    config_dirty: bool,
     clean_exit_event: HANDLE,
     hooks: [HWINEVENTHOOK; 5],
 }
@@ -561,6 +563,7 @@ fn main() {
         mode_switch_settle_until: None,
         last_eval_recheck: None,
         last_applied_24h: initial_24h,
+        config_dirty: false,
         clean_exit_event,
         hooks: [HWINEVENTHOOK::default(); 5],
     });
@@ -1229,14 +1232,14 @@ unsafe extern "system" fn global_wnd_proc(
         WM_APP_FORCE_HIDE => {
             state.config.mode = TaskbarMode::StealthHide;
             state.config.sync_dock_hide_from_mode();
-            save_config(&state.config);
+            schedule_config_save(state);
             evaluate_mode_and_apply(state, false);
             LRESULT(0)
         }
         WM_APP_FORCE_SHOW => {
             state.config.mode = TaskbarMode::AlwaysVisible;
             state.config.sync_dock_hide_from_mode();
-            save_config(&state.config);
+            schedule_config_save(state);
             evaluate_mode_and_apply(state, true);
             LRESULT(0)
         }
@@ -1353,7 +1356,7 @@ unsafe extern "system" fn global_wnd_proc(
         WM_APP_WIDGET_CLOCK_24H => {
             let use_24h = wparam.0 != 0;
             state.config.set_clock_24h(use_24h);
-            save_config(&state.config);
+            schedule_config_save(state);
             sync_clock_24h_if_changed(state);
             state.settings.sync_from_config(&state.config);
             LRESULT(0)
@@ -1365,7 +1368,7 @@ unsafe extern "system" fn global_wnd_proc(
         }
         WM_APP_WIDGETS_SYNC => {
             state.config = state.widgets.cfg.clone();
-            save_config(&state.config);
+            schedule_config_save(state);
             state.settings.sync_from_config(&state.config);
             if wparam.0 != 0 {
                 sync_studio_live(state);
@@ -1453,7 +1456,7 @@ unsafe extern "system" fn global_wnd_proc(
                     if changed {
                         state.config.mac_dock_pinned = win_pins;
                         state.mac_dock.clear_icon_cache();
-                        save_config(&state.config);
+                        schedule_config_save(state);
                     }
                 }
             }
@@ -1493,7 +1496,7 @@ unsafe extern "system" fn global_wnd_proc(
                 if let Some((old_p, new_p)) = state.wallpaper.take_cached_path_update() {
                     if state.config.wallpaper_path.eq_ignore_ascii_case(&old_p) {
                         state.config.wallpaper_path = new_p.clone();
-                        save_config(&state.config);
+                        schedule_config_save(state);
                     }
                     state.settings.sync_cached_wallpaper_path(&old_p, &new_p);
                 }
@@ -1859,6 +1862,13 @@ unsafe extern "system" fn global_wnd_proc(
                         }
                     }
                 }
+                TIMER_CONFIG_SAVE_DEBOUNCE => {
+                    let _ = KillTimer(Some(state.hidden_hwnd), TIMER_CONFIG_SAVE_DEBOUNCE);
+                    if state.config_dirty {
+                        state.config_dirty = false;
+                        save_config_async(&state.config);
+                    }
+                }
                 _ => {}
             }
             LRESULT(0)
@@ -2184,6 +2194,18 @@ fn sync_clock_24h_if_changed(state: &mut AppState) {
     }
 }
 
+fn schedule_config_save(state: &mut AppState) {
+    state.config_dirty = true;
+    if !state.hidden_hwnd.0.is_null() {
+        unsafe {
+            let _ = SetTimer(Some(state.hidden_hwnd), TIMER_CONFIG_SAVE_DEBOUNCE, 250, None);
+        }
+    } else {
+        state.config_dirty = false;
+        save_config_async(&state.config);
+    }
+}
+
 fn toggle_taskbar_manual(state: &mut AppState) {
     state.preview_hold_ticks = 0;
     if state.config.mac_dock_enabled {
@@ -2201,7 +2223,7 @@ fn toggle_taskbar_manual(state: &mut AppState) {
         };
         state.config.sync_dock_hide_from_mode();
     }
-    save_config(&state.config);
+    schedule_config_save(state);
     evaluate_mode_and_apply(state, true);
     state.settings.sync_from_config(&state.config);
 }
@@ -2213,7 +2235,7 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             state.preview_hold_ticks = 0;
             state.config.mode = mode;
             state.config.sync_dock_hide_from_mode();
-            save_config(&state.config);
+            schedule_config_save(state);
             evaluate_mode_and_apply(state, true);
             write_status_snapshot("MODE", state);
         }
@@ -2233,9 +2255,17 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
                     state.styler.sync_style_fast(&state.config);
                 }
             }
+            return;
+        }
+        SettingsCommand::MacDockPreview => {
+            if state.config.mac_dock_enabled {
+                state.mac_dock.mark_dirty_paint();
+                state.mac_dock.tick(&state.config);
+            }
+            return;
         }
         SettingsCommand::StyleUpdated => {
-            save_config(&state.config);
+            schedule_config_save(state);
             if state.config.tb_match_wallpaper {
                 if !state.wallpaper.resample_live_palette() {
                     let _ = theme::ensure_wallpaper_palette_for_config(&state.config, false);
@@ -2313,7 +2343,7 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
         }
         SettingsCommand::WidgetsConfigUpdated => {
             sync_clock_24h_if_changed(state);
-            save_config(&state.config);
+            schedule_config_save(state);
             state.widgets.apply_config(&state.config);
             if state.config.mac_dock_enabled {
                 state.mac_dock.force_clock_refresh(&state.config);
@@ -2328,7 +2358,7 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             }
             let prev_wp_enabled = state.wallpaper.is_enabled();
             let prev_wp_path = state.wallpaper.active_path().to_string();
-            save_config(&state.config);
+            schedule_config_save(state);
             state.wallpaper.attach();
             state
                 .wallpaper
@@ -2381,14 +2411,14 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
         }
         SettingsCommand::MacDockUpdated => {
             sync_clock_24h_if_changed(state);
-            save_config(&state.config);
+            schedule_config_save(state);
             evaluate_mode_and_apply(state, true);
             state.widgets.apply_config(&state.config);
             sync_studio_live(state);
             write_status_snapshot("MAC_DOCK", state);
         }
         SettingsCommand::SuiteApplied => {
-            save_config(&state.config);
+            schedule_config_save(state);
             if state.config.any_match_wallpaper() {
                 if !state.wallpaper.resample_live_palette() {
                     let _ = theme::ensure_wallpaper_palette_for_config(&state.config, true);
@@ -2404,7 +2434,6 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             sync_studio_live(state);
             update_viz_timer(state);
             update_tray_tooltip(state.hidden_hwnd, state.hider.is_hidden, &state.config);
-            crate::config::trim_process_working_set();
             diagnostics::record_event(
                 "SUITE",
                 &format!(
@@ -2418,7 +2447,7 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             unsafe {
                 let _ = KillTimer(Some(state.hidden_hwnd), TIMER_BOOT_WP);
             }
-            save_config(&state.config);
+            schedule_config_save(state);
             state
                 .wallpaper
                 .set_chameleon_sampling(state.config.any_match_wallpaper());
@@ -2440,7 +2469,6 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             update_viz_timer(state);
             update_dock_timer(state);
             update_tray_tooltip(state.hidden_hwnd, state.hider.is_hidden, &state.config);
-            crate::config::trim_process_working_set();
             diagnostics::record_event(
                 "CONFIG_IMPORT",
                 &format!(
@@ -2453,7 +2481,7 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             write_status_snapshot("IMPORT", state);
         }
         SettingsCommand::GameModeUpdated => {
-            save_config(&state.config);
+            schedule_config_save(state);
             diagnostics::record_event(
                 "GAME_MODE",
                 if state.config.game_mode_pause { "enabled" } else { "disabled" },
@@ -2468,7 +2496,7 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             }
         }
         SettingsCommand::OnboardingFinished => {
-            save_config(&state.config);
+            schedule_config_save(state);
             diagnostics::record_event(
                 "ONBOARDING",
                 &format!("completed suite={}", state.config.active_suite),
@@ -3009,25 +3037,25 @@ fn show_tray_menu(state: &mut AppState) {
             IDM_TRAY_DESKTOP_WIDGETS => {
                 let vis = !state.widgets.is_visible();
                 state.config.widgets_enabled = vis;
-                save_config(&state.config);
+                schedule_config_save(state);
                 state.widgets.apply_config(&state.config);
                 state.settings.sync_from_config(&state.config);
             }
             IDM_TRAY_SHOW_MUSIC => {
                 state.config.show_music = !state.config.show_music;
-                save_config(&state.config);
+                schedule_config_save(state);
                 state.widgets.apply_config(&state.config);
                 state.settings.sync_from_config(&state.config);
             }
             IDM_TRAY_SHOW_CC => {
                 state.config.show_cc = !state.config.show_cc;
-                save_config(&state.config);
+                schedule_config_save(state);
                 state.widgets.apply_config(&state.config);
                 state.settings.sync_from_config(&state.config);
             }
             IDM_TRAY_WIDGETS_LOCK => {
                 state.config.widgets_locked = !state.config.widgets_locked;
-                save_config(&state.config);
+                schedule_config_save(state);
                 state.widgets.apply_config(&state.config);
                 state.settings.sync_from_config(&state.config);
             }
@@ -3095,6 +3123,10 @@ fn fast_os_session_shutdown(state: &mut AppState) {
     }
     state.shutting_down = true;
     state.os_session_ending = true;
+    if state.config_dirty {
+        state.config_dirty = false;
+        flush_pending_config_save(&state.config);
+    }
     state.unhook_all();
     if !state.clean_exit_event.0.is_null() {
         unsafe {
@@ -3122,6 +3154,10 @@ fn restore_on_exit(state: &mut AppState) {
         return;
     }
     state.shutting_down = true;
+    if state.config_dirty {
+        state.config_dirty = false;
+        flush_pending_config_save(&state.config);
+    }
     state.unhook_all();
     // Restore Windows taskbar, workarea, and native surface IMMEDIATELY before slow COM/thread teardown
     mac_dock::restore_tray_cloak_and_alpha();
@@ -3275,6 +3311,19 @@ fn create_amber_pill_icon() -> HICON {
 }
 
 fn write_status_snapshot(tag: &str, state: &AppState) {
+    static LAST_STATUS_WRITE: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let force_tag = matches!(tag, "INIT" | "EXIT" | "BOOT" | "BOOT_SETTLED");
+    if !force_tag {
+        if let Ok(mut guard) = LAST_STATUS_WRITE.lock() {
+            let now = Instant::now();
+            if let Some(prev) = *guard {
+                if now.duration_since(prev) < Duration::from_millis(350) {
+                    return;
+                }
+            }
+            *guard = Some(now);
+        }
+    }
     let temp_dir = std::env::temp_dir();
     let path: PathBuf = temp_dir.join("autumn_deck_status.txt");
     let monitors = TaskbarHider::query_all_monitors();

@@ -2282,6 +2282,7 @@ struct TrayOverlayState {
     glass_visible: bool,
     blur_visible: bool,
     swca_cleared: bool,
+    border_stripped: Option<bool>,
     last_bar_rect: RECT,
     last_pills: Vec<RECT>,
     last_blur_rects: Vec<RECT>,
@@ -2339,6 +2340,7 @@ impl TrayOverlayState {
             glass_visible: false,
             blur_visible: false,
             swca_cleared: false,
+            border_stripped: None,
             last_bar_rect: RECT::default(),
             last_pills: Vec::new(),
             last_blur_rects: Vec::new(),
@@ -2931,7 +2933,9 @@ impl TaskbarStyler {
 
     pub fn sync_style_fast(&mut self, cfg: &AppConfig) {
         self.invalidate_style_only();
-        self.sync_taskbar_inner(cfg, true, false);
+        // Pure visual overlay update (opacity/hue/viz): avoid forcing cross-process TAP IPC
+        // into explorer.exe on every slider tick when TAP state is already connected & unchanged.
+        self.sync_taskbar_inner(cfg, true, false, false);
     }
 
     pub fn has_viz_decay(&self) -> bool {
@@ -3081,7 +3085,7 @@ impl TaskbarStyler {
     }
 
     pub fn sync_taskbar(&mut self, cfg: &AppConfig, force_apply: bool) {
-        self.sync_taskbar_inner(cfg, force_apply, true);
+        self.sync_taskbar_inner(cfg, force_apply, true, force_apply);
     }
 
     /// Cheap foreground/focus guard: enforces Z-order across primary + secondary taskbars.
@@ -3137,7 +3141,7 @@ impl TaskbarStyler {
                 *shw != ov.last_tray_hwnd || *sr != ov.last_bar_rect
             });
         if layout_changed {
-            self.sync_taskbar_inner(cfg, true, true);
+            self.sync_taskbar_inner(cfg, true, true, true);
             return;
         }
         let use_tap = wants_overlay(cfg);
@@ -3190,7 +3194,7 @@ impl TaskbarStyler {
 
     pub fn on_tap_connected(&mut self, cfg: &AppConfig) {
         self.invalidate_cache();
-        self.sync_taskbar_inner(cfg, true, true);
+        self.sync_taskbar_inner(cfg, true, true, true);
     }
 
     /// Applies finished background UIA pill rects when posted back to main thread.
@@ -3298,7 +3302,13 @@ impl TaskbarStyler {
         any_changed
     }
 
-    fn sync_taskbar_inner(&mut self, cfg: &AppConfig, force_apply: bool, allow_uia: bool) {
+    fn sync_taskbar_inner(
+        &mut self,
+        cfg: &AppConfig,
+        force_apply: bool,
+        allow_uia: bool,
+        force_tap: bool,
+    ) {
         let trays = query_all_tray_geometries();
         let Some((main_hw, main_rect, main_u)) = trays.first().copied() else {
             self.hide_overlays();
@@ -3315,7 +3325,7 @@ impl TaskbarStyler {
             self.styled_any_hwnd = true;
         }
         self.tap
-            .apply(main_hw, use_tap, force_apply || main_changed);
+            .apply(main_hw, use_tap, force_tap || main_changed);
         self.tap_connected = self.tap.tap_ok;
 
         let pal = effective_taskbar_palette(cfg);
@@ -3411,6 +3421,9 @@ impl TaskbarStyler {
             ov.refreshed_dwm_hwnd = HWND::default();
             ov.last_dwm_rect = RECT::default();
             ov.swca_cleared = false;
+            if hwnd_changed {
+                ov.border_stripped = None;
+            }
             ov.last_pills.clear();
             ov.pending_dwm_settle = true;
         }
@@ -3425,8 +3438,8 @@ impl TaskbarStyler {
             || need_cold_dwm_refresh
             || ov.last_style_sig != Some(sig);
 
-        // Strip Windows DWM border line whenever custom styling is active
-        if sig_changed {
+        // Strip Windows DWM border line only when taskbar HWND or overlay active state changes
+        if hwnd_changed || ov.border_stripped != Some(use_tap) {
             unsafe {
                 let border_color = if !use_tap {
                     DWMWA_COLOR_DEFAULT_U32
@@ -3440,6 +3453,7 @@ impl TaskbarStyler {
                     4,
                 );
             }
+            ov.border_stripped = Some(use_tap);
         }
 
         if !use_tap {
@@ -3458,7 +3472,7 @@ impl TaskbarStyler {
             return;
         }
 
-        if !ov.swca_cleared || sig_changed {
+        if !ov.swca_cleared || hwnd_changed {
             clear_hw_accent_with(swca_fn, tray_hw);
             ov.swca_cleared = true;
         }

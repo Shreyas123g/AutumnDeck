@@ -2843,8 +2843,6 @@ unsafe fn music_effective_palette(cfg: &AppConfig) -> ThemePalette {
 }
 
 unsafe fn music_fg_key(
-    x: f32,
-    y: f32,
     s: f32,
     cfg: &AppConfig,
     pal: &ThemePalette,
@@ -2854,8 +2852,6 @@ unsafe fn music_fg_key(
     has_custom_fonts: bool,
 ) -> u64 {
     let mut h = FgKeyHasher::new(0xB451_C001);
-    h.mix_f32(x);
-    h.mix_f32(y);
     h.mix_f32(s);
     h.mix_bool(has_custom_fonts);
     h.mix_pal(pal);
@@ -3057,7 +3053,7 @@ pub unsafe fn draw_music_widget_with_viz_cached(
     let (lw, lh) = music_logical_size(cfg);
     let w = lw * s;
     let h = lh * s;
-    let key = music_fg_key(x, y, s, cfg, &pal, media, cover_bmp, hover, custom_fonts.is_some());
+    let key = music_fg_key(s, cfg, &pal, media, cover_bmp, hover, custom_fonts.is_some());
     let is_std = matches!(
         cfg.music_style,
         MusicStyle::Sanctuary

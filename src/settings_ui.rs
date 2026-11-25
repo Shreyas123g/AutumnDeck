@@ -1248,6 +1248,7 @@ pub enum SettingsCommand {
     WallpaperConfigUpdated,
     ResampleWallpaper,
     StopExternalLively,
+    MacDockPreview,
     MacDockUpdated,
     SuiteApplied,
     #[allow(dead_code)]
@@ -1569,6 +1570,7 @@ pub struct SettingsController {
     wheel_last_event_at: Option<Instant>,
     wheel_last_page_at: Option<Instant>,
     wheel_last_view: u32,
+    last_live_preview_at: Option<Instant>,
     clock_style_profiles: HashMap<u8, ClockStyleProfile>,
     music_style_profiles: HashMap<u8, MusicStyleProfile>,
 }
@@ -1826,6 +1828,7 @@ impl SettingsController {
             wheel_last_event_at: None,
             wheel_last_page_at: None,
             wheel_last_view: 0,
+            last_live_preview_at: None,
             clock_style_profiles: HashMap::new(),
             music_style_profiles: HashMap::new(),
         }
@@ -3571,9 +3574,27 @@ impl SettingsController {
                 }
 
                 if let Some(kind) = self.dragging_slider {
-                    let cmd = self
+                    let raw_cmd = self
                         .update_slider_from_x(kind, px, cfg)
                         .unwrap_or(SettingsCommand::None);
+                    let cmd = if matches!(
+                        raw_cmd,
+                        SettingsCommand::StylePreview | SettingsCommand::MacDockPreview
+                    ) {
+                        let now = Instant::now();
+                        let allow = self
+                            .last_live_preview_at
+                            .map(|t| now.duration_since(t) >= Duration::from_millis(16))
+                            .unwrap_or(true);
+                        if allow {
+                            self.last_live_preview_at = Some(now);
+                            raw_cmd
+                        } else {
+                            SettingsCommand::None
+                        }
+                    } else {
+                        raw_cmd
+                    };
                     unsafe {
                         let _ = InvalidateRect(Some(self.hwnd), None, false);
                     }
@@ -3672,6 +3693,12 @@ impl SettingsController {
                         let cmd = self
                             .update_slider_from_x(kind, px, cfg)
                             .unwrap_or(SettingsCommand::None);
+                        if matches!(
+                            cmd,
+                            SettingsCommand::StylePreview | SettingsCommand::MacDockPreview
+                        ) {
+                            self.last_live_preview_at = Some(Instant::now());
+                        }
                         unsafe {
                             let _ = InvalidateRect(Some(self.hwnd), None, false);
                         }
@@ -4655,7 +4682,7 @@ impl SettingsController {
             if new_mag != cfg.mac_dock_mag_pct {
                 cfg.mac_dock_mag_pct = new_mag;
                 self.draft_cfg.mac_dock_mag_pct = new_mag;
-                return Some(SettingsCommand::MacDockUpdated);
+                return Some(SettingsCommand::MacDockPreview);
             }
             return None;
         }
@@ -4664,7 +4691,7 @@ impl SettingsController {
             if new_sz != cfg.mac_dock_icon_size {
                 cfg.mac_dock_icon_size = new_sz;
                 self.draft_cfg.mac_dock_icon_size = new_sz;
-                return Some(SettingsCommand::MacDockUpdated);
+                return Some(SettingsCommand::MacDockPreview);
             }
             return None;
         }
@@ -9777,13 +9804,23 @@ impl SettingsController {
                 return false;
             }
 
-            // Ensure preview app icons & album art are loaded for draft_cfg
-            self.preview_icons.sync_apps(
-                &self.draft_cfg.apps,
-                self.wic_factory.as_ref(),
-                rt,
-                resolve_apps_icon_tint(&self.draft_cfg),
-            );
+            // Only sync preview app icons & album art on pages that actually display them
+            let needs_app_preview_icons = !self.onboarding_active
+                && self.active_tab == StudioTab::DesktopWidgets
+                && matches!(
+                    self.widget_page,
+                    WidgetPage::Gallery
+                        | WidgetPage::CustomizeApps
+                        | WidgetPage::EditWidgetCanvas(WidgetCanvasTarget::Apps)
+                );
+            if needs_app_preview_icons {
+                self.preview_icons.sync_apps(
+                    &self.draft_cfg.apps,
+                    self.wic_factory.as_ref(),
+                    rt,
+                    resolve_apps_icon_tint(&self.draft_cfg),
+                );
+            }
             if self.active_tab == StudioTab::DesktopWidgets
                 && self.widget_page == WidgetPage::PickInstalledApp
             {
@@ -9813,10 +9850,23 @@ impl SettingsController {
                 }
                 self.wp_thumbs.sync_visible(&visible_wp, rt, self.hwnd);
             }
-            let cover_bmp_owned: Option<ID2D1Bitmap> = self
-                .preview_cover
-                .resolve(rt, self.wic_factory.as_ref(), &self.preview_media)
-                .cloned();
+            let needs_cover_preview = !self.onboarding_active
+                && self.active_tab == StudioTab::DesktopWidgets
+                && matches!(
+                    self.widget_page,
+                    WidgetPage::Gallery
+                        | WidgetPage::MusicFolders
+                        | WidgetPage::MusicThemes
+                        | WidgetPage::CustomizeMusic
+                        | WidgetPage::EditWidgetCanvas(WidgetCanvasTarget::Music)
+                );
+            let cover_bmp_owned: Option<ID2D1Bitmap> = if needs_cover_preview {
+                self.preview_cover
+                    .resolve(rt, self.wic_factory.as_ref(), &self.preview_media)
+                    .cloned()
+            } else {
+                None
+            };
 
             rt.BeginDraw();
 
@@ -23254,5 +23304,51 @@ mod tests {
         unsafe {
             CoUninitialize();
         }
+    }
+
+    #[test]
+    fn dock_sliders_emit_preview_during_drag_and_commit_on_release() {
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::RealisticWaterDock);
+        sc.draft_cfg = cfg.clone();
+
+        // Live drag updates size/magnification via lightweight MacDockPreview (no OS workarea storm)
+        let cmd_sz = sc.update_slider_from_x(SliderKind::MacDockIconSize, 520.0, &mut cfg);
+        assert!(
+            matches!(cmd_sz, Some(SettingsCommand::MacDockPreview)),
+            "MacDockIconSize drag must emit lightweight MacDockPreview, not full MacDockUpdated"
+        );
+        assert_eq!(cfg.mac_dock_icon_size, sc.draft_cfg.mac_dock_icon_size);
+
+        let cmd_mag = sc.update_slider_from_x(SliderKind::MacDockMagPct, 480.0, &mut cfg);
+        assert!(
+            matches!(cmd_mag, Some(SettingsCommand::MacDockPreview)),
+            "MacDockMagPct drag must emit lightweight MacDockPreview, not full MacDockUpdated"
+        );
+        assert_eq!(cfg.mac_dock_mag_pct, sc.draft_cfg.mac_dock_mag_pct);
+
+        // Rapid WM_MOUSEMOVE within 16ms throttles live preview emissions while still updating values
+        let dummy_hwnd = HWND(0x1234usize as *mut c_void);
+        sc.hwnd = dummy_hwnd;
+        sc.draft_initialized = true;
+        sc.tracking_mouse = true;
+        sc.dragging_slider = Some(SliderKind::MacDockIconSize);
+        sc.last_live_preview_at = Some(Instant::now());
+        let lp_move = LPARAM(320isize);
+        let move_res = sc.handle_message(dummy_hwnd, WM_MOUSEMOVE, WPARAM(0), lp_move, &mut cfg, false);
+        assert!(
+            matches!(move_res, Some((_, SettingsCommand::None))),
+            "sub-16ms WM_MOUSEMOVE during dock slider drag should throttle preview command"
+        );
+
+        // Releasing mouse button commits the final layout & config save via MacDockUpdated
+        let up_res = sc.handle_message(dummy_hwnd, WM_LBUTTONUP, WPARAM(0), lp_move, &mut cfg, false);
+        assert!(
+            matches!(up_res, Some((_, SettingsCommand::MacDockUpdated))),
+            "WM_LBUTTONUP on dock slider must commit MacDockUpdated"
+        );
+        assert!(sc.dragging_slider.is_none());
+        sc.hwnd = HWND::default();
     }
 }

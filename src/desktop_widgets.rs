@@ -771,44 +771,6 @@ unsafe fn draw_layout_with_shadow(
     rt.DrawTextLayout(Vector2 { X: x, Y: y }, layout, br, D2D1_DRAW_TEXT_OPTIONS_NONE);
 }
 
-pub unsafe fn load_bitmap_from_png_tinted(
-    wic: &IWICImagingFactory,
-    rt: &ID2D1RenderTarget,
-    path: &Path,
-    tint: Option<((u8, u8, u8), (u8, u8, u8))>,
-) -> Option<ID2D1Bitmap> {
-    if !path.exists() {
-        return None;
-    }
-    let wide = to_wide(&path.to_string_lossy());
-    let decoder = wic
-        .CreateDecoderFromFilename(
-            PCWSTR(wide.as_ptr()),
-            None,
-            windows::Win32::Foundation::GENERIC_READ,
-            WICDecodeMetadataCacheOnDemand,
-        )
-        .ok()?;
-    let frame = decoder.GetFrame(0).ok()?;
-    let src: IWICBitmapSource = frame.into();
-    wic_src_to_d2d_tinted(wic, rt, &src, tint)
-}
-
-pub unsafe fn load_bitmap_from_png_bytes_tinted(
-    wic: &IWICImagingFactory,
-    rt: &ID2D1RenderTarget,
-    bytes: &[u8],
-    tint: Option<((u8, u8, u8), (u8, u8, u8))>,
-) -> Option<ID2D1Bitmap> {
-    let stream = SHCreateMemStream(Some(bytes))?;
-    let decoder = wic
-        .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
-        .ok()?;
-    let frame = decoder.GetFrame(0).ok()?;
-    let src: IWICBitmapSource = frame.into();
-    wic_src_to_d2d_tinted(wic, rt, &src, tint)
-}
-
 pub fn derive_app_name(path: &str) -> String {
     let lower = path.trim().to_ascii_lowercase();
     if lower == "ms-settings:" {
@@ -1044,6 +1006,100 @@ pub(crate) fn apply_duotone_tint_pbgra(buf: &mut [u8], tint: ((u8, u8, u8), (u8,
     }
 }
 
+unsafe fn wic_src_to_pbgra_pixels(
+    wic: &IWICImagingFactory,
+    src: &IWICBitmapSource,
+) -> Option<(u32, u32, Vec<u8>)> {
+    let converter = wic.CreateFormatConverter().ok()?;
+    converter
+        .Initialize(
+            src,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            None,
+            0.0,
+            WICBitmapPaletteTypeCustom,
+        )
+        .ok()?;
+    let mut w = 0u32;
+    let mut h = 0u32;
+    if converter.GetSize(&mut w, &mut h).is_err() || w == 0 || h == 0 {
+        return None;
+    }
+    let stride = w.checked_mul(4)?;
+    let byte_len = (stride as usize).checked_mul(h as usize)?;
+    let mut buf = vec![0u8; byte_len];
+    if converter.CopyPixels(std::ptr::null(), stride, &mut buf).is_err() {
+        return None;
+    }
+    Some((w, h, buf))
+}
+
+unsafe fn pbgra_pixels_to_d2d_tinted(
+    rt: &ID2D1RenderTarget,
+    w: u32,
+    h: u32,
+    raw: &[u8],
+    tint: Option<((u8, u8, u8), (u8, u8, u8))>,
+) -> Option<ID2D1Bitmap> {
+    let stride = w.checked_mul(4)?;
+    let props = D2D1_BITMAP_PROPERTIES {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0,
+        dpiY: 96.0,
+    };
+    if let Some(t) = tint {
+        let mut buf = raw.to_vec();
+        apply_duotone_tint_pbgra(&mut buf, t);
+        rt.CreateBitmap(
+            D2D_SIZE_U { width: w, height: h },
+            Some(buf.as_ptr() as *const c_void),
+            stride,
+            &props,
+        )
+        .ok()
+    } else {
+        rt.CreateBitmap(
+            D2D_SIZE_U { width: w, height: h },
+            Some(raw.as_ptr() as *const c_void),
+            stride,
+            &props,
+        )
+        .ok()
+    }
+}
+
+unsafe fn load_png_file_pixels(wic: &IWICImagingFactory, path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    if !path.exists() {
+        return None;
+    }
+    let wide = to_wide(&path.to_string_lossy());
+    let decoder = wic
+        .CreateDecoderFromFilename(
+            PCWSTR(wide.as_ptr()),
+            None,
+            windows::Win32::Foundation::GENERIC_READ,
+            WICDecodeMetadataCacheOnDemand,
+        )
+        .ok()?;
+    let frame = decoder.GetFrame(0).ok()?;
+    let src: IWICBitmapSource = frame.into();
+    wic_src_to_pbgra_pixels(wic, &src)
+}
+
+unsafe fn load_png_bytes_pixels(wic: &IWICImagingFactory, bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let stream = SHCreateMemStream(Some(bytes))?;
+    let decoder = wic
+        .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
+        .ok()?;
+    let frame = decoder.GetFrame(0).ok()?;
+    let src: IWICBitmapSource = frame.into();
+    wic_src_to_pbgra_pixels(wic, &src)
+}
+
 pub unsafe fn wic_src_to_d2d_tinted(
     wic: &IWICImagingFactory,
     rt: &ID2D1RenderTarget,
@@ -1102,12 +1158,10 @@ pub unsafe fn wic_src_to_d2d(
     wic_src_to_d2d_tinted(wic, rt, src, match_theme.then_some(AUTUMN_ICON_TINT))
 }
 
-unsafe fn load_shell_item_bitmap_tinted(
+unsafe fn load_shell_item_pixels(
     wic: &IWICImagingFactory,
-    rt: &ID2D1RenderTarget,
     parsing_path: &str,
-    tint: Option<((u8, u8, u8), (u8, u8, u8))>,
-) -> Option<ID2D1Bitmap> {
+) -> Option<(u32, u32, Vec<u8>)> {
     let wide = to_wide(parsing_path);
     let factory: IShellItemImageFactory =
         SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None).ok()?;
@@ -1130,28 +1184,29 @@ unsafe fn load_shell_item_bitmap_tinted(
         .ok()
         .and_then(|wb| {
             let src: IWICBitmapSource = wb.into();
-            wic_src_to_d2d_tinted(wic, rt, &src, tint)
+            wic_src_to_pbgra_pixels(wic, &src)
         });
     let _ = DeleteObject(HGDIOBJ(hbm.0));
     out
 }
 
-pub unsafe fn load_app_bitmap_for_path_tinted(
+/// Loads raw untinted PBGRA icon pixels once via Shell COM / WIC so subsequent color-slider
+/// edits can re-tint in pure RAM without ever re-invoking Explorer Shell COM IPC.
+/// Returns `(w, h, pbgra_bytes, is_pre_tinted_autumn_png)`.
+unsafe fn load_app_pixels_for_path(
     wic: &IWICImagingFactory,
-    rt: &ID2D1RenderTarget,
     app_path: &str,
-    tint: Option<((u8, u8, u8), (u8, u8, u8))>,
-) -> Option<ID2D1Bitmap> {
+    prefer_themed_png: bool,
+) -> Option<(u32, u32, Vec<u8>, bool)> {
     let lower = app_path.to_ascii_lowercase();
-    let png_tint = tint.filter(|t| *t != AUTUMN_ICON_TINT);
     if lower == "ms-settings:" || lower.ends_with("\\settings.url") {
-        if tint.is_some() {
-            if let Some(bmp) = resolve_resources_dir()
+        if prefer_themed_png {
+            if let Some((w, h, buf)) = resolve_resources_dir()
                 .map(|r| r.join("Images").join("Icons").join("App_settings_2.png"))
-                .and_then(|p| load_bitmap_from_png_tinted(wic, rt, &p, png_tint))
-                .or_else(|| load_bitmap_from_png_bytes_tinted(wic, rt, EMBED_ICON_SETTINGS, png_tint))
+                .and_then(|p| load_png_file_pixels(wic, &p))
+                .or_else(|| load_png_bytes_pixels(wic, EMBED_ICON_SETTINGS))
             {
-                return Some(bmp);
+                return Some((w, h, buf, true));
             }
         }
         let sys_settings = PathBuf::from(r"C:\Windows\ImmersiveControlPanel\SystemSettings.exe");
@@ -1172,43 +1227,41 @@ pub unsafe fn load_app_bitmap_for_path_tinted(
                     .ok()
                     .and_then(|wb| {
                         let src: IWICBitmapSource = wb.into();
-                        wic_src_to_d2d_tinted(wic, rt, &src, tint)
+                        wic_src_to_pbgra_pixels(wic, &src)
                     });
                 let _ = DestroyIcon(shfi.hIcon);
-                if out.is_some() {
-                    return out;
+                if let Some((w, h, buf)) = out {
+                    return Some((w, h, buf, false));
                 }
             }
         }
     }
 
-    if tint.is_some() {
+    if prefer_themed_png {
         let icon_dir = resolve_resources_dir().map(|r| r.join("Images").join("Icons"));
         if lower.ends_with("gemini.lnk") {
-            if let Some(bmp) = icon_dir
+            if let Some((w, h, buf)) = icon_dir
                 .as_ref()
-                .and_then(|d| load_bitmap_from_png_tinted(wic, rt, &d.join("App_Gemini.png"), png_tint))
-                .or_else(|| load_bitmap_from_png_bytes_tinted(wic, rt, EMBED_ICON_GEMINI, png_tint))
+                .and_then(|d| load_png_file_pixels(wic, &d.join("App_Gemini.png")))
+                .or_else(|| load_png_bytes_pixels(wic, EMBED_ICON_GEMINI))
             {
-                return Some(bmp);
+                return Some((w, h, buf, true));
             }
         } else if lower.ends_with("wispr flow.lnk") {
-            if let Some(bmp) = icon_dir
+            if let Some((w, h, buf)) = icon_dir
                 .as_ref()
-                .and_then(|d| {
-                    load_bitmap_from_png_tinted(wic, rt, &d.join("App_Wispr_Flow.png"), png_tint)
-                })
-                .or_else(|| load_bitmap_from_png_bytes_tinted(wic, rt, EMBED_ICON_WISPR, png_tint))
+                .and_then(|d| load_png_file_pixels(wic, &d.join("App_Wispr_Flow.png")))
+                .or_else(|| load_png_bytes_pixels(wic, EMBED_ICON_WISPR))
             {
-                return Some(bmp);
+                return Some((w, h, buf, true));
             }
         }
     }
 
     // Modern UWP/Store/AppsFolder & Start Menu items render sharpest via IShellItemImageFactory
     if lower.starts_with("shell:") {
-        if let Some(bmp) = load_shell_item_bitmap_tinted(wic, rt, app_path.trim(), tint) {
-            return Some(bmp);
+        if let Some((w, h, buf)) = load_shell_item_pixels(wic, app_path.trim()) {
+            return Some((w, h, buf, false));
         }
     }
 
@@ -1237,14 +1290,29 @@ pub unsafe fn load_app_bitmap_for_path_tinted(
             .ok()
             .and_then(|wb| {
                 let src: IWICBitmapSource = wb.into();
-                wic_src_to_d2d_tinted(wic, rt, &src, tint)
+                wic_src_to_pbgra_pixels(wic, &src)
             });
         let _ = DestroyIcon(shfi.hIcon);
-        if out.is_some() {
-            return out;
+        if let Some((w, h, buf)) = out {
+            return Some((w, h, buf, false));
         }
     }
-    load_shell_item_bitmap_tinted(wic, rt, &resolved, tint)
+    load_shell_item_pixels(wic, &resolved).map(|(w, h, buf)| (w, h, buf, false))
+}
+
+pub unsafe fn load_app_bitmap_for_path_tinted(
+    wic: &IWICImagingFactory,
+    rt: &ID2D1RenderTarget,
+    app_path: &str,
+    tint: Option<((u8, u8, u8), (u8, u8, u8))>,
+) -> Option<ID2D1Bitmap> {
+    let (w, h, buf, is_pre_tinted_autumn) = load_app_pixels_for_path(wic, app_path, tint.is_some())?;
+    let eff_tint = if is_pre_tinted_autumn && tint == Some(AUTUMN_ICON_TINT) {
+        None
+    } else {
+        tint
+    };
+    pbgra_pixels_to_d2d_tinted(rt, w, h, &buf, eff_tint)
 }
 
 pub unsafe fn load_app_bitmap_for_path(
@@ -1284,6 +1352,9 @@ impl AppIconPool {
         let Some(w) = wic else {
             return;
         };
+        if self.cache.len() >= 96 {
+            self.cache.clear();
+        }
         for &p in paths {
             if !self.cache.contains_key(p) {
                 let bmp = load_app_bitmap_for_path(w, rt, p, false);
@@ -1293,8 +1364,16 @@ impl AppIconPool {
     }
 }
 
+struct CachedAppIconSlot {
+    path: String,
+    prefer_themed_png: bool,
+    raw_pixels: Option<(u32, u32, Vec<u8>, bool)>,
+    tint_key: u64,
+    bmp: Option<ID2D1Bitmap>,
+}
+
 pub struct AppIconCache {
-    slots: Vec<Option<(String, u64, Option<ID2D1Bitmap>)>>,
+    slots: Vec<Option<CachedAppIconSlot>>,
 }
 
 impl AppIconCache {
@@ -1307,7 +1386,7 @@ impl AppIconCache {
     }
 
     pub fn slot(&self, idx: usize) -> Option<&ID2D1Bitmap> {
-        self.slots.get(idx)?.as_ref()?.2.as_ref()
+        self.slots.get(idx)?.as_ref()?.bmp.as_ref()
     }
 
     pub unsafe fn sync_apps(
@@ -1318,19 +1397,47 @@ impl AppIconCache {
         tint: Option<((u8, u8, u8), (u8, u8, u8))>,
     ) {
         let target_key = tint_u64_key(tint);
+        let prefer_themed_png = tint.is_some();
         self.slots.resize_with(apps.len(), || None);
         for (idx, app) in apps.iter().enumerate() {
-            let needs_reload = match &self.slots[idx] {
-                Some((cached_path, cached_key, _)) => {
-                    cached_path != &app.path || *cached_key != target_key
+            let need_shell_load = match &self.slots[idx] {
+                Some(entry) => {
+                    entry.path != app.path || entry.prefer_themed_png != prefer_themed_png
                 }
                 None => true,
             };
-            if needs_reload {
+            if need_shell_load {
                 if let Some(w) = wic {
-                    let bmp = load_app_bitmap_for_path_tinted(w, rt, &app.path, tint);
+                    let raw_pixels = load_app_pixels_for_path(w, &app.path, prefer_themed_png);
+                    let bmp = raw_pixels.as_ref().and_then(|(pw, ph, buf, pre_autumn)| {
+                        let eff_tint = if *pre_autumn && tint == Some(AUTUMN_ICON_TINT) {
+                            None
+                        } else {
+                            tint
+                        };
+                        pbgra_pixels_to_d2d_tinted(rt, *pw, *ph, buf, eff_tint)
+                    });
                     // Cache both hits and misses (None) so missing icons never repeat Shell COM lookups per frame.
-                    self.slots[idx] = Some((app.path.clone(), target_key, bmp));
+                    self.slots[idx] = Some(CachedAppIconSlot {
+                        path: app.path.clone(),
+                        prefer_themed_png,
+                        raw_pixels,
+                        tint_key: target_key,
+                        bmp,
+                    });
+                }
+            } else if let Some(entry) = self.slots[idx].as_mut() {
+                if entry.tint_key != target_key {
+                    // Pure in-RAM duotone re-tint: zero Shell COM IPC or disk reads during Hue slider drags!
+                    entry.bmp = entry.raw_pixels.as_ref().and_then(|(pw, ph, buf, pre_autumn)| {
+                        let eff_tint = if *pre_autumn && tint == Some(AUTUMN_ICON_TINT) {
+                            None
+                        } else {
+                            tint
+                        };
+                        pbgra_pixels_to_d2d_tinted(rt, *pw, *ph, buf, eff_tint)
+                    });
+                    entry.tint_key = target_key;
                 }
             }
         }
@@ -1445,8 +1552,7 @@ pub struct WidgetFgCacheSlot {
     key: u64,
     rt_ptr: usize,
     cache_gen: u64,
-    ox: f32,
-    oy: f32,
+    pad: f32,
     aw: f32,
     ah: f32,
     pix_w: u32,
@@ -1459,6 +1565,7 @@ impl WidgetFgCacheSlot {
     pub fn clear(&mut self) {
         self.key = 0;
         self.rt_ptr = 0;
+        self.pad = 0.0;
         self.pix_w = 0;
         self.pix_h = 0;
         self.bmp = None;
@@ -1509,10 +1616,12 @@ impl WidgetFgCacheSlot {
         F: FnMut(&ID2D1RenderTarget),
     {
         let rt_ptr = rt.as_raw() as usize;
-        let ox = (x - margin).floor();
-        let oy = (y - margin).floor();
-        let req_w = ((x + w + margin) - ox).ceil().max(1.0);
-        let req_h = ((y + h + margin) - oy).ceil().max(1.0);
+        // Translation-invariant local bitmap bounds: (x, y) always renders at (pad, pad)
+        // inside the offscreen bitmap so dragging a widget across the screen hits cache
+        // with zero DirectWrite re-rasterization or compatible RT reallocation.
+        let pad = margin.ceil().max(0.0);
+        let req_w = (w + pad * 2.0).ceil().max(1.0);
+        let req_h = (h + pad * 2.0).ceil().max(1.0);
         let (mut dpi_x, mut dpi_y) = (96.0f32, 96.0f32);
         rt.GetDpi(&mut dpi_x, &mut dpi_y);
         let req_pw = ((req_w * dpi_x) / 96.0).round().max(1.0) as u32;
@@ -1524,17 +1633,18 @@ impl WidgetFgCacheSlot {
             && self.cache_gen == cache_gen
             && self.pix_w == req_pw
             && self.pix_h == req_ph
-            && self.ox.to_bits() == ox.to_bits()
-            && self.oy.to_bits() == oy.to_bits()
+            && self.pad.to_bits() == pad.to_bits()
             && self.bmp.is_some();
 
         if hit {
             if let Some(ref bmp) = self.bmp {
+                let dst_x = x - self.pad;
+                let dst_y = y - self.pad;
                 let dst = D2D_RECT_F {
-                    left: self.ox,
-                    top: self.oy,
-                    right: self.ox + self.aw,
-                    bottom: self.oy + self.ah,
+                    left: dst_x,
+                    top: dst_y,
+                    right: dst_x + self.aw,
+                    bottom: dst_y + self.ah,
                 };
                 let src = D2D_RECT_F {
                     left: 0.0,
@@ -1588,7 +1698,7 @@ impl WidgetFgCacheSlot {
             };
             crt_rt.Clear(Some(&transparent));
             crt_rt.SetTextAntialiasMode(rt.GetTextAntialiasMode());
-            crt_rt.SetTransform(&Matrix3x2::translation(-ox, -oy));
+            crt_rt.SetTransform(&Matrix3x2::translation(pad - x, pad - y));
             draw_fn(crt_rt);
             crt_rt.SetTransform(&Matrix3x2::identity());
             let end_ok = crt_rt.EndDraw(None, None).is_ok();
@@ -1598,17 +1708,18 @@ impl WidgetFgCacheSlot {
                     self.key = key;
                     self.rt_ptr = rt_ptr;
                     self.cache_gen = cache_gen;
-                    self.ox = ox;
-                    self.oy = oy;
+                    self.pad = pad;
                     self.aw = actual.width;
                     self.ah = actual.height;
                     self.pix_w = req_pw;
                     self.pix_h = req_ph;
+                    let dst_x = x - pad;
+                    let dst_y = y - pad;
                     let dst = D2D_RECT_F {
-                        left: ox,
-                        top: oy,
-                        right: ox + actual.width,
-                        bottom: oy + actual.height,
+                        left: dst_x,
+                        top: dst_y,
+                        right: dst_x + actual.width,
+                        bottom: dst_y + actual.height,
                     };
                     let src = D2D_RECT_F {
                         left: 0.0,
@@ -2509,8 +2620,6 @@ enum FlipMechPass {
 }
 
 unsafe fn clock_fg_key(
-    x: f32,
-    y: f32,
     s: f32,
     dt_w: f32,
     dt_h: f32,
@@ -2524,8 +2633,6 @@ unsafe fn clock_fg_key(
     include_seconds: bool,
 ) -> u64 {
     let mut h = FgKeyHasher::new(0xC10C_F001);
-    h.mix_f32(x);
-    h.mix_f32(y);
     h.mix_f32(s);
     h.mix_f32(dt_w);
     h.mix_f32(dt_h);
@@ -5926,10 +6033,8 @@ unsafe fn draw_datetime_widget_inner(
                             let mut kh = FgKeyHasher::new(0xF11A_0001);
                             kh.mix_u64(sec_val as u64);
                             kh.mix_str(txt_s);
-                            kh.mix_f32(rect.left);
-                            kh.mix_f32(rect.top);
-                            kh.mix_f32(rect.right);
-                            kh.mix_f32(rect.bottom);
+                            kh.mix_f32(rect.right - rect.left);
+                            kh.mix_f32(rect.bottom - rect.top);
                             kh.mix_f32(pt_sz);
                             kh.mix_f32(s);
                             kh.mix_str(&font_clock);
@@ -7941,8 +8046,6 @@ unsafe fn draw_datetime_widget_inner(
                     draw_body(rt, None, FlipMechPass::All, Some((sec_pair, cache_gen)));
                 } else {
                     let static_key = clock_fg_key(
-                        x,
-                        y,
                         s,
                         dt_w,
                         dt_h,
@@ -7992,8 +8095,6 @@ unsafe fn draw_datetime_widget_inner(
                     );
                 if !flip_anim && !pbr_anim {
                     let key = clock_fg_key(
-                        x,
-                        y,
                         s,
                         dt_w,
                         dt_h,
@@ -10505,6 +10606,8 @@ pub struct DesktopWidgets {
     widget_sims: Box<[VizSnapshot; 19]>,
     last_fx_tick: Instant,
     last_render_at: Instant,
+    last_drag_render_at: Option<Instant>,
+    last_telemetry_at: Option<Instant>,
     last_hover_move: Instant,
     viz_dirty: bool,
     tracking_leave: bool,
@@ -10816,6 +10919,8 @@ impl DesktopWidgets {
             widget_sims: Box::new(std::array::from_fn(|_| VizSnapshot::default())),
             last_fx_tick: Instant::now(),
             last_render_at: Instant::now(),
+            last_drag_render_at: None,
+            last_telemetry_at: None,
             last_hover_move: Instant::now() - Duration::from_secs(5),
             viz_dirty: false,
             tracking_leave: false,
@@ -11991,7 +12096,13 @@ impl DesktopWidgets {
         self.media_engine.set_anim_fps(cfg.anim_fps);
         if self.telemetry_needed() && !self.covered_by_maximized {
             self.ensure_pdh_started();
-            self.query_telemetry();
+            let tel_due = self
+                .last_telemetry_at
+                .map(|t| t.elapsed() >= Duration::from_millis(500))
+                .unwrap_or(true);
+            if tel_due {
+                self.query_telemetry();
+            }
         } else if !self.cfg.widgets_enabled || !self.cfg.show_vitals || self.cfg.vitals_style != 4 {
             self.dxgi_cached_adapter = None;
         }
@@ -12098,6 +12209,7 @@ impl DesktopWidgets {
     }
 
     fn query_telemetry(&mut self) {
+        self.last_telemetry_at = Some(Instant::now());
         self.ensure_pdh_started();
         if self.pdh_query == 0 {
             if let Ok(mut g) = self.pdh_pending.try_lock() {
@@ -12204,6 +12316,12 @@ impl DesktopWidgets {
     fn compute_tight_bounds(&self) -> Option<(i32, i32, i32, i32)> {
         if !self.cfg.widgets_enabled || self.screen_w <= 0 || self.screen_h <= 0 {
             return None;
+        }
+        // Hold full monitor surface while actively dragging a widget so moving across 64px
+        // boundaries never triggers DXGI swap-chain ResizeBuffers + D3D Flush stalls mid-drag.
+        // Bounds shrink right back to the tight box on WM_LBUTTONUP / WM_CAPTURECHANGED.
+        if self.drag_widget.is_some() && self.drag_moved {
+            return Some((0, 0, self.screen_w.max(2), self.screen_h.max(2)));
         }
         let u = self.u;
         let mut min_x = 0.0f32;
@@ -13730,6 +13848,7 @@ unsafe extern "system" fn widgets_wnd_proc(
                     dw.drag_start_xy = start_xy;
                     dw.drag_start_px = start_px;
                     dw.drag_moved = false;
+                    dw.last_drag_render_at = None;
                     SetCapture(hwnd);
                 }
             }
@@ -13814,7 +13933,15 @@ unsafe extern "system" fn widgets_wnd_proc(
                             dw.cfg.ext_widgets[id.idx()].y = ny;
                         }
                     }
-                    dw.render();
+                    let now = Instant::now();
+                    let render_due = dw
+                        .last_drag_render_at
+                        .map(|t| now.duration_since(t) >= Duration::from_millis(12))
+                        .unwrap_or(true);
+                    if render_due {
+                        dw.last_drag_render_at = Some(now);
+                        dw.render();
+                    }
                     return LRESULT(0);
                 }
             }
@@ -13851,10 +13978,15 @@ unsafe extern "system" fn widgets_wnd_proc(
             LRESULT(0)
         }
         0x0215 => {
+            let was_moved = dw.drag_moved;
             dw.cc_drag = None;
             dw.drag_widget = None;
             dw.drag_moved = false;
+            dw.last_drag_render_at = None;
             dw.lbtn_down_zone = WidgetHitZone::None;
+            if was_moved {
+                dw.render();
+            }
             LRESULT(0)
         }
         0x0202 => {
@@ -13882,9 +14014,12 @@ unsafe extern "system" fn widgets_wnd_proc(
             let was_drag_widget = dw.drag_widget.take().is_some();
             let was_moved = dw.drag_moved;
             dw.drag_moved = false;
+            dw.last_drag_render_at = None;
             if was_drag_widget {
                 let _ = ReleaseCapture();
                 if was_moved {
+                    // Always paint final drop coordinates and tighten DComp bounds back down.
+                    dw.render();
                     dw.notify_sync(0);
                     return LRESULT(0);
                 }
@@ -14080,6 +14215,17 @@ mod fg_cache_tests {
                     });
                 }
                 assert_eq!(draw_count, 1, "cache should hit on matching key");
+
+                // Dragging/translating to arbitrary (x, y) must also hit cache without redrawing!
+                for &(tx, ty) in &[(42.0, 28.0), (148.5, 92.25), (310.75, 11.5)] {
+                    slot.draw_cached(&rt, gen, 0x1234, tx, ty, 200.0, 100.0, 4.0, |_| {
+                        draw_count += 1;
+                    });
+                }
+                assert_eq!(
+                    draw_count, 1,
+                    "translating widget position during drag must hit cached foreground bitmap"
+                );
 
                 // Key change triggers redraw while reusing compat_rt.
                 slot.draw_cached(&rt, gen, 0x5678, 16.0, 16.0, 200.0, 100.0, 4.0, |_| {
@@ -14409,19 +14555,32 @@ mod fg_cache_tests {
             let t_blue = resolve_apps_icon_tint(&cfg);
             cache.sync_apps(&cfg.apps, Some(&wic), &rt_base, t_blue);
             assert!(cache.slot(0).is_some(), "Settings icon should load with non-amber tint");
-            assert_eq!(cache.slots[0].as_ref().unwrap().1, tint_u64_key(t_blue));
+            assert_eq!(cache.slots[0].as_ref().unwrap().tint_key, tint_u64_key(t_blue));
+            let raw_ptr_blue = cache.slots[0]
+                .as_ref()
+                .and_then(|s| s.raw_pixels.as_ref())
+                .map(|p| p.2.as_ptr() as usize);
+            assert!(raw_ptr_blue.is_some(), "raw decoded icon pixels should be retained in RAM");
             let ptr_blue = cache.slot(0).unwrap().as_raw() as usize;
 
             // 2. Repeated sync with identical theme keeps exact cached bitmap pointer
             cache.sync_apps(&cfg.apps, Some(&wic), &rt_base, t_blue);
             assert_eq!(cache.slot(0).unwrap().as_raw() as usize, ptr_blue);
 
-            // 3. Changing theme accent updates cache key & reloads bitmap cleanly without manual invalidation
+            // 3. Changing theme accent updates cache key & re-tints from cached RAM pixels (no Shell COM reload)
             cfg.apps_accent_rgb = 0x22DD88;
             let t_emerald = resolve_apps_icon_tint(&cfg);
             assert_ne!(t_emerald, t_blue);
             cache.sync_apps(&cfg.apps, Some(&wic), &rt_base, t_emerald);
-            assert_eq!(cache.slots[0].as_ref().unwrap().1, tint_u64_key(t_emerald));
+            assert_eq!(cache.slots[0].as_ref().unwrap().tint_key, tint_u64_key(t_emerald));
+            assert_eq!(
+                cache.slots[0]
+                    .as_ref()
+                    .and_then(|s| s.raw_pixels.as_ref())
+                    .map(|p| p.2.as_ptr() as usize),
+                raw_ptr_blue,
+                "tint-only change must reuse cached raw pixels without Shell COM reload"
+            );
             assert_ne!(cache.slot(0).unwrap().as_raw() as usize, ptr_blue);
 
             // 4. Turning Match Theme OFF switches key to 0 (native icon)
@@ -14429,7 +14588,7 @@ mod fg_cache_tests {
             let t_native = resolve_apps_icon_tint(&cfg);
             assert_eq!(t_native, None);
             cache.sync_apps(&cfg.apps, Some(&wic), &rt_base, t_native);
-            assert_eq!(cache.slots[0].as_ref().unwrap().1, 0);
+            assert_eq!(cache.slots[0].as_ref().unwrap().tint_key, 0);
 
             cache.invalidate();
             CoUninitialize();

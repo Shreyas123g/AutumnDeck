@@ -4,6 +4,7 @@ use std::io::Write;
 use std::mem::size_of;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use windows::core::{w, Interface, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, PROPERTYKEY, RECT, WPARAM};
 use windows::Win32::Storage::FileSystem::{
@@ -6849,16 +6850,74 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
     (cfg, app_count, saw_per_widget_match, saw_dock_sync_flag)
 }
 
+static SAVE_IO_LOCK: Mutex<()> = Mutex::new(());
+static ASYNC_SAVE_QUEUE: OnceLock<Arc<(Mutex<Option<(PathBuf, String)>>, Condvar)>> =
+    OnceLock::new();
+
+fn write_config_data_atomic(path: &Path, data: &str) {
+    let _guard = SAVE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if write_atomic_synced(path, data).is_ok() {
+        let bak = config_sibling_path(path, ".bak");
+        let _ = write_atomic_synced(&bak, data);
+    }
+}
+
+fn async_save_queue() -> &'static Arc<(Mutex<Option<(PathBuf, String)>>, Condvar)> {
+    ASYNC_SAVE_QUEUE.get_or_init(|| {
+        let q = Arc::new((Mutex::new(None::<(PathBuf, String)>), Condvar::new()));
+        let q_worker = Arc::clone(&q);
+        let _ = std::thread::Builder::new()
+            .name("autumn-cfg-save".into())
+            .spawn(move || loop {
+                let pending = {
+                    let (lock, cv) = &*q_worker;
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    while g.is_none() {
+                        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    }
+                    g.take()
+                };
+                if let Some((path, data)) = pending {
+                    write_config_data_atomic(&path, &data);
+                }
+            });
+        q
+    })
+}
+
 pub fn save_config_to_path(cfg: &AppConfig, path: &Path) {
     let data = serialize_config_ini(cfg);
-    if write_atomic_synced(path, &data).is_ok() {
-        let bak = config_sibling_path(path, ".bak");
-        let _ = write_atomic_synced(&bak, &data);
-    }
+    write_config_data_atomic(path, &data);
 }
 
 pub fn save_config(cfg: &AppConfig) {
     save_config_to_path(cfg, &config_path());
+}
+
+/// Non-blocking single-slot coalescing save for interactive Studio/widget editing.
+/// Serializes on the caller thread (~0.05 ms) and offloads NTFS `sync_all` + atomic
+/// `.tmp`/`.bak` renames to a single persistent background worker so the UI thread never stalls.
+pub fn save_config_async(cfg: &AppConfig) {
+    save_config_to_path_async(cfg, &config_path());
+}
+
+pub fn save_config_to_path_async(cfg: &AppConfig, path: &Path) {
+    let data = serialize_config_ini(cfg);
+    let (lock, cv) = &**async_save_queue();
+    {
+        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+        *g = Some((path.to_path_buf(), data));
+    }
+    cv.notify_one();
+}
+
+/// Cancels any stale queued async snapshot and flushes `cfg` synchronously (used on exit/shutdown).
+pub fn flush_pending_config_save(cfg: &AppConfig) {
+    if let Some(q) = ASYNC_SAVE_QUEUE.get() {
+        let mut g = q.0.lock().unwrap_or_else(|e| e.into_inner());
+        *g = None;
+    }
+    save_config(cfg);
 }
 
 pub fn serialize_config_ini(cfg: &AppConfig) -> String {
@@ -8094,6 +8153,54 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
             def.ext_widgets.iter().all(|w| !w.enabled),
             "Fresh install must not enable extended widgets by default"
         );
+    }
+
+    #[test]
+    fn async_config_save_coalesces_bursts_and_writes_latest_valid_ini() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "autumndeck_async_save_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("config.ini");
+
+        let mut cfg = AppConfig::default();
+        for i in 0..20u8 {
+            cfg.tint_alpha = 50 + i * 5;
+            cfg.mac_dock_icon_size = 36 + (i % 16);
+            save_config_to_path_async(&cfg, &path);
+        }
+
+        let bak_path = config_sibling_path(&path, ".bak");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut last_parsed = None;
+        while std::time::Instant::now() < deadline {
+            if let Ok(body) = fs::read_to_string(&path) {
+                let (parsed, _, _, _) = parse_config_body(&body, true);
+                if parsed.tint_alpha == cfg.tint_alpha
+                    && parsed.mac_dock_icon_size == cfg.mac_dock_icon_size
+                    && bak_path.is_file()
+                {
+                    last_parsed = Some(parsed);
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // Wait for any in-flight worker write holding SAVE_IO_LOCK before deleting temp dir.
+        let _io_guard = SAVE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let parsed = last_parsed.expect("async background worker must flush latest coalesced config");
+        assert_eq!(parsed.tint_alpha, cfg.tint_alpha);
+        assert_eq!(parsed.mac_dock_icon_size, cfg.mac_dock_icon_size);
+        assert!(bak_path.is_file(), "backup config.ini.bak must also be written");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

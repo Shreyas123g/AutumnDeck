@@ -747,39 +747,94 @@ fn material_pixels(mat: PbrMaterial) -> &'static [u8] {
 }
 
 // Thread-local GPU bitmap/brush/layer cache keyed by render target raw pointer (STA UI thread).
+const MAX_RT_CACHE_ENTRIES: usize = 16;
+
 struct RtPbrCache {
     bitmaps: [Option<ID2D1Bitmap>; PbrMaterial::COUNT],
     brushes: [Option<ID2D1BitmapBrush>; PbrMaterial::COUNT],
     layer: Option<ID2D1Layer>,
+    last_used: u64,
 }
 
 impl RtPbrCache {
-    fn new() -> Self {
+    fn new(stamp: u64) -> Self {
         Self {
             bitmaps: std::array::from_fn(|_| None),
             brushes: std::array::from_fn(|_| None),
             layer: None,
+            last_used: stamp,
         }
     }
 }
 
+struct RtPbrStore {
+    entries: HashMap<usize, RtPbrCache>,
+    stamp: u64,
+}
+
+impl RtPbrStore {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            stamp: 0,
+        }
+    }
+
+    fn next_stamp(&mut self) -> u64 {
+        self.stamp = self.stamp.wrapping_add(1);
+        self.stamp
+    }
+
+    fn touch_get(&mut self, key: usize) -> Option<&RtPbrCache> {
+        if self.entries.contains_key(&key) {
+            let stamp = self.next_stamp();
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.last_used = stamp;
+            }
+            self.entries.get(&key)
+        } else {
+            None
+        }
+    }
+
+    fn touch_or_insert(&mut self, key: usize) -> &mut RtPbrCache {
+        let stamp = self.next_stamp();
+        if !self.entries.contains_key(&key) && self.entries.len() >= MAX_RT_CACHE_ENTRIES {
+            if let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(&k, _)| k)
+            {
+                self.entries.remove(&oldest_key);
+            }
+        }
+        let entry = self
+            .entries
+            .entry(key)
+            .or_insert_with(|| RtPbrCache::new(stamp));
+        entry.last_used = stamp;
+        entry
+    }
+}
+
 thread_local! {
-    static RT_BITMAP_CACHE: RefCell<HashMap<usize, RtPbrCache>> =
-        RefCell::new(HashMap::new());
+    static RT_BITMAP_CACHE: RefCell<RtPbrStore> =
+        RefCell::new(RtPbrStore::new());
 }
 
 /// Evict cached Direct2D PBR bitmaps when a render target is released/recreated.
 pub fn evict_rt(rt: &ID2D1RenderTarget) {
     let key = rt.as_raw() as usize;
     RT_BITMAP_CACHE.with(|c| {
-        c.borrow_mut().remove(&key);
+        c.borrow_mut().entries.remove(&key);
     });
 }
 
 /// Evict all thread-local cached Direct2D PBR bitmaps/brushes/layers before COM teardown (`CoUninitialize`).
 pub fn evict_all() {
     RT_BITMAP_CACHE.with(|c| {
-        c.borrow_mut().clear();
+        c.borrow_mut().entries.clear();
     });
 }
 
@@ -790,8 +845,8 @@ unsafe fn get_or_create_bitmap(
     let key = rt.as_raw() as usize;
     let idx = mat as usize;
     let cached = RT_BITMAP_CACHE.with(|c| {
-        let map = c.borrow();
-        map.get(&key).and_then(|entry| entry.bitmaps[idx].clone())
+        let mut store = c.borrow_mut();
+        store.touch_get(key).and_then(|entry| entry.bitmaps[idx].clone())
     });
     if cached.is_some() {
         return cached;
@@ -819,11 +874,8 @@ unsafe fn get_or_create_bitmap(
         .ok()?;
 
     RT_BITMAP_CACHE.with(|c| {
-        let mut map = c.borrow_mut();
-        if map.len() >= 4 && !map.contains_key(&key) {
-            map.clear();
-        }
-        let entry = map.entry(key).or_insert_with(RtPbrCache::new);
+        let mut store = c.borrow_mut();
+        let entry = store.touch_or_insert(key);
         entry.bitmaps[idx] = Some(bmp.clone());
     });
     Some(bmp)
@@ -836,8 +888,8 @@ unsafe fn get_or_create_bitmap_brush(
     let key = rt.as_raw() as usize;
     let idx = mat as usize;
     let cached = RT_BITMAP_CACHE.with(|c| {
-        let map = c.borrow();
-        map.get(&key).and_then(|entry| entry.brushes[idx].clone())
+        let mut store = c.borrow_mut();
+        store.touch_get(key).and_then(|entry| entry.brushes[idx].clone())
     });
     if cached.is_some() {
         return cached;
@@ -856,8 +908,8 @@ unsafe fn get_or_create_bitmap_brush(
         .CreateBitmapBrush(&bmp, Some(&bprops), Some(&brush_props))
         .ok()?;
     RT_BITMAP_CACHE.with(|c| {
-        let mut map = c.borrow_mut();
-        let entry = map.entry(key).or_insert_with(RtPbrCache::new);
+        let mut store = c.borrow_mut();
+        let entry = store.touch_or_insert(key);
         entry.brushes[idx] = Some(brush.clone());
     });
     Some(brush)
@@ -866,16 +918,16 @@ unsafe fn get_or_create_bitmap_brush(
 unsafe fn get_or_create_layer(rt: &ID2D1RenderTarget) -> Option<ID2D1Layer> {
     let key = rt.as_raw() as usize;
     let cached = RT_BITMAP_CACHE.with(|c| {
-        let map = c.borrow();
-        map.get(&key).and_then(|entry| entry.layer.clone())
+        let mut store = c.borrow_mut();
+        store.touch_get(key).and_then(|entry| entry.layer.clone())
     });
     if cached.is_some() {
         return cached;
     }
     let layer = rt.CreateLayer(None).ok()?;
     RT_BITMAP_CACHE.with(|c| {
-        let mut map = c.borrow_mut();
-        let entry = map.entry(key).or_insert_with(RtPbrCache::new);
+        let mut store = c.borrow_mut();
+        let entry = store.touch_or_insert(key);
         entry.layer = Some(layer.clone());
     });
     Some(layer)
@@ -2262,5 +2314,28 @@ mod tests {
                 max_luma
             );
         }
+    }
+
+    #[test]
+    fn pbr_rt_cache_uses_lru_eviction_instead_of_clearing_all() {
+        let mut store = RtPbrStore::new();
+        // Populate all 16 render target slots (far exceeding the old 4-slot full-clear cap)
+        for key in 1..=MAX_RT_CACHE_ENTRIES {
+            let _ = store.touch_or_insert(key);
+        }
+        assert_eq!(store.entries.len(), MAX_RT_CACHE_ENTRIES);
+
+        // Touch slot 1 so slot 2 becomes the least-recently-used entry
+        assert!(store.touch_get(1).is_some());
+
+        // Inserting slot 17 must evict ONLY slot 2 and preserve the other 15 entries
+        let _ = store.touch_or_insert(MAX_RT_CACHE_ENTRIES + 1);
+        assert_eq!(store.entries.len(), MAX_RT_CACHE_ENTRIES);
+        assert!(store.entries.contains_key(&1), "recently touched RT #1 must remain cached");
+        assert!(!store.entries.contains_key(&2), "least-recently-used RT #2 must be evicted");
+        assert!(
+            store.entries.contains_key(&(MAX_RT_CACHE_ENTRIES + 1)),
+            "newly inserted RT must be present"
+        );
     }
 }

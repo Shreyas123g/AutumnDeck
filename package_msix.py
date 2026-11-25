@@ -8,7 +8,7 @@ DIST_DIR = os.path.join(ROOT_DIR, "dist")
 STAGE_DIR = os.path.join(DIST_DIR, "msix_stage")
 ASSETS_DIR = os.path.join(STAGE_DIR, "Assets")
 MAKEAPPX = r"C:\Program Files (x86)\Windows Kits\10\bin\10.0.28000.0\x64\makeappx.exe"
-VERSION = "2.0.5.0"
+VERSION = "2.0.6.0"
 
 # 1. Clean & prepare stage dir
 if os.path.exists(STAGE_DIR):

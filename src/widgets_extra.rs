@@ -3588,8 +3588,6 @@ unsafe fn draw_ring_arc(
 #[allow(clippy::too_many_arguments)]
 unsafe fn ext_widget_fg_key(
     id: ExtWidgetId,
-    x: f32,
-    y: f32,
     s: f32,
     w: f32,
     h_card: f32,
@@ -3603,8 +3601,6 @@ unsafe fn ext_widget_fg_key(
 ) -> u64 {
     let mut h = FgKeyHasher::new(0xE17F_0001u64 ^ (id.idx() as u64));
     h.mix_u8(id.idx() as u8);
-    h.mix_f32(x);
-    h.mix_f32(y);
     h.mix_f32(s);
     h.mix_f32(w);
     h.mix_f32(h_card);
@@ -4393,8 +4389,6 @@ unsafe fn draw_ext_widget_with_boxes_inner(
     let fg_key = if out_boxes.is_none() && fg_cache.is_some() {
         ext_widget_fg_key(
             id,
-            x,
-            y,
             s,
             w,
             h,

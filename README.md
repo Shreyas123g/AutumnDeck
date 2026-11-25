@@ -1,12 +1,46 @@
 # AutumnDeck
 
 <p align="center">
-  <a href="https://apps.microsoft.com/detail/9P6NTH74WSMD"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft Store" height="56" /></a>
+  <a href="https://apps.microsoft.com/detail/9P6NTH74WSMD"><img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft Store" height="52" /></a>
+  &nbsp;
+  <a href="https://alternativeto.net/software/autumndeck/"><img src="https://img.shields.io/badge/AlternativeTo-AutumnDeck-007ACC?style=for-the-badge" alt="AutumnDeck on AlternativeTo" height="36" /></a>
 </p>
 
-**Native Windows 11 Taskbar Styler, Interactive PBR Docks, Modular Desktop Widgets & Live Wallpaper Suite**
+<p align="center">
+  <strong>Native Windows 11 Taskbar Styler, Interactive PBR Docks, Modular Desktop Widgets &amp; Live Wallpaper Suite</strong><br/>
+  Built from scratch in <strong>Rust + Win32 + Direct2D + DirectComposition</strong> for near-zero memory footprint (&lt;50 MB RAM) and zero Chromium/Electron bloat.
+</p>
 
-Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-low memory footprint and zero Chromium/Electron bloat.
+<p align="center">
+  <img src="assets/screenshots/showcase-alpine-glass.jpg" alt="AutumnDeck Alpine Glass Suite on Windows 11" width="100%" />
+</p>
+
+---
+
+## Showcase
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/showcase-marble-sanctuary.jpg" alt="Marble Sanctuary Suite" width="100%" /><br/>
+      <sub><b>Marble Sanctuary</b> — Editorial clock, calendar, quote bar &amp; LP sleeve player</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/showcase-aero-carbon.jpg" alt="Aero-Carbon PBR Suite" width="100%" /><br/>
+      <sub><b>Aero-Carbon</b> — Carbon fiber split dock, vitals HUD &amp; Quick Settings</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/studio-taskbar-themes.png" alt="AutumnDeck Studio Taskbar Folders" width="100%" /><br/>
+      <sub><b>Taskbar Studio</b> — 70 curated taskbar &amp; dock themes across 7 styles</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/studio-music-players.png" alt="AutumnDeck Studio Music Players" width="100%" /><br/>
+      <sub><b>Music Players</b> — 29 reactive themes (12AX7 tubes, turntables, VU meters)</sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -51,16 +85,11 @@ Built from scratch in **Rust + Win32 + Direct2D + DirectComposition** for ultra-
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 
-#### ⚠️ Windows Security & Advanced Boot Troubleshooting
-Normally, clicking **"More info" ➔ "Run anyway"** (or unblocking the `.zip`) is all that's required. If your Windows 11 PC has strict security blocking standalone unsigned apps:
-
-1. **Unblock the Download:** Right-click `.zip` or `.exe` ➔ **Properties** ➔ check **Unblock** at the bottom ➔ click **Apply**.
-2. **Advanced Boot (Disable Signature Enforcement):**
-   - Hold the `Shift` key on your keyboard and click **Start ➔ Power ➔ Restart**.
-   - Your PC will reboot to the blue recovery screen. Select:
-     **Troubleshoot** ➔ **Advanced options** ➔ **Startup Settings** ➔ click **Restart**.
-   - When the list of options appears, press **`7`** (or **`F7`**) on your keyboard for **"Disable driver signature enforcement"**.
-   - Windows will boot up allowing all custom desktop mods, hooks, and standalone tools to execute freely.
+#### ⚠️ Windows SmartScreen Note
+Because standalone GitHub `.exe`/`.zip` builds are unsigned:
+1. If Windows SmartScreen appears, click **"More info" ➔ "Run anyway"**.
+2. For `.zip` downloads, right-click the `.zip` ➔ **Properties** ➔ check **Unblock** ➔ click **Apply** before extracting.
+3. Prefer zero prompts? Install the **Microsoft Store** edition above (digitally signed by Microsoft).
 
 ---
 

@@ -1688,6 +1688,16 @@ unsafe extern "system" fn global_wnd_proc(
                     state.widgets.tick();
                     if state.config.mac_dock_enabled {
                         sync_dock_snapshots(state);
+                        if state.maintenance_ticks % 6 == 0
+                            && state.mac_dock.is_active()
+                            && state.hider.is_hidden
+                            && !state.hider.peek_visible
+                            && !state.game_mode_active
+                            && !mac_dock::is_tray_overflow_active()
+                        {
+                            let reserves = state.mac_dock.peek_work_area_reserves(&state.config);
+                            let _ = TaskbarHider::apply_dock_work_area(&reserves);
+                        }
                     }
                     if state.settings.is_visible() {
                         state.settings.tick_preview_ext(state.widgets.telemetry_extended());

@@ -504,12 +504,10 @@ impl TaskbarHider {
                 }
             }
             if changed {
-                let _ = SendNotifyMessageW(
-                    HWND_BROADCAST,
-                    WM_SETTINGCHANGE,
-                    WPARAM(SPI_SETWORKAREA_PARAM),
-                    LPARAM(0),
-                );
+                // Keep fWinIni = 0 and do NOT broadcast WM_SETTINGCHANGE(SPI_SETWORKAREA) to
+                // HWND_BROADCAST here: Shell_TrayWnd (explorer.exe) reacts to that broadcast by
+                // immediately re-asserting its hidden native AppBar work area (72px bottom / 0px top),
+                // wiping out our custom dock & top-bar reserves and causing docks to overlap apps.
                 Self::refit_maximized_windows();
             }
             changed
@@ -840,6 +838,7 @@ impl TaskbarHider {
                 if !GetMonitorInfoW(hmon, &mut mi).as_bool() {
                     return BOOL(1);
                 }
+                let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                 let mut frame = RECT::default();
                 let ok_frame = DwmGetWindowAttribute(
                     hwnd,
@@ -849,11 +848,15 @@ impl TaskbarHider {
                 )
                 .is_ok();
                 if ok_frame {
+                    // Never shrink genuine borderless fullscreen apps/games
+                    if (style & WS_CAPTION.0) == 0 && frame == mi.rcMonitor {
+                        return BOOL(1);
+                    }
                     let w = mi.rcWork;
-                    let differs = (frame.left - w.left).abs() > 8
-                        || (frame.top - w.top).abs() > 8
-                        || (frame.right - w.right).abs() > 8
-                        || (frame.bottom - w.bottom).abs() > 8;
+                    let differs = (frame.left - w.left).abs() > 2
+                        || (frame.top - w.top).abs() > 2
+                        || (frame.right - w.right).abs() > 2
+                        || (frame.bottom - w.bottom).abs() > 2;
                     if differs {
                         out.push((hwnd, w));
                     }
@@ -875,9 +878,9 @@ impl TaskbarHider {
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                 );
-                // UWP/XAML windows (like Windows Settings) sometimes keep their old maximized
-                // frame after SWP_FRAMECHANGED alone; if their visible bounds still intrude behind
-                // the Top Bar or Dock work area, snap their outer window rect cleanly into `w`.
+                // Chromium/Electron/UWP windows sometimes keep their previous maximized frame
+                // after SWP_FRAMECHANGED alone; snap their outer rect cleanly into `w` without
+                // broadcasting WM_SETTINGCHANGE to explorer.exe.
                 let mut frame = RECT::default();
                 let mut win_rc = RECT::default();
                 if DwmGetWindowAttribute(
@@ -889,11 +892,11 @@ impl TaskbarHider {
                 .is_ok()
                     && GetWindowRect(hwnd, &mut win_rc).is_ok()
                 {
-                    let still_intrudes = frame.top < w.top - 4
-                        || frame.bottom > w.bottom + 4
-                        || frame.left < w.left - 4
-                        || frame.right > w.right + 4;
-                    if still_intrudes {
+                    let still_differs = (frame.top - w.top).abs() > 3
+                        || (frame.bottom - w.bottom).abs() > 3
+                        || (frame.left - w.left).abs() > 3
+                        || (frame.right - w.right).abs() > 3;
+                    if still_differs {
                         let bl = (frame.left - win_rc.left).clamp(0, 16);
                         let bt = (frame.top - win_rc.top).clamp(0, 16);
                         let br = (win_rc.right - frame.right).clamp(0, 16);

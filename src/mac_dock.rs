@@ -2157,18 +2157,17 @@ impl MacDockEngine {
         self.panes.iter().any(|p| !p.hwnd.0.is_null())
     }
 
-    pub fn desired_work_area_reserves(
-        &mut self,
+    pub fn peek_work_area_reserves(
+        &self,
         cfg: &AppConfig,
     ) -> Vec<(RECT, crate::taskbar_hide::TaskbarEdge, i32)> {
         let want_top_bar = cfg.is_clean_top_bar_active() && !cfg.clean_top_bar_desktop_only;
         let want_dock = cfg.mac_dock_enabled
             && cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible
             && !cfg.is_dock_all_elements_off();
-        if !want_top_bar && !want_dock {
+        if (!want_top_bar && !want_dock) || self.panes.is_empty() {
             return Vec::new();
         }
-        self.reconcile_monitors(true);
         let dock_edge = match cfg.mac_dock_edge {
             MacDockEdge::Bottom => crate::taskbar_hide::TaskbarEdge::Bottom,
             MacDockEdge::Top => crate::taskbar_hide::TaskbarEdge::Top,
@@ -2181,25 +2180,23 @@ impl MacDockEngine {
         };
         let floating_top = cfg.resolved_clean_top_bar_floating();
         let mut out = Vec::with_capacity(self.panes.len() * 2);
-        for pane in &mut self.panes {
-            pane.update_dpi();
+        for pane in &self.panes {
+            let u = pane.dpi_u.max(0.75);
             if want_top_bar {
                 let top_h = if floating_top {
-                    (36.0 * pane.dpi_u).ceil() as i32
+                    (36.0 * u).ceil() as i32
                 } else {
-                    (30.0 * pane.dpi_u).ceil() as i32
+                    (30.0 * u).ceil() as i32
                 };
                 out.push((pane.mon_rect, top_edge, top_h));
             }
             if want_dock {
                 let (spec, _is_vertical, _base_sz, shelf_cross, edge_gap, hud_wing_h) =
-                    dock_cross_metrics(cfg, pane.dpi_u);
-                // Add slight breathing clearance so maximized windows stop cleanly above
-                // floating circular bubbles / dock rims with zero bottom overlap.
+                    dock_cross_metrics(cfg, u);
                 let extra = if spec.layout == DockLayoutKind::IndependentOrbs {
-                    (8.0 * pane.dpi_u).ceil() as i32
+                    (8.0 * u).ceil() as i32
                 } else if spec.layout != DockLayoutKind::FullEdgeTaskbar {
-                    (4.0 * pane.dpi_u).ceil() as i32
+                    (4.0 * u).ceil() as i32
                 } else {
                     0
                 };
@@ -2208,6 +2205,24 @@ impl MacDockEngine {
             }
         }
         out
+    }
+
+    pub fn desired_work_area_reserves(
+        &mut self,
+        cfg: &AppConfig,
+    ) -> Vec<(RECT, crate::taskbar_hide::TaskbarEdge, i32)> {
+        let want_top_bar = cfg.is_clean_top_bar_active() && !cfg.clean_top_bar_desktop_only;
+        let want_dock = cfg.mac_dock_enabled
+            && cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible
+            && !cfg.is_dock_all_elements_off();
+        if !want_top_bar && !want_dock {
+            return Vec::new();
+        }
+        self.reconcile_monitors(true);
+        for pane in &mut self.panes {
+            pane.update_dpi();
+        }
+        self.peek_work_area_reserves(cfg)
     }
 
     pub fn set_notify_target(&mut self, hwnd: HWND, icon_ready_msg: u32) {

@@ -4,7 +4,7 @@
 ; restoration + startup task cleanup on uninstall.
 
 #define MyAppName "AutumnDeck"
-#define MyAppVersion "2.0.7"
+#define MyAppVersion "2.0.8"
 #define MyAppPublisher "AutumnDeck"
 #define MyAppExeName "AutumnDeck.exe"
 #define MyAppDesc "Native Windows 11 Taskbar Styler, Interactive PBR Docks, Modular Desktop Widgets & Live Wallpaper Suite"
@@ -35,7 +35,7 @@ SolidCompression=yes
 WizardStyle=modern dynamic
 CloseApplications=no
 RestartIfNeededByRun=no
-VersionInfoVersion=2.0.7.0
+VersionInfoVersion=2.0.8.0
 VersionInfoProductName={#MyAppName}
 VersionInfoDescription={#MyAppName} Setup
 

@@ -1032,6 +1032,10 @@ enum HitZone {
     MacDockHideBtn(MacDockHideMode),
     ToggleMacDockBounce,
     ToggleMacDockDots,
+    ToggleCleanTopBar,
+    CycleCleanTopBarEdge,
+    CycleCleanTopBarStyle,
+    ToggleCleanTopBarDesktopOnly,
     BtnRescanDockPinned,
     TbWidgetTabBtn(TaskbarWidgetTab),
     TbWidgetProp1,
@@ -5433,8 +5437,35 @@ impl SettingsController {
             HitZone::BtnToggleNow => SettingsCommand::ToggleTaskbarNow,
             HitZone::BtnQuitApp => SettingsCommand::QuitApp,
             HitZone::MacDockEdgeBtn(edge) => {
-                cfg.mac_dock_edge = edge;
-                self.draft_cfg.mac_dock_edge = edge;
+                cfg.set_mac_dock_edge_smart(edge);
+                self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
+                self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::ToggleCleanTopBar => {
+                cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
+                if cfg.clean_top_bar_enabled {
+                    cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
+                }
+                self.draft_cfg.clean_top_bar_enabled = cfg.clean_top_bar_enabled;
+                self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
+                self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::CycleCleanTopBarEdge => {
+                cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge.toggle());
+                self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
+                self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::CycleCleanTopBarStyle => {
+                cfg.clean_top_bar_style = cfg.clean_top_bar_style.next();
+                self.draft_cfg.clean_top_bar_style = cfg.clean_top_bar_style;
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::ToggleCleanTopBarDesktopOnly => {
+                cfg.clean_top_bar_desktop_only = !cfg.clean_top_bar_desktop_only;
+                self.draft_cfg.clean_top_bar_desktop_only = cfg.clean_top_bar_desktop_only;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::MacDockHideBtn(hm) => {
@@ -7757,6 +7788,17 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 584.0, 186.0, 622.0) {
                         return HitZone::BtnExportDiagnostics;
                     }
+                    if self.tb_folder == TaskbarThemeFolder::CleanMinimal {
+                        if in_rect(x, y, 194.0, 584.0, 252.0, 622.0) {
+                            return HitZone::ToggleCleanTopBar;
+                        }
+                        if in_rect(x, y, 255.0, 584.0, 298.0, 622.0) {
+                            return HitZone::CycleCleanTopBarEdge;
+                        }
+                        if in_rect(x, y, 301.0, 584.0, 354.0, 622.0) {
+                            return HitZone::ToggleCleanTopBarDesktopOnly;
+                        }
+                    }
                     if in_rect(x, y, 364.0, 584.0, 556.0, 622.0) {
                         return HitZone::BtnToggleNow;
                     }
@@ -7767,6 +7809,20 @@ impl SettingsController {
                 TaskbarPage::Customize => {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackTaskbarThemes;
+                    }
+                    if self.draft_cfg.tb_theme.is_clean_minimal() {
+                        if in_rect(x, y, 286.0, 100.0, 364.0, 130.0) {
+                            return HitZone::ToggleCleanTopBar;
+                        }
+                        if in_rect(x, y, 368.0, 100.0, 424.0, 130.0) {
+                            return HitZone::CycleCleanTopBarEdge;
+                        }
+                        if in_rect(x, y, 428.0, 100.0, 502.0, 130.0) {
+                            return HitZone::ToggleCleanTopBarDesktopOnly;
+                        }
+                        if in_rect(x, y, 506.0, 100.0, 562.0, 130.0) {
+                            return HitZone::CycleCleanTopBarStyle;
+                        }
                     }
                     if in_rect(x, y, 568.0, 98.0, 734.0, 132.0) {
                         return HitZone::ToggleWallpaperQuick;
@@ -9635,7 +9691,7 @@ impl SettingsController {
                             return HitZone::OpenSuiteFolder(SuiteCategory::All);
                         }
                         for (i, &cat) in SuiteCategory::CURATED_FOLDERS.iter().enumerate() {
-                            let (x0, y0, x1, y1) = tb_folder_card_rect(i);
+                            let (x0, y0, x1, y1) = suite_folder_card_rect(i);
                             if in_rect(x, y, x0, y0, x1, y1) {
                                 return HitZone::OpenSuiteFolder(cat);
                             }
@@ -10940,17 +10996,111 @@ impl SettingsController {
             if ex_saved { &r.sage } else { &r.cream },
         );
 
-        let au_active = self.preview_media.is_playing || self.preview_bands.iter().any(|&b| b > 0.04);
-        let au_rr = rrect(194.0, 584.0, 354.0, 622.0, 9.0, u);
-        rt.FillRoundedRectangle(&au_rr, &r.card_bg);
-        rt.DrawRoundedRectangle(&au_rr, &r.card_border, 1.0 * u, None);
-        draw_txt(
-            rt,
-            if au_active { "Audio: Live ♪" } else { "Audio: Idle" },
-            &r.tf_badge,
-            au_rr.rect,
-            if au_active { &r.sage } else { &r.warm_sub },
-        );
+        if self.taskbar_page == TaskbarPage::Themes
+            && self.tb_folder == TaskbarThemeFolder::CleanMinimal
+        {
+            let tb_on = cfg.clean_top_bar_enabled;
+            let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
+            let tb_rr = rrect(194.0, 584.0, 252.0, 622.0, 9.0, u);
+            rt.FillRoundedRectangle(
+                &tb_rr,
+                if tb_hov {
+                    &r.card_hover
+                } else if tb_on {
+                    &r.card_active
+                } else {
+                    &r.card_bg
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &tb_rr,
+                if tb_on || tb_hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            let dot_c = if tb_on {
+                rgb_u8(102, 232, 146, 0.96)
+            } else {
+                rgb_u8(152, 124, 98, 0.45)
+            };
+            if let Some(ref db) = solid(rt, dot_c) {
+                rt.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: Vector2 { X: 203.0 * u, Y: 603.0 * u },
+                        radiusX: 2.7 * u,
+                        radiusY: 2.7 * u,
+                    },
+                    db,
+                );
+            }
+            draw_txt(
+                rt,
+                if tb_on { "Bar" } else { "Off" },
+                &r.tf_badge,
+                rect_f(208.0, 584.0, 250.0, 622.0, u),
+                if tb_on { &r.sun_gold } else { &r.warm_sub },
+            );
+
+            let pos_hov = self.hovered == HitZone::CycleCleanTopBarEdge;
+            let pos_rr = rrect(255.0, 584.0, 298.0, 622.0, 9.0, u);
+            rt.FillRoundedRectangle(&pos_rr, if pos_hov { &r.card_hover } else { &r.card_bg });
+            rt.DrawRoundedRectangle(
+                &pos_rr,
+                if pos_hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            draw_txt(
+                rt,
+                if cfg.clean_top_bar_edge == crate::config::CleanTopBarEdge::Top {
+                    "Up▲"
+                } else {
+                    "Dn▼"
+                },
+                &r.tf_badge,
+                pos_rr.rect,
+                if tb_on { &r.cream } else { &r.muted_txt },
+            );
+
+            let dk_on = cfg.clean_top_bar_desktop_only;
+            let dk_hov = self.hovered == HitZone::ToggleCleanTopBarDesktopOnly;
+            let dk_rr = rrect(301.0, 584.0, 354.0, 622.0, 9.0, u);
+            rt.FillRoundedRectangle(
+                &dk_rr,
+                if dk_hov {
+                    &r.card_hover
+                } else if dk_on && tb_on {
+                    &r.card_active
+                } else {
+                    &r.card_bg
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &dk_rr,
+                if (dk_on && tb_on) || dk_hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            draw_txt(
+                rt,
+                if dk_on { "Desk" } else { "All" },
+                &r.tf_badge,
+                dk_rr.rect,
+                if dk_on && tb_on { &r.sun_gold } else if tb_on { &r.cream } else { &r.muted_txt },
+            );
+        } else {
+            let au_active = self.preview_media.is_playing || self.preview_bands.iter().any(|&b| b > 0.04);
+            let au_rr = rrect(194.0, 584.0, 354.0, 622.0, 9.0, u);
+            rt.FillRoundedRectangle(&au_rr, &r.card_bg);
+            rt.DrawRoundedRectangle(&au_rr, &r.card_border, 1.0 * u, None);
+            draw_txt(
+                rt,
+                if au_active { "Audio: Live ♪" } else { "Audio: Idle" },
+                &r.tf_badge,
+                au_rr.rect,
+                if au_active { &r.sage } else { &r.warm_sub },
+            );
+        }
 
         let btn1_rr = rrect(364.0, 584.0, 556.0, 622.0, 9.0, u);
         rt.FillRoundedRectangle(&btn1_rr, &r.sun_gold);
@@ -11037,7 +11187,7 @@ impl SettingsController {
                 rt.DrawRoundedRectangle(&cust_rr, &r.sun_gold, 1.0 * u, None);
                 draw_txt(rt, "Customize →", &r.tf_btn, cust_rr.rect, if c_hov { &r.dark_ink } else { &r.cream });
 
-                // Balanced 2+2+3 Taskbar Theme Folders Grid (all 7 curated folders visible at once; All Themes in header)
+                // Balanced 2+3+3 Taskbar Theme Folders Grid (all 8 curated folders visible at once; All Themes in header)
                 for (i, &folder) in TaskbarThemeFolder::CURATED.iter().enumerate() {
                     let (title, sub_lbl, sample_th) = folder.card_meta();
                     let list = TaskbarTheme::in_folder(folder);
@@ -11232,7 +11382,121 @@ impl SettingsController {
                 rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
                 draw_txt(rt, "← Themes", &r.tf_btn, back_rr.rect, &r.cream);
 
-                if cfg.tb_theme.uses_virtual_dock() {
+                if cfg.tb_theme.is_clean_minimal() {
+                    draw_txt(
+                        rt,
+                        cfg.tb_theme.label(),
+                        &r.tf_title,
+                        rect_f(134.0, 98.0, 282.0, 132.0, u),
+                        &r.cream,
+                    );
+                    let tb_on = cfg.clean_top_bar_enabled;
+                    let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
+                    let tb_rr = rrect(286.0, 100.0, 364.0, 130.0, 7.0, u);
+                    rt.FillRoundedRectangle(
+                        &tb_rr,
+                        if tb_hov {
+                            &r.card_hover
+                        } else if tb_on {
+                            &r.card_active
+                        } else {
+                            &r.card_bg
+                        },
+                    );
+                    rt.DrawRoundedRectangle(
+                        &tb_rr,
+                        if tb_on || tb_hov { &r.sun_gold } else { &r.card_border },
+                        if tb_on { 1.1 * u } else { 0.9 * u },
+                        None,
+                    );
+                    let dot_c = if tb_on {
+                        rgb_u8(102, 232, 146, 0.96)
+                    } else {
+                        rgb_u8(152, 124, 98, 0.45)
+                    };
+                    if let Some(ref db) = solid(rt, dot_c) {
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 { X: 295.0 * u, Y: 115.0 * u },
+                                radiusX: 2.6 * u,
+                                radiusY: 2.6 * u,
+                            },
+                            db,
+                        );
+                    }
+                    draw_txt(
+                        rt,
+                        if tb_on { "Bar: ON" } else { "Bar: OFF" },
+                        &r.tf_badge,
+                        rect_f(300.0, 100.0, 362.0, 130.0, u),
+                        if tb_on { &r.sun_gold } else { &r.muted_txt },
+                    );
+
+                    let pos_hov = self.hovered == HitZone::CycleCleanTopBarEdge;
+                    let pos_rr = rrect(368.0, 100.0, 424.0, 130.0, 7.0, u);
+                    rt.FillRoundedRectangle(&pos_rr, if pos_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(
+                        &pos_rr,
+                        if pos_hov { &r.sun_gold } else { &r.card_border },
+                        0.9 * u,
+                        None,
+                    );
+                    draw_txt(
+                        rt,
+                        if cfg.clean_top_bar_edge == crate::config::CleanTopBarEdge::Top {
+                            "Up ▲"
+                        } else {
+                            "Dn ▼"
+                        },
+                        &r.tf_badge,
+                        pos_rr.rect,
+                        if tb_on { &r.cream } else { &r.muted_txt },
+                    );
+
+                    let dk_on = cfg.clean_top_bar_desktop_only;
+                    let dk_hov = self.hovered == HitZone::ToggleCleanTopBarDesktopOnly;
+                    let dk_rr = rrect(428.0, 100.0, 502.0, 130.0, 7.0, u);
+                    rt.FillRoundedRectangle(
+                        &dk_rr,
+                        if dk_hov {
+                            &r.card_hover
+                        } else if dk_on && tb_on {
+                            &r.card_active
+                        } else {
+                            &r.card_bg
+                        },
+                    );
+                    rt.DrawRoundedRectangle(
+                        &dk_rr,
+                        if (dk_on && tb_on) || dk_hov { &r.sun_gold } else { &r.card_border },
+                        0.9 * u,
+                        None,
+                    );
+                    draw_txt(
+                        rt,
+                        if dk_on { "Desk Only" } else { "In Apps" },
+                        &r.tf_badge,
+                        dk_rr.rect,
+                        if dk_on && tb_on { &r.sun_gold } else if tb_on { &r.cream } else { &r.muted_txt },
+                    );
+
+                    let sty_hov = self.hovered == HitZone::CycleCleanTopBarStyle;
+                    let sty_rr = rrect(506.0, 100.0, 562.0, 130.0, 7.0, u);
+                    rt.FillRoundedRectangle(&sty_rr, if sty_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(
+                        &sty_rr,
+                        if sty_hov { &r.sun_gold } else { &r.card_border },
+                        0.9 * u,
+                        None,
+                    );
+                    draw_txt(
+                        rt,
+                        cfg.clean_top_bar_style.label(),
+                        &r.tf_badge,
+                        sty_rr.rect,
+                        if tb_on { &r.cream } else { &r.muted_txt },
+                    );
+                } else if cfg.tb_theme.uses_virtual_dock() {
                     draw_txt(
                         rt,
                         &format!("Customize Taskbar — {}", cfg.tb_theme.label()),
@@ -17789,7 +18053,7 @@ impl SettingsController {
                     } else {
                         format!("{} Setups", list.len())
                     };
-                    let (x0, y0, x1, y1) = tb_folder_card_rect(i);
+                    let (x0, y0, x1, y1) = suite_folder_card_rect(i);
                     let card_w = x1 - x0;
                     let compact_card = card_w < 260.0;
                     let side_pad = if compact_card { 10.0 } else { 14.0 };
@@ -19350,6 +19614,21 @@ fn is_mouse_over_interactive_preview_pos(
 }
 
 fn tb_folder_card_rect(i: usize) -> (f32, f32, f32, f32) {
+    if i < 2 {
+        let x0 = if i == 0 { 26.0 } else { 388.0 };
+        let y0 = 134.0;
+        (x0, y0, x0 + 346.0, y0 + 138.0)
+    } else {
+        let idx = i - 2;
+        let row = idx / 3;
+        let col = idx % 3;
+        let x0 = 26.0 + (col as f32) * 240.0;
+        let y0 = 279.0 + (row as f32) * 145.0;
+        (x0, y0, x0 + 228.0, y0 + 138.0)
+    }
+}
+
+fn suite_folder_card_rect(i: usize) -> (f32, f32, f32, f32) {
     if i < 4 {
         let col = i % 2;
         let row = i / 2;
@@ -20326,10 +20605,14 @@ mod tests {
         assert!(sc.render_d2d(&cfg));
         dump_dib_bmp(&sc.backbuf, &art_dir.join("suite_4_dark.bmp"));
 
-        // Render & verify Taskbar Realistic Themes (Folders + Pages 1..3), Realistic Clocks, Music & Ext Widgets
+        // Render & verify Taskbar Folders (2+3+3 = 8 folders) + Realistic Themes (Pages 1..3)
         sc.active_tab = StudioTab::Taskbar;
         sc.taskbar_page = TaskbarPage::Folders;
-        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::RealisticMaterials));
+        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::CleanMinimal));
+        assert_eq!(sc.hit_test(560.0, 200.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::RealisticMaterials));
+        assert_eq!(sc.hit_test(140.0, 340.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::InteractiveDocks));
+        assert_eq!(sc.hit_test(380.0, 340.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::OsDocks));
+        assert_eq!(sc.hit_test(620.0, 340.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::KineticThemes));
         assert_eq!(sc.hit_test(140.0, 480.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::InteractiveElements));
         assert_eq!(sc.hit_test(380.0, 480.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::LiveThemes));
         assert_eq!(sc.hit_test(620.0, 480.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::MusicThemes));
@@ -23191,7 +23474,11 @@ mod tests {
             TaskbarThemeFolder::InteractiveDocks.label(),
             "Interactive Docks (20)"
         );
-        assert_eq!(TaskbarThemeFolder::All.label(), "All Themes (70)");
+        assert_eq!(
+            TaskbarThemeFolder::CleanMinimal.label(),
+            "Clean & Minimal (20)"
+        );
+        assert_eq!(TaskbarThemeFolder::All.label(), "All Themes (90)");
 
         // 1. Apply a Suite with Deep-Space Telemetry (StarfieldWarpDock, Page 4/4 of Interactive Docks)
         let suite_idx = crate::suites::SUITES
@@ -23350,5 +23637,78 @@ mod tests {
         );
         assert!(sc.dragging_slider.is_none());
         sc.hwnd = HWND::default();
+    }
+
+    #[test]
+    fn clean_minimal_folder_and_all_20_theme_cards_render_cleanly() {
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.win_w = 760;
+        sc.win_h = 640;
+        sc.u = 1.0;
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(760, 640));
+
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassLight);
+        sc.draft_cfg = cfg.clone();
+        sc.active_tab = StudioTab::Taskbar;
+        sc.taskbar_page = TaskbarPage::Folders;
+
+        // Verify all 8 curated folder cards hit-test cleanly in 2+3+3 layout
+        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::CleanMinimal));
+        assert_eq!(sc.hit_test(560.0, 200.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::RealisticMaterials));
+        assert_eq!(sc.hit_test(140.0, 340.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::InteractiveDocks));
+        assert_eq!(sc.hit_test(380.0, 340.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::OsDocks));
+        assert_eq!(sc.hit_test(620.0, 340.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::KineticThemes));
+        assert_eq!(sc.hit_test(140.0, 480.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::InteractiveElements));
+        assert_eq!(sc.hit_test(380.0, 480.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::LiveThemes));
+        assert_eq!(sc.hit_test(620.0, 480.0), HitZone::OpenTaskbarFolder(TaskbarThemeFolder::MusicThemes));
+        assert!(sc.render_d2d(&cfg), "8-folder Taskbar Studio grid must render cleanly");
+
+        let dump_dir = std::env::var("AUTUMN_CLEAN_DUMP_DIR").ok();
+        if let Some(ref d) = dump_dir {
+            let p = std::path::PathBuf::from(d);
+            let _ = std::fs::create_dir_all(&p);
+            dump_dib_bmp(&sc.backbuf, &p.join("clean_0_folders.bmp"));
+        }
+
+        // Open Clean & Minimal (20) and render all 4 pages (6 + 6 + 6 + 2 = 20 themes)
+        sc.activate_zone(HitZone::OpenTaskbarFolder(TaskbarThemeFolder::CleanMinimal), &mut cfg);
+        assert_eq!(sc.taskbar_page, TaskbarPage::Themes);
+        assert_eq!(sc.tb_folder, TaskbarThemeFolder::CleanMinimal);
+        for page in 0..4usize {
+            sc.tb_theme_page = page;
+            assert!(
+                sc.render_d2d(&cfg),
+                "Clean & Minimal gallery page {} must render cleanly in Direct2D",
+                page + 1
+            );
+            if let Some(ref d) = dump_dir {
+                let p = std::path::PathBuf::from(d);
+                dump_dib_bmp(&sc.backbuf, &p.join(format!("clean_p{}.bmp", page + 1)));
+            }
+        }
+
+        // Select MatterTilesDark from the Clean & Minimal folder and verify animated Virtual Dock switch
+        let cmd = sc.activate_zone(
+            HitZone::SelectTaskbarTheme(TaskbarTheme::MatterTilesDark),
+            &mut cfg,
+        );
+        assert!(matches!(cmd, SettingsCommand::StyleUpdated));
+        assert_eq!(cfg.tb_theme, TaskbarTheme::MatterTilesDark);
+        assert!(cfg.mac_dock_enabled);
+        assert_eq!(
+            crate::dock_themes::dock_spec(cfg.tb_theme).layout,
+            crate::config::DockLayoutKind::IndependentOrbs
+        );
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
     }
 }

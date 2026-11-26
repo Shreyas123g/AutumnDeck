@@ -3,7 +3,7 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::core::{s, w, BOOL, GUID, HRESULT, Interface, PCWSTR};
@@ -76,10 +76,29 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_numerics::Vector2;
 
 use crate::config::{
-    ensure_windows_transparency_enabled, load_pill_cache, save_pill_cache, to_wide, AppConfig,
-    PillMode, SurfaceMode, TaskbarTheme, TaskbarVizStyle, VizColorMode,
+    ensure_windows_transparency_enabled, load_pill_cache, save_pill_cache, to_wide,
+    windows_system_uses_light_theme, AppConfig, PillMode, SurfaceMode, TaskbarTheme,
+    TaskbarVizStyle, VizColorMode,
 };
 use crate::theme::{resolve_palette_for, ThemePalette};
+
+fn cached_system_uses_light_theme() -> bool {
+    static CACHE: OnceLock<Mutex<(Option<Instant>, bool)>> = OnceLock::new();
+    let lock = CACHE.get_or_init(|| Mutex::new((None, false)));
+    if let Ok(mut guard) = lock.lock() {
+        let stale = guard
+            .0
+            .map(|t| t.elapsed() >= Duration::from_secs(2))
+            .unwrap_or(true);
+        if stale {
+            let val = windows_system_uses_light_theme();
+            *guard = (Some(Instant::now()), val);
+        }
+        guard.1
+    } else {
+        false
+    }
+}
 
 pub fn elemental_palette_for_fx(style: TaskbarVizStyle) -> Option<ThemePalette> {
     match style {
@@ -271,6 +290,286 @@ pub fn effective_taskbar_palette(cfg: &AppConfig) -> ThemePalette {
         pal
     } else {
         match cfg.tb_theme {
+            TaskbarTheme::Os26LiquidGlassLight => ThemePalette {
+                accent: (94, 168, 250),
+                accent_light: (255, 255, 255),
+                accent_deep: (48, 112, 206),
+                rim: (255, 255, 255),
+                text_primary: (22, 30, 46),
+                text_muted: (84, 98, 122),
+                glass_top: (252, 254, 255),
+                glass_bot: (228, 238, 252),
+                preview_a: (96, 162, 224),
+                preview_b: (172, 212, 246),
+                preview_c: (74, 134, 198),
+                swatches: [0xFCFEFF, 0x5EA8FA, 0xD8E8FA, 0x60A2E0, 0x3070CE],
+            },
+            TaskbarTheme::Os26LiquidGlassDark => ThemePalette {
+                accent: (146, 206, 255),
+                accent_light: (246, 251, 255),
+                accent_deep: (26, 78, 128),
+                rim: (232, 244, 255),
+                text_primary: (245, 250, 255),
+                text_muted: (182, 202, 226),
+                glass_top: (28, 46, 68),
+                glass_bot: (12, 22, 36),
+                preview_a: (8, 36, 62),
+                preview_b: (26, 88, 136),
+                preview_c: (6, 24, 44),
+                swatches: [0x92CEFF, 0xF6FBFF, 0x1C2E44, 0x1A5888, 0x06182C],
+            },
+            TaskbarTheme::MatterTilesLight => ThemePalette {
+                accent: (224, 72, 132),
+                accent_light: (255, 255, 255),
+                accent_deep: (132, 64, 186),
+                rim: (255, 255, 255),
+                text_primary: (24, 20, 34),
+                text_muted: (94, 86, 110),
+                glass_top: (246, 242, 252),
+                glass_bot: (234, 230, 244),
+                preview_a: (244, 76, 186),
+                preview_b: (192, 122, 242),
+                preview_c: (166, 146, 248),
+                swatches: [0xF6F2FC, 0xF44CBA, 0xC07AF2, 0xE04884, 0x181422],
+            },
+            TaskbarTheme::MatterTilesDark => ThemePalette {
+                accent: (236, 108, 214),
+                accent_light: (255, 232, 252),
+                accent_deep: (122, 46, 148),
+                rim: (248, 226, 248),
+                text_primary: (246, 242, 250),
+                text_muted: (182, 168, 194),
+                glass_top: (46, 36, 52),
+                glass_bot: (34, 26, 40),
+                preview_a: (232, 74, 184),
+                preview_b: (196, 108, 232),
+                preview_c: (174, 118, 238),
+                swatches: [0x2E2434, 0xE84AB8, 0xC46CE8, 0xFFFFFF, 0x221A28],
+            },
+            TaskbarTheme::OneUiLightChips => ThemePalette {
+                accent: (168, 92, 255),
+                accent_light: (255, 255, 255),
+                accent_deep: (84, 52, 182),
+                rim: (236, 242, 252),
+                text_primary: (248, 250, 255),
+                text_muted: (190, 198, 214),
+                glass_top: (22, 26, 34),
+                glass_bot: (14, 16, 22),
+                preview_a: (24, 34, 44),
+                preview_b: (54, 72, 86),
+                preview_c: (16, 24, 32),
+                swatches: [0xF4F6FA, 0xA85CFF, 0x161A22, 0x364856, 0x101820],
+            },
+            TaskbarTheme::OneUiDarkChips => ThemePalette {
+                accent: (76, 142, 246),
+                accent_light: (255, 255, 255),
+                accent_deep: (36, 78, 168),
+                rim: (255, 255, 255),
+                text_primary: (24, 28, 38),
+                text_muted: (88, 96, 114),
+                glass_top: (246, 248, 254),
+                glass_bot: (228, 234, 246),
+                preview_a: (118, 158, 214),
+                preview_b: (186, 208, 238),
+                preview_c: (92, 132, 190),
+                swatches: [0x1A1D26, 0xF6F8FE, 0x4C8EF6, 0xBACCEE, 0x5C84BE],
+            },
+            TaskbarTheme::SquircleFrosted => ThemePalette {
+                accent: (218, 164, 132),
+                accent_light: (252, 240, 230),
+                accent_deep: (102, 68, 52),
+                rim: (232, 206, 190),
+                text_primary: (248, 244, 240),
+                text_muted: (198, 182, 172),
+                glass_top: (56, 44, 38),
+                glass_bot: (38, 30, 26),
+                preview_a: (148, 86, 62),
+                preview_b: (196, 128, 96),
+                preview_c: (112, 64, 48),
+                swatches: [0x382C26, 0xDAA484, 0xC48060, 0x94563E, 0x261E1A],
+            },
+            TaskbarTheme::BubblesDark => ThemePalette {
+                accent: (134, 168, 231),
+                accent_light: (232, 242, 255),
+                accent_deep: (52, 74, 128),
+                rim: (134, 168, 231),
+                text_primary: (242, 245, 252),
+                text_muted: (166, 174, 190),
+                glass_top: (42, 44, 50),
+                glass_bot: (28, 30, 36),
+                preview_a: (42, 14, 24),
+                preview_b: (136, 48, 22),
+                preview_c: (18, 12, 20),
+                swatches: [0x2A2C32, 0x86A8E7, 0x883016, 0x1C1E24, 0x120C14],
+            },
+            TaskbarTheme::BubblesLight => ThemePalette {
+                accent: (84, 152, 246),
+                accent_light: (255, 255, 255),
+                accent_deep: (42, 96, 188),
+                rim: (255, 255, 255),
+                text_primary: (24, 30, 44),
+                text_muted: (88, 98, 116),
+                glass_top: (250, 252, 255),
+                glass_bot: (232, 238, 248),
+                preview_a: (106, 156, 214),
+                preview_b: (178, 208, 240),
+                preview_c: (82, 130, 192),
+                swatches: [0xFAFCFF, 0x5498F6, 0xE8EEF8, 0xB2D0F0, 0x5282C0],
+            },
+            TaskbarTheme::PillsDetached => ThemePalette {
+                accent: (166, 202, 238),
+                accent_light: (242, 248, 255),
+                accent_deep: (58, 82, 112),
+                rim: (210, 224, 240),
+                text_primary: (242, 246, 252),
+                text_muted: (172, 184, 200),
+                glass_top: (42, 52, 64),
+                glass_bot: (26, 34, 44),
+                preview_a: (104, 126, 144),
+                preview_b: (158, 174, 188),
+                preview_c: (74, 96, 118),
+                swatches: [0x2A3440, 0xA6CAEE, 0x9EAEBC, 0x687E90, 0x1A222C],
+            },
+            TaskbarTheme::RosePineTiles => ThemePalette {
+                accent: (235, 188, 186),
+                accent_light: (246, 193, 119),
+                accent_deep: (196, 167, 231),
+                rim: (235, 188, 186),
+                text_primary: (224, 222, 244),
+                text_muted: (144, 140, 170),
+                glass_top: (40, 36, 60),
+                glass_bot: (30, 27, 46),
+                preview_a: (26, 24, 42),
+                preview_b: (56, 48, 78),
+                preview_c: (20, 18, 32),
+                swatches: [0xEBBCBA, 0x28243C, 0xC4A7E7, 0x38304E, 0x141220],
+            },
+            TaskbarTheme::CatppuccinTiles => ThemePalette {
+                accent: (180, 190, 254),
+                accent_light: (203, 166, 247),
+                accent_deep: (137, 180, 250),
+                rim: (180, 190, 254),
+                text_primary: (205, 214, 244),
+                text_muted: (147, 153, 178),
+                glass_top: (34, 34, 52),
+                glass_bot: (24, 24, 38),
+                preview_a: (24, 24, 38),
+                preview_b: (54, 52, 82),
+                preview_c: (17, 17, 27),
+                swatches: [0xB4BEFE, 0x222234, 0xCBA6F7, 0x363452, 0x11111B],
+            },
+            TaskbarTheme::LiquidGlassClear => ThemePalette {
+                accent: (196, 236, 164),
+                accent_light: (255, 255, 255),
+                accent_deep: (66, 118, 52),
+                rim: (246, 250, 255),
+                text_primary: (248, 252, 255),
+                text_muted: (206, 218, 224),
+                glass_top: (64, 72, 66),
+                glass_bot: (34, 40, 36),
+                preview_a: (92, 132, 42),
+                preview_b: (146, 168, 96),
+                preview_c: (68, 96, 38),
+                swatches: [0xF6FAFF, 0x92A860, 0x5C842A, 0x404842, 0x222824],
+            },
+            TaskbarTheme::DockLikeLight => ThemePalette {
+                accent: (96, 148, 232),
+                accent_light: (255, 255, 255),
+                accent_deep: (48, 88, 168),
+                rim: (255, 255, 255),
+                text_primary: (24, 30, 44),
+                text_muted: (88, 98, 118),
+                glass_top: (248, 250, 254),
+                glass_bot: (234, 239, 248),
+                preview_a: (116, 162, 224),
+                preview_b: (188, 208, 242),
+                preview_c: (84, 128, 202),
+                swatches: [0xF8FAFE, 0x6094E8, 0xEAEFF8, 0xBCD0F2, 0x5480CA],
+            },
+            TaskbarTheme::DockLikeDark => ThemePalette {
+                accent: (116, 168, 248),
+                accent_light: (236, 244, 255),
+                accent_deep: (32, 68, 148),
+                rim: (148, 174, 214),
+                text_primary: (242, 246, 254),
+                text_muted: (164, 178, 202),
+                glass_top: (29, 36, 52),
+                glass_bot: (20, 26, 38),
+                preview_a: (10, 48, 148),
+                preview_b: (26, 98, 214),
+                preview_c: (8, 32, 98),
+                swatches: [0x1D2434, 0x1A62D6, 0x74A8F8, 0x141A26, 0x082062],
+            },
+            TaskbarTheme::BlobLight => ThemePalette {
+                accent: (64, 134, 242),
+                accent_light: (255, 255, 255),
+                accent_deep: (36, 86, 178),
+                rim: (255, 255, 255),
+                text_primary: (22, 28, 38),
+                text_muted: (84, 94, 110),
+                glass_top: (226, 234, 246),
+                glass_bot: (212, 222, 238),
+                preview_a: (146, 178, 218),
+                preview_b: (206, 222, 242),
+                preview_c: (118, 152, 198),
+                swatches: [0xFFFFFF, 0xE2EAF6, 0x4086F2, 0xCEDEF2, 0x7698C6],
+            },
+            TaskbarTheme::LuminosityFloat => ThemePalette {
+                accent: (244, 112, 156),
+                accent_light: (255, 218, 172),
+                accent_deep: (132, 34, 96),
+                rim: (238, 176, 210),
+                text_primary: (248, 244, 252),
+                text_muted: (196, 178, 208),
+                glass_top: (42, 22, 46),
+                glass_bot: (24, 14, 34),
+                preview_a: (32, 10, 48),
+                preview_b: (158, 36, 92),
+                preview_c: (20, 8, 34),
+                swatches: [0xF4709C, 0x2A162E, 0x9E245C, 0x180E22, 0x140822],
+            },
+            TaskbarTheme::BorderlessGhost => ThemePalette {
+                accent: (214, 228, 246),
+                accent_light: (250, 252, 255),
+                accent_deep: (82, 102, 134),
+                rim: (214, 228, 246),
+                text_primary: (246, 249, 255),
+                text_muted: (184, 196, 214),
+                glass_top: (20, 24, 34),
+                glass_bot: (12, 14, 22),
+                preview_a: (24, 48, 78),
+                preview_b: (64, 112, 152),
+                preview_c: (18, 34, 58),
+                swatches: [0xD6E4F6, 0x407098, 0x18304E, 0x12223A, 0x0C0E16],
+            },
+            TaskbarTheme::AerisGlassLight => ThemePalette {
+                accent: (96, 176, 246),
+                accent_light: (255, 255, 255),
+                accent_deep: (42, 116, 194),
+                rim: (246, 252, 255),
+                text_primary: (20, 30, 44),
+                text_muted: (78, 96, 118),
+                glass_top: (224, 242, 254),
+                glass_bot: (206, 232, 248),
+                preview_a: (62, 178, 236),
+                preview_b: (186, 228, 248),
+                preview_c: (116, 196, 232),
+                swatches: [0xE0F2FE, 0x60B0F6, 0x9AD2F8, 0x8CE0C4, 0x2A74C2],
+            },
+            TaskbarTheme::CleanSlateCards => ThemePalette {
+                accent: (132, 226, 240),
+                accent_light: (224, 250, 255),
+                accent_deep: (26, 86, 106),
+                rim: (132, 226, 240),
+                text_primary: (238, 248, 252),
+                text_muted: (164, 198, 212),
+                glass_top: (20, 56, 72),
+                glass_bot: (14, 40, 54),
+                preview_a: (18, 66, 84),
+                preview_b: (42, 116, 134),
+                preview_c: (12, 46, 62),
+                swatches: [0x84E2F0, 0x143848, 0x2A7486, 0x0E2836, 0x0C2E3E],
+            },
             TaskbarTheme::CupertinoDock => ThemePalette {
                 accent: (206, 228, 252),
                 accent_light: (250, 252, 255),
@@ -2082,6 +2381,7 @@ struct UiaJob {
     bar_rect: RECT,
     u: f32,
     pill_mode: PillMode,
+    wants_icons: bool,
 }
 
 pub struct UiaResult {
@@ -2090,6 +2390,7 @@ pub struct UiaResult {
     pub bar_rect: RECT,
     pub pill_mode: PillMode,
     pub pills: Vec<RECT>,
+    pub icons: Vec<RECT>,
 }
 
 struct UiaWorker {
@@ -2146,10 +2447,12 @@ impl UiaWorker {
                     }
                 }
                 for job in batch {
-                    if !matches!(job.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill) {
+                    let is_pill_mode =
+                        matches!(job.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill);
+                    if !is_pill_mode && !job.wants_icons {
                         continue;
                     }
-                    let pills = if let Some((ref uia, ref cond, ref cache)) = ctx {
+                    let (pills, icons) = if let Some((ref uia, ref cond, ref cache)) = ctx {
                         measure_pills_cached(
                             uia,
                             cond,
@@ -2159,6 +2462,11 @@ impl UiaWorker {
                             job.u,
                             job.pill_mode,
                         )
+                    } else {
+                        (vec![job.bar_rect], Vec::new())
+                    };
+                    let pills = if is_pill_mode {
+                        pills
                     } else {
                         vec![job.bar_rect]
                     };
@@ -2170,6 +2478,7 @@ impl UiaWorker {
                             bar_rect: job.bar_rect,
                             pill_mode: job.pill_mode,
                             pills,
+                            icons,
                         };
                         if let Some(pos) = list.iter().position(|r| r.taskbar_hwnd == job.taskbar_hwnd) {
                             list[pos] = res;
@@ -2197,7 +2506,14 @@ impl UiaWorker {
         }
     }
 
-    fn request(&self, taskbar_hwnd: HWND, bar_rect: RECT, u: f32, pill_mode: PillMode) -> u64 {
+    fn request(
+        &self,
+        taskbar_hwnd: HWND,
+        bar_rect: RECT,
+        u: f32,
+        pill_mode: PillMode,
+        wants_icons: bool,
+    ) -> u64 {
         let gen = self.gen_counter.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.tx.send(UiaJob {
             gen,
@@ -2205,6 +2521,7 @@ impl UiaWorker {
             bar_rect,
             u,
             pill_mode,
+            wants_icons,
         });
         gen
     }
@@ -2271,6 +2588,7 @@ struct StyleSig {
     accent: (u8, u8, u8),
     accent_deep: (u8, u8, u8),
     tap_connected: bool,
+    sys_light: bool,
 }
 
 struct TrayOverlayState {
@@ -2285,9 +2603,10 @@ struct TrayOverlayState {
     border_stripped: Option<bool>,
     last_bar_rect: RECT,
     last_pills: Vec<RECT>,
+    last_icons: Vec<RECT>,
     last_blur_rects: Vec<RECT>,
     last_blur_rounded: Option<bool>,
-    last_blur_accent_key: Option<(u8, u8, u8)>,
+    last_blur_accent_key: Option<(u8, u8, u8, u8)>,
     last_glass_win_rect: RECT,
     last_style_sig: Option<StyleSig>,
     last_pill_mode: Option<PillMode>,
@@ -2343,6 +2662,7 @@ impl TrayOverlayState {
             border_stripped: None,
             last_bar_rect: RECT::default(),
             last_pills: Vec::new(),
+            last_icons: Vec::new(),
             last_blur_rects: Vec::new(),
             last_blur_rounded: None,
             last_blur_accent_key: None,
@@ -2392,6 +2712,7 @@ impl TrayOverlayState {
     fn invalidate_cache(&mut self) {
         self.last_style_sig = None;
         self.last_pills.clear();
+        self.last_icons.clear();
         self.last_blur_rects.clear();
         self.last_blur_rounded = None;
         self.last_blur_accent_key = None;
@@ -3066,13 +3387,17 @@ impl TaskbarStyler {
                 ((cfg.corner_radius as f32) * u).round() as i32
             };
             let pills = ov.last_pills.clone();
+            let icons = ov.last_icons.clone();
+            let sys_light = cached_system_uses_light_theme();
             ov.render_glass_window(
                 ov.last_tray_hwnd,
                 bar_rect,
                 &pills,
+                &icons,
                 scaled_radius,
                 u,
                 tap_ok,
+                sys_light,
                 cfg,
                 d2d_opt,
                 &mut self.dc_rt,
@@ -3179,14 +3504,22 @@ impl TaskbarStyler {
                     ov.pending_dwm_settle = false;
                 }
             }
-            if matches!(cfg.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill) {
+            if matches!(cfg.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill)
+                || cfg.tb_theme.uses_icon_pads()
+            {
                 let cooldown_ok = ov
                     .last_uia_req_time
                     .map(|t| now.duration_since(t) >= Duration::from_millis(320))
                     .unwrap_or(true);
                 if cooldown_ok {
                     ov.last_uia_req_time = Some(now);
-                    self.uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode);
+                    self.uia_worker.request(
+                        tray_hw,
+                        bar_rect,
+                        u,
+                        cfg.pill_mode,
+                        cfg.tb_theme.uses_icon_pads(),
+                    );
                 }
             }
         }
@@ -3200,12 +3533,14 @@ impl TaskbarStyler {
     /// Applies finished background UIA pill rects when posted back to main thread.
     pub fn apply_async_pills(&mut self, cfg: &AppConfig) -> bool {
         let results = self.uia_worker.take_all();
-        if results.is_empty() || !matches!(cfg.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill) {
+        let is_pill_mode = matches!(cfg.pill_mode, PillMode::SplitPills | PillMode::UnifiedPill);
+        if results.is_empty() || (!is_pill_mode && !cfg.tb_theme.uses_icon_pads()) {
             return false;
         }
         let mut any_changed = false;
         let mut hide_all = false;
         let tap_ok = self.tap_connected;
+        let sys_light = cached_system_uses_light_theme();
         let want_blur = wants_blur_backdrop(cfg) && tap_ok;
         {
             let TaskbarStyler {
@@ -3249,11 +3584,19 @@ impl TaskbarStyler {
                 };
                 if cur_bar != res.bar_rect {
                     ov.last_uia_req_time = Some(Instant::now());
-                    uia_worker.request(target_hw, cur_bar, u, cfg.pill_mode);
+                    uia_worker.request(
+                        target_hw,
+                        cur_bar,
+                        u,
+                        cfg.pill_mode,
+                        cfg.tb_theme.uses_icon_pads(),
+                    );
                     continue;
                 }
                 if is_primary {
-                    save_pill_cache(cur_bar, cfg.pill_mode, u, &res.pills);
+                    if is_pill_mode {
+                        save_pill_cache(cur_bar, cfg.pill_mode, u, &res.pills);
+                    }
                     *last_pill_count = res.pills.len();
                     *last_bar_rect_str = format!(
                         "({},{},{},{})",
@@ -3262,18 +3605,27 @@ impl TaskbarStyler {
                 }
                 ov.last_pill_count = res.pills.len();
 
+                let icons_changed =
+                    cfg.tb_theme.uses_icon_pads() && !pills_close(&ov.last_icons, &res.icons);
                 let changed = ov.last_bar_rect != cur_bar
                     || !pills_close(&ov.last_pills, &res.pills)
+                    || icons_changed
                     || !ov.glass_visible;
                 if changed {
-                    let scaled_radius = ((cfg.corner_radius as f32) * u).round() as i32;
+                    let scaled_radius = if is_pill_mode {
+                        ((cfg.corner_radius as f32) * u).round() as i32
+                    } else {
+                        0
+                    };
                     ov.render_glass_window(
                         target_hw,
                         cur_bar,
                         &res.pills,
+                        &res.icons,
                         scaled_radius,
                         u,
                         tap_ok,
+                        sys_light,
                         cfg,
                         d2d_opt,
                         dc_rt,
@@ -3286,12 +3638,16 @@ impl TaskbarStyler {
                         scaled_radius,
                         u,
                         tap_ok,
+                        sys_light,
                         cfg,
                         swca,
                     );
                     ov.last_pills = res.pills;
+                    ov.last_icons = res.icons;
                     ov.last_bar_rect = cur_bar;
                     any_changed = true;
+                } else {
+                    ov.last_icons = res.icons;
                 }
                 ov.sync_overlay_zorder(target_hw, want_blur, tap_ok);
             }
@@ -3329,6 +3685,7 @@ impl TaskbarStyler {
         self.tap_connected = self.tap.tap_ok;
 
         let pal = effective_taskbar_palette(cfg);
+        let sys_light = cached_system_uses_light_theme();
         let sig = StyleSig {
             pill_mode: cfg.pill_mode as u8,
             surface_mode: cfg.surface_mode as u8,
@@ -3347,6 +3704,7 @@ impl TaskbarStyler {
             accent: pal.accent,
             accent_deep: pal.accent_deep,
             tap_connected: self.tap_connected,
+            sys_light,
         };
 
         let d2d_opt = self.d2d_factory.as_ref();
@@ -3425,6 +3783,7 @@ impl TaskbarStyler {
                 ov.border_stripped = None;
             }
             ov.last_pills.clear();
+            ov.last_icons.clear();
             ov.pending_dwm_settle = true;
         }
         ov.last_tray_hwnd = tray_hw;
@@ -3486,18 +3845,36 @@ impl TaskbarStyler {
         let scaled_radius = ((cfg.corner_radius as f32) * u).round() as i32;
 
         // 1. Full Bar / Native Viz: draw flush with bar_rect (zero SWCA drift!)
+        let wants_icons = cfg.tb_theme.uses_icon_pads();
+        let sys_light = sig.sys_light;
         if matches!(cfg.pill_mode, PillMode::FullBar | PillMode::NativeDefault) {
+            if wants_icons
+                && allow_uia
+                && (ov.last_icons.is_empty()
+                    || rect_moved
+                    || hwnd_changed
+                    || ov
+                        .last_uia_req_time
+                        .map(|t| t.elapsed() >= Duration::from_millis(5500))
+                        .unwrap_or(true))
+            {
+                ov.last_uia_req_time = Some(Instant::now());
+                uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode, true);
+            }
             let full_pills = vec![bar_rect];
             ov.last_pill_count = 1;
             let bar_changed = sig_changed || ov.last_bar_rect != bar_rect || !ov.glass_visible;
             if bar_changed {
+                let cached_icons = ov.last_icons.clone();
                 ov.render_glass_window(
                     tray_hw,
                     bar_rect,
                     &full_pills,
+                    &cached_icons,
                     0,
                     u,
                     tap_connected,
+                    sys_light,
                     cfg,
                     d2d_factory,
                     dc_rt,
@@ -3510,6 +3887,7 @@ impl TaskbarStyler {
                     0,
                     u,
                     tap_connected,
+                    sys_light,
                     cfg,
                     swca_fn,
                 );
@@ -3530,19 +3908,20 @@ impl TaskbarStyler {
                 && (mode_switched
                     || rect_moved
                     || hwnd_changed
+                    || (wants_icons && ov.last_icons.is_empty())
                     || ov
                         .last_uia_req_time
                         .map(|t| t.elapsed() >= Duration::from_millis(5500))
                         .unwrap_or(true))
             {
                 ov.last_uia_req_time = Some(Instant::now());
-                uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode);
+                uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode, wants_icons);
             }
             ov.last_pills.clone()
         } else {
             if ov.last_uia_req_time.is_none() || allow_uia {
                 ov.last_uia_req_time = Some(Instant::now());
-                uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode);
+                uia_worker.request(tray_hw, bar_rect, u, cfg.pill_mode, wants_icons);
             }
             if is_primary {
                 load_pill_cache(bar_rect, cfg.pill_mode, u)
@@ -3561,13 +3940,16 @@ impl TaskbarStyler {
             || !ov.glass_visible;
 
         if pills_changed {
+            let cached_icons = ov.last_icons.clone();
             ov.render_glass_window(
                 tray_hw,
                 bar_rect,
                 &screen_pills,
+                &cached_icons,
                 scaled_radius,
                 u,
                 tap_connected,
+                sys_light,
                 cfg,
                 d2d_factory,
                 dc_rt,
@@ -3580,6 +3962,7 @@ impl TaskbarStyler {
                 scaled_radius,
                 u,
                 tap_connected,
+                sys_light,
                 cfg,
                 swca_fn,
             );
@@ -3647,6 +4030,7 @@ impl TrayOverlayState {
         radius: i32,
         u_bar: f32,
         tap_connected: bool,
+        sys_light: bool,
         cfg: &AppConfig,
         swca_fn: Option<SetWindowCompositionAttributeFn>,
     ) {
@@ -3769,27 +4153,54 @@ impl TrayOverlayState {
             self.last_blur_rounded = Some(rounded);
         }
 
-        // Distinct Windows 11 Acrylic colors per surface mode (ABGR byte order, alpha in 4..235)
-        let (blur_abgr, accent_tag): (u32, u8) = match cfg.surface_mode {
-            SurfaceMode::Acrylic => {
-                let a = ((cfg.tint_alpha as u32 / 2).clamp(16, 118)) << 24;
-                (a | (10 << 16) | (13 << 8) | 18, 1)
+        // Distinct Windows 11 Acrylic colors per surface mode (ABGR byte order, alpha in 4..235).
+        // Light-surface Clean & Minimal themes use luminous pearl frost in Light Mode and
+        // automatically protect white system-tray text on pill 1+ when Windows is in Dark Mode.
+        let is_light_theme = cfg.tb_theme.is_light_surface();
+        let (blur_abgr, tray_blur_abgr, accent_tag): (u32, u32, u8) = if is_light_theme {
+            match cfg.surface_mode {
+                SurfaceMode::ClearTint => (0, 0, 0),
+                _ => {
+                    let a_main = ((cfg.tint_alpha as u32 / 3).clamp(18, 86)) << 24;
+                    let main_c = a_main | (244 << 16) | (242 << 8) | 240;
+                    if sys_light {
+                        (main_c, main_c, 4)
+                    } else {
+                        let a_tray = ((cfg.tint_alpha as u32 / 2).clamp(32, 108)) << 24;
+                        let tray_c = a_tray | (76 << 16) | (68 << 8) | 64;
+                        (main_c, tray_c, 5)
+                    }
+                }
             }
-            SurfaceMode::Blur => {
-                let a = ((cfg.tint_alpha as u32 / 3).clamp(16, 86)) << 24;
-                (a | (68 << 16) | (58 << 8) | 50, 2)
-            }
-            SurfaceMode::SystemDefault => {
-                let a = ((cfg.tint_alpha as u32 / 2).clamp(32, 110)) << 24;
-                (a | (28 << 16) | (26 << 8) | 26, 3)
-            }
-            SurfaceMode::ClearTint => (0, 0),
+        } else {
+            let (c, tag) = match cfg.surface_mode {
+                SurfaceMode::Acrylic => {
+                    let a = ((cfg.tint_alpha as u32 / 2).clamp(16, 118)) << 24;
+                    (a | (10 << 16) | (13 << 8) | 18, 1)
+                }
+                SurfaceMode::Blur => {
+                    let a = ((cfg.tint_alpha as u32 / 3).clamp(16, 86)) << 24;
+                    (a | (68 << 16) | (58 << 8) | 50, 2)
+                }
+                SurfaceMode::SystemDefault => {
+                    let a = ((cfg.tint_alpha as u32 / 2).clamp(32, 110)) << 24;
+                    (a | (28 << 16) | (26 << 8) | 26, 3)
+                }
+                SurfaceMode::ClearTint => (0, 0),
+            };
+            (c, c, tag)
         };
         let blur_alpha_byte = (blur_abgr >> 24) as u8;
-        let accent_key = (cfg.surface_mode as u8, accent_tag, blur_alpha_byte);
+        let accent_key = (
+            cfg.surface_mode as u8,
+            accent_tag,
+            blur_alpha_byte,
+            active_count as u8,
+        );
         if (pool_grew || self.last_blur_accent_key != Some(accent_key)) && blur_abgr != 0 {
-            for &hw in &self.blur_hwnds[..active_count] {
-                apply_blur_acrylic_with(swca_fn, hw, blur_abgr);
+            for (idx, &hw) in self.blur_hwnds[..active_count].iter().enumerate() {
+                let col = if idx >= 1 { tray_blur_abgr } else { blur_abgr };
+                apply_blur_acrylic_with(swca_fn, hw, col);
             }
             self.last_blur_accent_key = Some(accent_key);
         }
@@ -3802,9 +4213,11 @@ impl TrayOverlayState {
         tray_hw: HWND,
         bar_rect: RECT,
         screen_pills: &[RECT],
+        screen_icons: &[RECT],
         radius: i32,
         u: f32,
         tap_connected: bool,
+        sys_light: bool,
         cfg: &AppConfig,
         d2d_opt: Option<&ID2D1Factory>,
         dc_rt_slot: &mut Option<ID2D1DCRenderTarget>,
@@ -3845,9 +4258,11 @@ impl TrayOverlayState {
                     win_rect,
                     bar_rect,
                     screen_pills,
+                    screen_icons,
                     radius,
                     u,
                     tap_connected,
+                    sys_light,
                     cfg,
                     viz,
                 )
@@ -4071,9 +4486,12 @@ fn wants_overlay(cfg: &AppConfig) -> bool {
 
 fn wants_blur_backdrop(cfg: &AppConfig) -> bool {
     if !cfg.tb_show_backdrop
+        || cfg.tb_theme.is_independent_tile_dock()
         || matches!(
             cfg.tb_theme,
-            TaskbarTheme::CyberArasakaDeck | TaskbarTheme::Retro95Classic
+            TaskbarTheme::CyberArasakaDeck
+                | TaskbarTheme::Retro95Classic
+                | TaskbarTheme::BorderlessGhost
         )
     {
         return false;
@@ -4179,13 +4597,37 @@ fn effective_pill_radius_for(
     match theme {
         TaskbarTheme::UnixPolybar => (6.0 * u).min(min_dim * 0.28).max(2.0),
         TaskbarTheme::CyberArasakaDeck => (scaled_radius as f32).min(min_dim * 0.34).max(5.0 * u),
+        TaskbarTheme::Os26LiquidGlassLight
+        | TaskbarTheme::Os26LiquidGlassDark
+        | TaskbarTheme::OneUiLightChips
+        | TaskbarTheme::OneUiDarkChips
+        | TaskbarTheme::BubblesDark
+        | TaskbarTheme::BubblesLight
+        | TaskbarTheme::LiquidGlassClear => {
+            (scaled_radius as f32).min(min_dim * 0.49).min(25.0 * u).max(12.0 * u)
+        }
         TaskbarTheme::QuartzShellDock
         | TaskbarTheme::CupertinoDock
         | TaskbarTheme::KineticCupertinoWave
         | TaskbarTheme::DynamicIslandDock
         | TaskbarTheme::KineticLiquidMercury
-        | TaskbarTheme::KineticHydroChamber => {
+        | TaskbarTheme::KineticHydroChamber
+        | TaskbarTheme::LuminosityFloat
+        | TaskbarTheme::BorderlessGhost => {
             (scaled_radius as f32).min(min_dim * 0.46).min(22.0 * u).max(8.0 * u)
+        }
+        TaskbarTheme::PillsDetached => {
+            (scaled_radius as f32).min(min_dim * 0.42).min(16.0 * u).max(8.0 * u)
+        }
+        TaskbarTheme::MatterTilesLight
+        | TaskbarTheme::MatterTilesDark
+        | TaskbarTheme::SquircleFrosted
+        | TaskbarTheme::RosePineTiles
+        | TaskbarTheme::CatppuccinTiles => {
+            (scaled_radius as f32).min(min_dim * 0.34).min(13.0 * u).max(6.0 * u)
+        }
+        TaskbarTheme::DockLikeLight | TaskbarTheme::DockLikeDark => {
+            (scaled_radius as f32).min(min_dim * 0.28).min(10.5 * u).max(5.0 * u)
         }
         _ => (scaled_radius as f32).min(min_dim * 0.42).min(15.5 * u).max(4.0),
     }
@@ -4199,14 +4641,23 @@ fn dock_adjusted_rect(
     u: f32,
     theme: TaskbarTheme,
 ) -> RECT {
-    if !matches!(
+    let is_lifted_dock = matches!(
         theme,
-        TaskbarTheme::QuartzShellDock | TaskbarTheme::CupertinoDock | TaskbarTheme::KineticCupertinoWave
-    ) {
+        TaskbarTheme::QuartzShellDock
+            | TaskbarTheme::CupertinoDock
+            | TaskbarTheme::KineticCupertinoWave
+            | TaskbarTheme::Os26LiquidGlassLight
+            | TaskbarTheme::Os26LiquidGlassDark
+            | TaskbarTheme::OneUiLightChips
+            | TaskbarTheme::OneUiDarkChips
+            | TaskbarTheme::LiquidGlassClear
+            | TaskbarTheme::LuminosityFloat
+    );
+    if !is_lifted_dock {
         return sr;
     }
     let lift = (2.2 * u).round() as i32;
-    let wing = (2.0 * u).round() as i32;
+    let wing = (2.5 * u).round() as i32;
     let mut r = sr;
     if is_vertical {
         r.top = (r.top - wing).max(bar_rect.top + 2);
@@ -4272,6 +4723,9 @@ unsafe fn draw_capsule_backdrop(
     bounds_h: f32,
     is_full_bar: bool,
     above_taskbar: bool,
+    cap_idx: usize,
+    is_preview: bool,
+    sys_light: bool,
     cfg: &AppConfig,
     pal: &ThemePalette,
 ) {
@@ -4286,15 +4740,58 @@ unsafe fn draw_capsule_backdrop(
         SurfaceMode::SystemDefault => (fill_alpha * 0.80).clamp(0.10, 0.92),
     };
 
+    // Zero-bar Windhawk independent floating tile/circle themes:
+    // App icons (`cap_idx == 0`) float as standalone tiles directly on wallpaper — NO enclosing bar!
+    if cfg.tb_theme.is_independent_tile_dock() && cap_idx == 0 && !is_full_bar {
+        return;
+    }
+
+    // Borderless Ghost: zero opaque bar, only a feather-soft shadow cushion behind icons
+    if cfg.tb_theme == TaskbarTheme::BorderlessGhost {
+        if !above_taskbar {
+            let cushion_layers: [(f32, f32); 2] = [(4.0 * u, 0.08), (1.0 * u, 0.14)];
+            for (exp, sh_a) in cushion_layers {
+                let c_rr = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: (l - exp).max(0.5),
+                        top: (t - exp * 0.5).max(0.5),
+                        right: (r + exp).min(bounds_w - 0.5),
+                        bottom: (b + exp * 0.5).min(bounds_h - 0.5),
+                    },
+                    radiusX: rad + exp,
+                    radiusY: rad + exp,
+                };
+                if let Ok(sh_br) = rt.CreateSolidColorBrush(&rgba_u8(6, 10, 18, sh_a), None) {
+                    rt.FillRoundedRectangle(&c_rr, &sh_br);
+                }
+            }
+        }
+        return;
+    }
+
     // Contained soft floating shadow for capsule pills (suppressed when layered above opaque taskbar)
-    if !above_taskbar && !is_full_bar && (fill_alpha > 0.04 || cfg.amber_border) {
+    if !above_taskbar
+        && !is_full_bar
+        && !matches!(
+            cfg.tb_theme,
+            TaskbarTheme::Os26LiquidGlassLight
+                | TaskbarTheme::Os26LiquidGlassDark
+                | TaskbarTheme::LiquidGlassClear
+        )
+        && (fill_alpha > 0.04 || cfg.amber_border)
+    {
         let is_mac_dock = matches!(
             cfg.tb_theme,
             TaskbarTheme::QuartzShellDock
                 | TaskbarTheme::CupertinoDock
                 | TaskbarTheme::KineticCupertinoWave
+                | TaskbarTheme::DockLikeLight
+                | TaskbarTheme::DockLikeDark
+                | TaskbarTheme::LuminosityFloat
         );
-        let sh_layers: [(f32, f32); 2] = if is_mac_dock {
+        let sh_layers: [(f32, f32); 2] = if cfg.tb_theme.is_light_surface() {
+            [(3.0 * u, 0.12), (1.4 * u, 0.18)]
+        } else if is_mac_dock {
             [(3.6 * u, 0.22), (1.8 * u, 0.30)]
         } else {
             [(3.0 * u, 0.14), (1.5 * u, 0.20)]
@@ -4325,7 +4822,7 @@ unsafe fn draw_capsule_backdrop(
         radiusY: if is_full_bar { 0.0 } else { rad },
     };
 
-    // Bespoke OS Dock surface fills
+    // Bespoke OS & Clean/Minimal Dock surface fills
     let bespoke_alpha = |normal: f32| -> f32 {
         if above_taskbar {
             (fill_alpha * 0.16).clamp(0.05, 0.14)
@@ -4333,7 +4830,257 @@ unsafe fn draw_capsule_backdrop(
             normal
         }
     };
+    // Protect white native Windows tray clock/icons when using a Light theme on Windows Dark Mode
+    let dark_mode_tray_guard = !is_preview
+        && !sys_light
+        && cfg.tb_theme.is_light_surface()
+        && (cap_idx >= 1 || cfg.pill_mode != PillMode::SplitPills);
+
     match cfg.tb_theme {
+        // 1 & 2. OS26 Liquid Glass (Issue #1 Image #1): ultra-clear thin outer rail framing glass keycaps
+        TaskbarTheme::Os26LiquidGlassLight => {
+            let a = bespoke_alpha((fill_alpha * 0.42).clamp(0.14, 0.36));
+            let stops = if dark_mode_tray_guard {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(62, 74, 94, 0.62) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(38, 46, 62, 0.72) },
+                ]
+            } else {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, a * 1.25) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(232, 242, 255, a * 0.85) },
+                ]
+            };
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::Os26LiquidGlassDark => {
+            let a = bespoke_alpha((fill_alpha * 0.38).clamp(0.10, 0.30));
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(22, 36, 56, a) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(8, 16, 28, (a * 1.35).min(0.40)) },
+            ];
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 3 & 4. Matter Tiles Light & Dark (Issue #1 Image #2): tray capsule only (cap_idx >= 1)
+        TaskbarTheme::MatterTilesLight => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.65, 0.95));
+            let col = if dark_mode_tray_guard {
+                rgba_u8(54, 48, 66, a)
+            } else {
+                rgba_u8(244, 240, 250, a)
+            };
+            if let Ok(br) = rt.CreateSolidColorBrush(&col, None) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::MatterTilesDark => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.68, 0.96));
+            if let Ok(br) = rt.CreateSolidColorBrush(&rgba_u8(44, 34, 48, a), None) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 5 & 6. One UI 8.5 Light & Dark Chips: sleek glass rail + vibrant clock chip accent on tray
+        TaskbarTheme::OneUiLightChips => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.28, 0.68));
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(26, 30, 40, a * 0.85) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(14, 16, 22, a) },
+            ];
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::OneUiDarkChips => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.32, 0.78));
+            let stops = if dark_mode_tray_guard {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(62, 70, 86, 0.82) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(40, 46, 58, 0.88) },
+                ]
+            } else {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(248, 250, 254, a * 0.92) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(226, 234, 246, a * 0.84) },
+                ]
+            };
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 7..12. Independent floating tiles/circles: tray pill surfaces (`cap_idx >= 1`)
+        TaskbarTheme::SquircleFrosted => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.55, 0.88));
+            if let Ok(br) = rt.CreateSolidColorBrush(&rgba_u8(46, 36, 30, a), None) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::BubblesDark => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.72, 0.96));
+            if let Ok(br) = rt.CreateSolidColorBrush(&rgba_u8(40, 42, 48, a), None) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::BubblesLight => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.68, 0.94));
+            let col = if dark_mode_tray_guard {
+                rgba_u8(54, 62, 76, a)
+            } else {
+                rgba_u8(248, 250, 254, a)
+            };
+            if let Ok(br) = rt.CreateSolidColorBrush(&col, None) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::PillsDetached => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.56, 0.88));
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(42, 52, 64, a) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(24, 32, 42, (a + 0.06).min(0.94)) },
+            ];
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::RosePineTiles => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.74, 0.96));
+            if let Ok(br) = rt.CreateSolidColorBrush(&rgba_u8(38, 35, 58, a), None) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::CatppuccinTiles => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.74, 0.96));
+            if let Ok(br) = rt.CreateSolidColorBrush(&rgba_u8(30, 30, 46, a), None) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 13. Liquid Glass Clear (Windhawk LiquidGlass2): ultra-clear curved glass capsule
+        TaskbarTheme::LiquidGlassClear => {
+            let a = bespoke_alpha((fill_alpha * 0.42).clamp(0.10, 0.28));
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, (a * 1.45).min(0.36)) },
+                D2D1_GRADIENT_STOP { position: 0.46, color: rgba_u8(26, 32, 28, a) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(240, 248, 242, (a * 1.15).min(0.30)) },
+            ];
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 14 & 15. DockLike Light & Dark (Windhawk DockLike)
+        TaskbarTheme::DockLikeLight => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.58, 0.94));
+            let stops = if dark_mode_tray_guard {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(62, 70, 86, 0.88) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(42, 48, 62, 0.92) },
+                ]
+            } else {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(248, 250, 254, a) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(234, 239, 248, a) },
+                ]
+            };
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        TaskbarTheme::DockLikeDark => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.72, 0.96));
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(30, 38, 54, a) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(22, 28, 42, a) },
+            ];
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 16. Blob Light (Windhawk Blob/BlobLight): soft pale ice-gray ribbon with white pill blobs
+        TaskbarTheme::BlobLight => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.62, 0.92));
+            let stops = if dark_mode_tray_guard {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(64, 72, 86, 0.86) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(48, 54, 66, 0.90) },
+                ]
+            } else {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(226, 234, 246, a) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(212, 222, 238, a) },
+                ]
+            };
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 17. Luminosity Float (Windhawk Luminosity): wide centered wallpaper-blended glass capsule
+        TaskbarTheme::LuminosityFloat => {
+            let a = bespoke_alpha((fill_alpha * 0.72).clamp(0.32, 0.74));
+            let (tr, tg, tb) = pal.glass_top;
+            let (br_c, bg_c, bb_c) = pal.glass_bot;
+            let (ar, ag, ab) = pal.accent;
+            let mr = ((tr as u16 * 2 + ar as u16) / 3) as u8;
+            let mg = ((tg as u16 * 2 + ag as u16) / 3) as u8;
+            let mb = ((tb as u16 * 2 + ab as u16) / 3) as u8;
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(tr, tg, tb, a) },
+                D2D1_GRADIENT_STOP { position: 0.45, color: rgba_u8(mr, mg, mb, (a * 1.08).min(0.82)) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(br_c, bg_c, bb_c, (a * 1.04).min(0.80)) },
+            ];
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: r, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 19. Aeris Glass Light (Windhawk Aeris): crisp edge-to-edge icy frosted ribbon
+        TaskbarTheme::AerisGlassLight => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.55, 0.90));
+            let stops = if dark_mode_tray_guard {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(48, 66, 86, 0.84) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(34, 48, 66, 0.88) },
+                ]
+            } else {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(222, 242, 255, a) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(204, 232, 248, a) },
+                ]
+            };
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: r, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
+        // 20. Clean Slate Cards (Windhawk CleanSlate): deep translucent teal-slate edge glass bar
+        TaskbarTheme::CleanSlateCards => {
+            let a = bespoke_alpha(fill_alpha.clamp(0.46, 0.84));
+            let stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(22, 58, 74, a) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(14, 42, 56, (a + 0.06).min(0.90)) },
+            ];
+            if let Some(br) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &stops) {
+                rt.FillRoundedRectangle(&rr, &br);
+            }
+            return;
+        }
         TaskbarTheme::Retro95Classic => {
             if let Ok(br) = rt.CreateSolidColorBrush(
                 &rgba_u8(68, 74, 86, bespoke_alpha(fill_alpha.max(0.88))),
@@ -4465,6 +5212,379 @@ unsafe fn draw_capsule_backdrop(
 }
 
 #[allow(clippy::too_many_arguments)]
+unsafe fn draw_clean_icon_pads(
+    rt: &ID2D1RenderTarget,
+    d2d: Option<&ID2D1Factory>,
+    theme: TaskbarTheme,
+    rects: &[(f32, f32, f32, f32)],
+    u: f32,
+    above_taskbar: bool,
+    is_preview: bool,
+    active_idx: Option<usize>,
+) {
+    if !theme.uses_icon_pads() || rects.is_empty() {
+        return;
+    }
+    let alpha_mul = if above_taskbar { 0.20 } else { 1.0 };
+    for (idx, &(il, it, ir, ib)) in rects.iter().enumerate() {
+        let iw = ir - il;
+        let ih = ib - it;
+        if iw < 6.0 * u || ih < 6.0 * u {
+            continue;
+        }
+        let min_s = iw.min(ih);
+        let is_featured = active_idx == Some(idx);
+        let rad = match theme {
+            TaskbarTheme::BubblesDark | TaskbarTheme::BubblesLight => min_s * 0.50,
+            TaskbarTheme::AerisGlassLight => 0.0,
+            TaskbarTheme::CleanSlateCards => (min_s * 0.18).clamp(3.0 * u, 6.0 * u),
+            TaskbarTheme::BlobLight => min_s * 0.44,
+            TaskbarTheme::OneUiLightChips | TaskbarTheme::OneUiDarkChips => {
+                (min_s * 0.36).clamp(4.0 * u, 13.0 * u)
+            }
+            TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark => {
+                (min_s * 0.31).clamp(4.0 * u, 13.0 * u)
+            }
+            TaskbarTheme::PillsDetached => (min_s * 0.36).clamp(4.0 * u, 12.0 * u),
+            _ => (min_s * 0.27).clamp(3.5 * u, 11.0 * u),
+        };
+        let rr = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F { left: il, top: it, right: ir, bottom: ib },
+            radiusX: rad,
+            radiusY: rad,
+        };
+        match theme {
+            // Exact Windhawk OS26 Liquid Glass (Issue #1 Image #1) — Light & Dark optical keycaps
+            TaskbarTheme::Os26LiquidGlassDark | TaskbarTheme::Os26LiquidGlassLight => {
+                let is_light = theme == TaskbarTheme::Os26LiquidGlassLight;
+                if !above_taskbar {
+                    let sh_a = if is_light { 0.14 } else { 0.28 };
+                    if let Ok(sh) = rt.CreateSolidColorBrush(&rgba_u8(6, 12, 22, sh_a), None) {
+                        let sh_rr = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: il - 0.5 * u,
+                                top: it + 0.9 * u,
+                                right: ir + 0.5 * u,
+                                bottom: ib + 1.4 * u,
+                            },
+                            radiusX: rad + 0.5 * u,
+                            radiusY: rad + 0.5 * u,
+                        };
+                        rt.FillRoundedRectangle(&sh_rr, &sh);
+                    }
+                }
+                let dome_stops = if is_light {
+                    [
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, 0.88 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 0.48, color: rgba_u8(226, 238, 252, 0.54 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(255, 255, 255, 0.76 * alpha_mul) },
+                    ]
+                } else {
+                    [
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(186, 212, 240, 0.34 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 0.46, color: rgba_u8(28, 42, 62, 0.48 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(146, 178, 214, 0.26 * alpha_mul) },
+                    ]
+                };
+                if let Some(br) = create_grad(rt, Vector2 { X: il, Y: it }, Vector2 { X: il, Y: ib }, &dome_stops) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                // Clipped upper-left liquid glass glare sheen
+                if !above_taskbar {
+                    let clip_g = push_capsule_clip(rt, d2d, il, it, ir, ib, rad);
+                    let glare_b = it + ih * 0.44;
+                    let glare_stops = if is_light {
+                        [
+                            D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, 0.54) },
+                            D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(255, 255, 255, 0.0) },
+                        ]
+                    } else {
+                        [
+                            D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(240, 248, 255, 0.28) },
+                            D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(200, 224, 255, 0.0) },
+                        ]
+                    };
+                    if let Some(gbr) = create_grad(rt, Vector2 { X: il, Y: it }, Vector2 { X: il, Y: glare_b }, &glare_stops) {
+                        rt.FillRectangle(&D2D_RECT_F { left: il, top: it, right: ir, bottom: glare_b }, &gbr);
+                    }
+                    pop_capsule_clip(rt, clip_g);
+                }
+                // Signature OS26 Liquid Glass curved specular top + bottom bevel rim (transparent mid-sides)
+                let rim_stops = if is_light {
+                    [
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, 0.96 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 0.50, color: rgba_u8(140, 172, 212, 0.28 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(255, 255, 255, 0.86 * alpha_mul) },
+                    ]
+                } else {
+                    [
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(250, 253, 255, 0.82 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 0.50, color: rgba_u8(160, 192, 226, 0.14 * alpha_mul) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(226, 240, 255, 0.58 * alpha_mul) },
+                    ]
+                };
+                if let Some(rb) = create_grad(rt, Vector2 { X: il, Y: it }, Vector2 { X: il, Y: ib }, &rim_stops) {
+                    rt.DrawRoundedRectangle(&rr, &rb, 1.1 * u, None);
+                }
+                // Running indicator dot right underneath keycap in Studio preview (matching OS26_Liquid_Glass.png)
+                if is_preview && (idx == 1 || idx == 2 || idx == 3) {
+                    let dot_col = if is_light {
+                        rgba_u8(46, 62, 86, 0.82)
+                    } else {
+                        rgba_u8(230, 240, 252, 0.86)
+                    };
+                    if let Ok(dbr) = rt.CreateSolidColorBrush(&dot_col, None) {
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 { X: (il + ir) * 0.5, Y: ib + 2.4 * u },
+                                radiusX: 1.3 * u,
+                                radiusY: 1.3 * u,
+                            },
+                            &dbr,
+                        );
+                    }
+                }
+            }
+            // Exact Windhawk Matter Tiles Dark (Issue #1 Image #2) & Matter Tiles Light (Matter/TB_Light.png)
+            TaskbarTheme::MatterTilesDark | TaskbarTheme::MatterTilesLight => {
+                let is_light = theme == TaskbarTheme::MatterTilesLight;
+                if !above_taskbar {
+                    let sh_a = if is_light { 0.14 } else { 0.24 };
+                    if let Ok(sh) = rt.CreateSolidColorBrush(&rgba_u8(14, 8, 22, sh_a), None) {
+                        let sh_rr = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: il,
+                                top: it + 0.8 * u,
+                                right: ir,
+                                bottom: ib + 1.2 * u,
+                            },
+                            radiusX: rad,
+                            radiusY: rad,
+                        };
+                        rt.FillRoundedRectangle(&sh_rr, &sh);
+                    }
+                }
+                let fill_col = if is_light {
+                    rgba_u8(245, 242, 251, 0.94 * alpha_mul)
+                } else {
+                    rgba_u8(44, 34, 48, 0.93 * alpha_mul)
+                };
+                if let Ok(br) = rt.CreateSolidColorBrush(&fill_col, None) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                if is_light {
+                    if let Ok(rim) = rt.CreateSolidColorBrush(&rgba_u8(60, 42, 82, 0.10 * alpha_mul), None) {
+                        rt.DrawRoundedRectangle(&rr, &rim, 0.75 * u, None);
+                    }
+                }
+                // Crisp Matter bottom pill indicator bar inside active tiles in Studio preview
+                if is_preview && idx != 0 {
+                    let pw = (iw * 0.36).clamp(4.0 * u, 9.0 * u);
+                    let ph = 2.0 * u;
+                    let cx = (il + ir) * 0.5;
+                    let py = ib - ph - 1.2 * u;
+                    let ind_col = if is_light {
+                        if is_featured {
+                            rgba_u8(216, 36, 46, 0.96)
+                        } else {
+                            rgba_u8(24, 22, 30, 0.92)
+                        }
+                    } else {
+                        rgba_u8(248, 248, 252, 0.96)
+                    };
+                    if let Ok(ibr) = rt.CreateSolidColorBrush(&ind_col, None) {
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: cx - pw * 0.5,
+                                    top: py,
+                                    right: cx + pw * 0.5,
+                                    bottom: py + ph,
+                                },
+                                radiusX: ph * 0.5,
+                                radiusY: ph * 0.5,
+                            },
+                            &ibr,
+                        );
+                    }
+                }
+            }
+            // Exact Windhawk One UI 8.5 Light Chips (white squircles in dark rail) & Dark Chips (obsidian in frost rail)
+            TaskbarTheme::OneUiLightChips | TaskbarTheme::OneUiDarkChips => {
+                let white_chips = theme == TaskbarTheme::OneUiLightChips;
+                let col = if white_chips {
+                    rgba_u8(246, 248, 252, 0.96 * alpha_mul)
+                } else {
+                    rgba_u8(24, 28, 38, 0.94 * alpha_mul)
+                };
+                if let Ok(br) = rt.CreateSolidColorBrush(&col, None) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                let rim_col = if white_chips {
+                    rgba_u8(255, 255, 255, 0.85 * alpha_mul)
+                } else {
+                    rgba_u8(255, 255, 255, 0.16 * alpha_mul)
+                };
+                if let Ok(rim) = rt.CreateSolidColorBrush(&rim_col, None) {
+                    rt.DrawRoundedRectangle(&rr, &rim, 0.8 * u, None);
+                }
+            }
+            // Exact Windhawk Squircle: smoky translucent floating squircle islands
+            TaskbarTheme::SquircleFrosted => {
+                if let Ok(br) = rt.CreateSolidColorBrush(&rgba_u8(46, 36, 30, 0.78 * alpha_mul), None) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                if let Ok(rim) = rt.CreateSolidColorBrush(&rgba_u8(255, 232, 214, 0.16 * alpha_mul), None) {
+                    rt.DrawRoundedRectangle(&rr, &rim, 0.85 * u, None);
+                }
+            }
+            // Exact Windhawk Bubbles Dark & Light: standalone perfect circular buttons + focus ring
+            TaskbarTheme::BubblesDark | TaskbarTheme::BubblesLight => {
+                let is_light = theme == TaskbarTheme::BubblesLight;
+                if !above_taskbar {
+                    if let Ok(sh) = rt.CreateSolidColorBrush(&rgba_u8(8, 10, 16, if is_light { 0.14 } else { 0.28 }), None) {
+                        let sh_rr = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F { left: il, top: it + 0.8 * u, right: ir, bottom: ib + 1.2 * u },
+                            radiusX: rad,
+                            radiusY: rad,
+                        };
+                        rt.FillRoundedRectangle(&sh_rr, &sh);
+                    }
+                }
+                let col = if is_light {
+                    rgba_u8(248, 250, 255, 0.94 * alpha_mul)
+                } else {
+                    rgba_u8(40, 42, 48, 0.95 * alpha_mul)
+                };
+                if let Ok(br) = rt.CreateSolidColorBrush(&col, None) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                if is_featured {
+                    let ring_col = if is_light {
+                        rgba_u8(74, 146, 246, 0.92 * alpha_mul)
+                    } else {
+                        rgba_u8(134, 168, 231, 0.94 * alpha_mul)
+                    };
+                    if let Ok(rbr) = rt.CreateSolidColorBrush(&ring_col, None) {
+                        rt.DrawRoundedRectangle(&rr, &rbr, 1.6 * u, None);
+                    }
+                } else {
+                    let subtle = if is_light {
+                        rgba_u8(48, 68, 102, 0.14 * alpha_mul)
+                    } else {
+                        rgba_u8(255, 255, 255, 0.10 * alpha_mul)
+                    };
+                    if let Ok(rbr) = rt.CreateSolidColorBrush(&subtle, None) {
+                        rt.DrawRoundedRectangle(&rr, &rbr, 0.8 * u, None);
+                    }
+                }
+            }
+            // Exact Windhawk Pills Detached: independent dark-frosted bordered pill capsules
+            TaskbarTheme::PillsDetached => {
+                let stops = [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(44, 54, 66, 0.82 * alpha_mul) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(24, 32, 42, 0.88 * alpha_mul) },
+                ];
+                if let Some(br) = create_grad(rt, Vector2 { X: il, Y: it }, Vector2 { X: il, Y: ib }, &stops) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                if let Ok(rim) = rt.CreateSolidColorBrush(&rgba_u8(220, 234, 248, 0.36 * alpha_mul), None) {
+                    rt.DrawRoundedRectangle(&rr, &rim, 0.95 * u, None);
+                }
+            }
+            // Exact Windhawk RosePine Tiles & Catppuccin Tiles: standalone dark tiles + glowing accent border
+            TaskbarTheme::RosePineTiles | TaskbarTheme::CatppuccinTiles => {
+                let is_rp = theme == TaskbarTheme::RosePineTiles;
+                let fill = if is_rp {
+                    rgba_u8(38, 35, 58, 0.95 * alpha_mul)
+                } else {
+                    rgba_u8(30, 30, 46, 0.95 * alpha_mul)
+                };
+                if let Ok(br) = rt.CreateSolidColorBrush(&fill, None) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                let (rim_col, rim_w) = if is_featured {
+                    if is_rp {
+                        (rgba_u8(235, 188, 186, 0.94 * alpha_mul), 1.5 * u)
+                    } else {
+                        (rgba_u8(180, 190, 254, 0.94 * alpha_mul), 1.5 * u)
+                    }
+                } else if is_rp {
+                    (rgba_u8(110, 106, 134, 0.28 * alpha_mul), 0.85 * u)
+                } else {
+                    (rgba_u8(108, 112, 134, 0.28 * alpha_mul), 0.85 * u)
+                };
+                if let Ok(rim) = rt.CreateSolidColorBrush(&rim_col, None) {
+                    rt.DrawRoundedRectangle(&rr, &rim, rim_w, None);
+                }
+            }
+            // Exact Windhawk Blob Light: pure white elevated pill tabs popping off pale ice ribbon
+            TaskbarTheme::BlobLight => {
+                let show_blob = !is_preview || is_featured || idx == 1 || idx == 3;
+                if show_blob {
+                    if !above_taskbar {
+                        if let Ok(sh) = rt.CreateSolidColorBrush(&rgba_u8(48, 72, 114, 0.14), None) {
+                            let sh_rr = D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F { left: il, top: it + 0.7 * u, right: ir, bottom: ib + 1.1 * u },
+                                radiusX: rad,
+                                radiusY: rad,
+                            };
+                            rt.FillRoundedRectangle(&sh_rr, &sh);
+                        }
+                    }
+                    let col = if is_featured || !is_preview {
+                        rgba_u8(255, 255, 255, 0.98 * alpha_mul)
+                    } else {
+                        rgba_u8(244, 248, 254, 0.80 * alpha_mul)
+                    };
+                    if let Ok(br) = rt.CreateSolidColorBrush(&col, None) {
+                        rt.FillRoundedRectangle(&rr, &br);
+                    }
+                }
+            }
+            // Exact Windhawk Aeris Light: sharp-cornered flat architectural translucent blocks
+            TaskbarTheme::AerisGlassLight => {
+                let block_col = match idx % 4 {
+                    0 => rgba_u8(182, 212, 234, 0.44 * alpha_mul),
+                    1 => rgba_u8(122, 186, 246, 0.58 * alpha_mul),
+                    2 => rgba_u8(136, 224, 186, 0.56 * alpha_mul),
+                    _ => rgba_u8(172, 206, 232, 0.48 * alpha_mul),
+                };
+                if let Ok(br) = rt.CreateSolidColorBrush(&block_col, None) {
+                    rt.FillRectangle(&rr.rect, &br);
+                }
+                if is_featured {
+                    if let Ok(top_b) = rt.CreateSolidColorBrush(&rgba_u8(54, 134, 224, 0.88 * alpha_mul), None) {
+                        rt.DrawLine(
+                            Vector2 { X: il, Y: it + 1.0 * u },
+                            Vector2 { X: ir, Y: it + 1.0 * u },
+                            &top_b,
+                            1.8 * u,
+                            None,
+                        );
+                    }
+                }
+            }
+            // Exact Windhawk CleanSlate: dark-frosted rounded cards + glowing cyan active border
+            TaskbarTheme::CleanSlateCards => {
+                if let Ok(br) = rt.CreateSolidColorBrush(&rgba_u8(12, 26, 36, 0.78 * alpha_mul), None) {
+                    rt.FillRoundedRectangle(&rr, &br);
+                }
+                let (rim_col, rim_w) = if is_featured {
+                    (rgba_u8(142, 232, 246, 0.94 * alpha_mul), 1.3 * u)
+                } else {
+                    (rgba_u8(142, 214, 230, 0.24 * alpha_mul), 0.85 * u)
+                };
+                if let Ok(rim) = rt.CreateSolidColorBrush(&rim_col, None) {
+                    rt.DrawRoundedRectangle(&rr, &rim, rim_w, None);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 unsafe fn draw_capsule_rim_and_accents(
     rt: &ID2D1RenderTarget,
     d2d: Option<&ID2D1Factory>,
@@ -4479,6 +5599,7 @@ unsafe fn draw_capsule_rim_and_accents(
     is_full_bar: bool,
     cap_idx: usize,
     is_preview: bool,
+    sys_light: bool,
     cfg: &AppConfig,
     viz: &VizSnapshot,
     pal: &ThemePalette,
@@ -4486,13 +5607,219 @@ unsafe fn draw_capsule_rim_and_accents(
     if cfg.pill_mode == PillMode::NativeDefault {
         return;
     }
+    // Zero-bar independent floating tiles: NO enclosing rim on app icons group (`cap_idx == 0`)!
+    if cfg.tb_theme.is_independent_tile_dock() && cap_idx == 0 && !is_full_bar {
+        return;
+    }
+
     let rr = D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F { left: l, top: t, right: r, bottom: b },
         radiusX: if is_full_bar { 0.0 } else { rad },
         radiusY: if is_full_bar { 0.0 } else { rad },
     };
+    let dark_mode_tray_guard = !is_preview
+        && !sys_light
+        && cfg.tb_theme.is_light_surface()
+        && (cap_idx >= 1 || cfg.pill_mode != PillMode::SplitPills);
 
     match cfg.tb_theme {
+        TaskbarTheme::BorderlessGhost | TaskbarTheme::BlobLight | TaskbarTheme::AerisGlassLight => {
+            if cfg.tb_theme == TaskbarTheme::AerisGlassLight && !is_vertical {
+                if let Ok(top_l) = rt.CreateSolidColorBrush(&rgba_u8(255, 255, 255, 0.58), None) {
+                    rt.DrawLine(
+                        Vector2 { X: l, Y: t + 0.6 * u },
+                        Vector2 { X: r, Y: t + 0.6 * u },
+                        &top_l,
+                        1.0 * u,
+                        None,
+                    );
+                }
+            }
+            return;
+        }
+        // OS26 Liquid Glass outer ultra-crisp glass rail outline
+        TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark => {
+            let is_light = cfg.tb_theme == TaskbarTheme::Os26LiquidGlassLight && !dark_mode_tray_guard;
+            let rail_stops = if is_light {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, 0.88) },
+                    D2D1_GRADIENT_STOP { position: 0.50, color: rgba_u8(168, 198, 232, 0.34) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(255, 255, 255, 0.72) },
+                ]
+            } else {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(232, 244, 255, 0.44) },
+                    D2D1_GRADIENT_STOP { position: 0.50, color: rgba_u8(140, 178, 222, 0.14) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(212, 234, 255, 0.34) },
+                ]
+            };
+            if let Some(rb) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &rail_stops) {
+                rt.DrawRoundedRectangle(&rr, &rb, 1.0 * u, None);
+            }
+            return;
+        }
+        // Matter Tiles tray capsule rim (`cap_idx >= 1`)
+        TaskbarTheme::MatterTilesLight | TaskbarTheme::MatterTilesDark => {
+            let is_light = cfg.tb_theme == TaskbarTheme::MatterTilesLight && !dark_mode_tray_guard;
+            let col = if is_light {
+                rgba_u8(60, 44, 82, 0.12)
+            } else {
+                rgba_u8(255, 232, 252, 0.12)
+            };
+            if let Ok(ob) = rt.CreateSolidColorBrush(&col, None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 0.9 * u, None);
+            }
+            return;
+        }
+        // One UI 8.5 outer rail rim + vibrant signature clock pill accent on tray preview
+        TaskbarTheme::OneUiLightChips | TaskbarTheme::OneUiDarkChips => {
+            let is_dark_rail = cfg.tb_theme == TaskbarTheme::OneUiLightChips || dark_mode_tray_guard;
+            let col = if is_dark_rail {
+                rgba_u8(240, 246, 255, 0.28)
+            } else {
+                rgba_u8(255, 255, 255, 0.84)
+            };
+            if let Ok(ob) = rt.CreateSolidColorBrush(&col, None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 1.0 * u, None);
+            }
+            // Signature One UI 8.5 vibrant gradient clock pill inside right end of tray capsule
+            if is_preview && cap_idx >= 1 && (r - l) > 30.0 * u && !is_vertical {
+                let chip_w = ((r - l) * 0.44).clamp(18.0 * u, 30.0 * u);
+                let chip_rr = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: r - chip_w - 3.0 * u,
+                        top: t + 3.5 * u,
+                        right: r - 3.0 * u,
+                        bottom: b - 3.5 * u,
+                    },
+                    radiusX: ((b - t) - 7.0 * u) * 0.48,
+                    radiusY: ((b - t) - 7.0 * u) * 0.48,
+                };
+                let c_stops = [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 68, 128, 0.96) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(122, 56, 255, 0.96) },
+                ];
+                if let Some(cbr) = create_grad(
+                    rt,
+                    Vector2 { X: chip_rr.rect.left, Y: chip_rr.rect.top },
+                    Vector2 { X: chip_rr.rect.right, Y: chip_rr.rect.bottom },
+                    &c_stops,
+                ) {
+                    rt.FillRoundedRectangle(&chip_rr, &cbr);
+                }
+            }
+            return;
+        }
+        TaskbarTheme::SquircleFrosted => {
+            if let Ok(ob) = rt.CreateSolidColorBrush(&rgba_u8(255, 232, 214, 0.18), None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 0.9 * u, None);
+            }
+            return;
+        }
+        TaskbarTheme::BubblesDark | TaskbarTheme::BubblesLight => {
+            let is_light = cfg.tb_theme == TaskbarTheme::BubblesLight && !dark_mode_tray_guard;
+            let col = if is_light {
+                rgba_u8(48, 68, 102, 0.16)
+            } else {
+                rgba_u8(255, 255, 255, 0.12)
+            };
+            if let Ok(ob) = rt.CreateSolidColorBrush(&col, None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 0.95 * u, None);
+            }
+            return;
+        }
+        TaskbarTheme::PillsDetached => {
+            if let Ok(ob) = rt.CreateSolidColorBrush(&rgba_u8(220, 234, 248, 0.36), None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 1.0 * u, None);
+            }
+            return;
+        }
+        TaskbarTheme::RosePineTiles => {
+            if let Ok(ob) = rt.CreateSolidColorBrush(&rgba_u8(235, 188, 186, 0.44), None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 1.05 * u, None);
+            }
+            return;
+        }
+        TaskbarTheme::CatppuccinTiles => {
+            if let Ok(ob) = rt.CreateSolidColorBrush(&rgba_u8(180, 190, 254, 0.42), None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 1.05 * u, None);
+            }
+            return;
+        }
+        // Windhawk LiquidGlass2: luminous curved crystal white top & bottom refractive rim
+        TaskbarTheme::LiquidGlassClear => {
+            let rim_stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba_u8(255, 255, 255, 0.82) },
+                D2D1_GRADIENT_STOP { position: 0.48, color: rgba_u8(220, 238, 228, 0.24) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba_u8(255, 255, 255, 0.64) },
+            ];
+            if let Some(rb) = create_grad(rt, Vector2 { X: l, Y: t }, Vector2 { X: l, Y: b }, &rim_stops) {
+                rt.DrawRoundedRectangle(&rr, &rb, 1.35 * u, None);
+            }
+            return;
+        }
+        // Windhawk DockLike Light & Dark
+        TaskbarTheme::DockLikeLight | TaskbarTheme::DockLikeDark => {
+            let is_light = cfg.tb_theme == TaskbarTheme::DockLikeLight && !dark_mode_tray_guard;
+            let col = if is_light {
+                rgba_u8(30, 44, 72, 0.16)
+            } else {
+                rgba_u8(168, 192, 232, 0.18)
+            };
+            if let Ok(ob) = rt.CreateSolidColorBrush(&col, None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 1.0 * u, None);
+            }
+            if is_preview && cap_idx == 0 && !is_vertical {
+                let dcol = if is_light {
+                    rgba_u8(62, 82, 118, 0.72)
+                } else {
+                    rgba_u8(192, 210, 236, 0.78)
+                };
+                if let Ok(dbr) = rt.CreateSolidColorBrush(&dcol, None) {
+                    for k in 0..3usize {
+                        let dx = l + (r - l) * (0.28 + k as f32 * 0.20);
+                        let dy = b - 2.8 * u;
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: dx - 2.2 * u,
+                                    top: dy - 1.0 * u,
+                                    right: dx + 2.2 * u,
+                                    bottom: dy + 1.0 * u,
+                                },
+                                radiusX: 1.0 * u,
+                                radiusY: 1.0 * u,
+                            },
+                            &dbr,
+                        );
+                    }
+                }
+            }
+            return;
+        }
+        // Windhawk Luminosity Float
+        TaskbarTheme::LuminosityFloat => {
+            let (rr_c, rg_c, rb_c) = pal.rim;
+            if let Ok(ob) = rt.CreateSolidColorBrush(&rgba_u8(rr_c, rg_c, rb_c, 0.28), None) {
+                rt.DrawRoundedRectangle(&rr, &ob, 1.05 * u, None);
+            }
+            return;
+        }
+        // Windhawk CleanSlate Cards
+        TaskbarTheme::CleanSlateCards => {
+            if !is_vertical {
+                if let Ok(top_l) = rt.CreateSolidColorBrush(&rgba_u8(132, 226, 240, 0.30), None) {
+                    rt.DrawLine(
+                        Vector2 { X: l, Y: t + 0.6 * u },
+                        Vector2 { X: r, Y: t + 0.6 * u },
+                        &top_l,
+                        1.0 * u,
+                        None,
+                    );
+                }
+            }
+            return;
+        }
         TaskbarTheme::QuartzShellDock
         | TaskbarTheme::CupertinoDock
         | TaskbarTheme::KineticCupertinoWave => {
@@ -4749,11 +6076,13 @@ unsafe fn draw_glass_surface(
     win_rect: RECT,
     bar_rect: RECT,
     screen_pills: &[RECT],
+    screen_icons: &[RECT],
     radius: i32,
     u: f32,
     tap_connected: bool,
+    sys_light: bool,
     cfg: &AppConfig,
-    viz: &VizSnapshot,
+    viz: &mut VizSnapshot,
 ) -> bool {
     let win_w = win_rect.right - win_rect.left;
     let win_h = win_rect.bottom - win_rect.top;
@@ -4785,6 +6114,46 @@ unsafe fn draw_glass_surface(
         effective_pill_radius_for(screen_pills, radius, u, cfg.tb_theme)
     };
 
+    let collect_local_pads = |cap_l: f32, cap_t: f32, cap_r: f32, cap_b: f32| -> Vec<(f32, f32, f32, f32)> {
+        if !cfg.tb_theme.uses_icon_pads() || screen_icons.is_empty() {
+            return Vec::new();
+        }
+        let (inset_x, inset_y, margin_x, margin_y) = if cfg.tb_theme.is_independent_tile_dock() {
+            (2.5 * u, 2.5 * u, 1.0 * u, 1.5 * u)
+        } else if cfg.tb_theme == TaskbarTheme::AerisGlassLight {
+            (1.0 * u, 0.0, 0.0, 0.0)
+        } else if matches!(
+            cfg.tb_theme,
+            TaskbarTheme::Os26LiquidGlassLight
+                | TaskbarTheme::Os26LiquidGlassDark
+                | TaskbarTheme::OneUiLightChips
+                | TaskbarTheme::OneUiDarkChips
+        ) {
+            (1.6 * u, 2.0 * u, 2.0 * u, 2.0 * u)
+        } else {
+            (2.0 * u, 3.0 * u, 2.0 * u, 2.5 * u)
+        };
+        let mut out = Vec::with_capacity(screen_icons.len());
+        for &ic in screen_icons {
+            let il = (ic.left - win_rect.left) as f32 + inset_x;
+            let it = (ic.top - win_rect.top) as f32 + inset_y;
+            let ir = (ic.right - win_rect.left) as f32 - inset_x;
+            let ib = (ic.bottom - win_rect.top) as f32 - inset_y;
+            let cx = (il + ir) * 0.5;
+            let cy = (it + ib) * 0.5;
+            if cx >= cap_l && cx <= cap_r && cy >= cap_t && cy <= cap_b {
+                let cl = il.max(cap_l + margin_x);
+                let ct = it.max(cap_t + margin_y);
+                let cr = ir.min(cap_r - margin_x);
+                let cb = ib.min(cap_b - margin_y);
+                if cr - cl >= 10.0 * u && cb - ct >= 10.0 * u {
+                    out.push((cl, ct, cr, cb));
+                }
+            }
+        }
+        out
+    };
+
     let above_taskbar = !tap_connected;
     let vu_tricolor = is_vu_tricolor_active(cfg);
     if is_full_bar {
@@ -4806,9 +6175,14 @@ unsafe fn draw_glass_surface(
                 b,
                 true,
                 above_taskbar,
+                0,
+                false,
+                sys_light,
                 cfg,
                 &pal,
             );
+            let pads = collect_local_pads(l, t, r, b);
+            draw_clean_icon_pads(dc_rt, d2d, cfg.tb_theme, &pads, u, above_taskbar, false, None);
         }
         if cfg.tb_show_fx {
             draw_taskbar_viz_in_rect_themed(
@@ -4833,7 +6207,8 @@ unsafe fn draw_glass_surface(
         }
         if cfg.tb_show_rim {
             draw_capsule_rim_and_accents(
-                dc_rt, d2d, l, t, r, b, 0.0, u, is_vertical, anchor_min, true, 0, false, cfg, viz, &pal,
+                dc_rt, d2d, l, t, r, b, 0.0, u, is_vertical, anchor_min, true, 0, false, sys_light,
+                cfg, viz, &pal,
             );
         }
     } else {
@@ -4857,9 +6232,14 @@ unsafe fn draw_glass_surface(
                     win_h as f32,
                     false,
                     above_taskbar,
+                    cap_idx,
+                    false,
+                    sys_light,
                     cfg,
                     &pal,
                 );
+                let pads = collect_local_pads(l, t, r, b);
+                draw_clean_icon_pads(dc_rt, d2d, cfg.tb_theme, &pads, u, above_taskbar, false, None);
             }
             if cfg.tb_show_fx {
                 draw_taskbar_viz_in_rect_themed(
@@ -4884,7 +6264,8 @@ unsafe fn draw_glass_surface(
             }
             if cfg.tb_show_rim {
                 draw_capsule_rim_and_accents(
-                    dc_rt, d2d, l, t, r, b, rad, u, is_vertical, anchor_min, false, cap_idx, false, cfg, viz, &pal,
+                    dc_rt, d2d, l, t, r, b, rad, u, is_vertical, anchor_min, false, cap_idx, false,
+                    sys_light, cfg, viz, &pal,
                 );
             }
         }
@@ -4901,22 +6282,23 @@ fn measure_pills_cached(
     bar_rect: RECT,
     u: f32,
     pill_mode: PillMode,
-) -> Vec<RECT> {
+) -> (Vec<RECT>, Vec<RECT>) {
     let bar_w = bar_rect.right - bar_rect.left;
     let bar_h = bar_rect.bottom - bar_rect.top;
     let is_vertical = bar_h > bar_w * 2;
 
     let Ok(root) = (unsafe { uia.ElementFromHandle(hwnd) }) else {
-        return vec![bar_rect];
+        return (vec![bar_rect], Vec::new());
     };
     let Ok(arr) = (unsafe { root.FindAllBuildCache(TreeScope_Subtree, btn_cond, cache_req) })
     else {
-        return vec![bar_rect];
+        return (vec![bar_rect], Vec::new());
     };
     let count = unsafe { arr.Length().unwrap_or(0) };
 
     let mut app_bounds: Option<RECT> = None;
     let mut tray_bounds: Option<RECT> = None;
+    let mut raw_icons: Vec<RECT> = Vec::with_capacity(24);
 
     for i in 0..count {
         let Ok(el) = (unsafe { arr.GetElement(i) }) else {
@@ -4966,16 +6348,45 @@ fn measure_pills_cached(
 
         if is_app_item {
             app_bounds = Some(merge_rect(app_bounds, r));
+            if ew >= (16.0 * u) as i32 && eh >= (16.0 * u) as i32 {
+                raw_icons.push(r);
+            }
         } else if is_tray_item {
             tray_bounds = Some(merge_rect(tray_bounds, r));
         }
+    }
+
+    // Sort and deduplicate nested UIA sub-button rects that share the same button center
+    if is_vertical {
+        raw_icons.sort_by_key(|r| (r.top, r.left));
+    } else {
+        raw_icons.sort_by_key(|r| (r.left, r.top));
+    }
+    let dedup_tol = (10.0 * u).round().max(6.0) as i32;
+    let mut icons: Vec<RECT> = Vec::with_capacity(raw_icons.len());
+    for r in raw_icons {
+        let cx = (r.left + r.right) / 2;
+        let cy = (r.top + r.bottom) / 2;
+        if let Some(prev) = icons.last_mut() {
+            let pcx = (prev.left + prev.right) / 2;
+            let pcy = (prev.top + prev.bottom) / 2;
+            if (cx - pcx).abs() <= dedup_tol && (cy - pcy).abs() <= dedup_tol {
+                let area_new = (r.right - r.left) * (r.bottom - r.top);
+                let area_old = (prev.right - prev.left) * (prev.bottom - prev.top);
+                if area_new > area_old {
+                    *prev = r;
+                }
+                continue;
+            }
+        }
+        icons.push(r);
     }
 
     let inset_cross = adaptive_cross_inset(bar_rect, u);
     let pad_main = (5.5 * u).round().max(3.0) as i32;
     let min_gap = (12.0 * u).round().max(6.0) as i32;
 
-    if is_vertical {
+    let pills = if is_vertical {
         let left = bar_rect.left + inset_cross;
         let right = (bar_rect.right - inset_cross).max(left + 12);
 
@@ -5011,7 +6422,8 @@ fn measure_pills_cached(
         });
 
         finalize_pills(app_pill, tray_pill, pill_mode, min_gap, false, bar_rect)
-    }
+    };
+    (pills, icons)
 }
 
 fn pills_close(a: &[RECT], b: &[RECT]) -> bool {
@@ -7325,6 +8737,16 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
             | TaskbarTheme::CupertinoDock
             | TaskbarTheme::KineticCupertinoWave
             | TaskbarTheme::DynamicIslandDock
+            | TaskbarTheme::Os26LiquidGlassLight
+            | TaskbarTheme::Os26LiquidGlassDark
+            | TaskbarTheme::OneUiLightChips
+            | TaskbarTheme::OneUiDarkChips
+            | TaskbarTheme::LiquidGlassClear
+            | TaskbarTheme::LuminosityFloat
+    );
+    let is_os26_glass = matches!(
+        theme,
+        TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark
     );
     let bar_h = 26.0;
     let bar_t = y + h - bar_h - if is_mac_lift { 7.5 } else { 5.0 };
@@ -7333,10 +8755,16 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
     let bar_r = x + w - 10.0;
 
     let is_full_bar = matches!(cfg.pill_mode, PillMode::FullBar | PillMode::NativeDefault);
+    let split_left_start = if w < 260.0 { bar_l + 6.0 } else { bar_l + 44.0 };
+    let split_left_end = if w < 260.0 { bar_r - 58.0 } else { bar_r - 78.0 };
+    let split_right_start = if w < 260.0 { bar_r - 50.0 } else { bar_r - 68.0 };
+    let split_caps = [(split_left_start, split_left_end), (split_right_start, bar_r)];
+    let uni_caps = [(bar_l + 4.0, bar_r - 4.0)];
+    let full_caps = [(x, x + w)];
     let capsules: &[(f32, f32)] = match cfg.pill_mode {
-        PillMode::SplitPills => &[(bar_l + 44.0, bar_r - 78.0), (bar_r - 68.0, bar_r)],
-        PillMode::UnifiedPill => &[(bar_l + 4.0, bar_r - 4.0)],
-        PillMode::FullBar | PillMode::NativeDefault => &[(x, x + w)],
+        PillMode::SplitPills => &split_caps,
+        PillMode::UnifiedPill => &uni_caps,
+        PillMode::FullBar | PillMode::NativeDefault => &full_caps,
     };
     let cap_top = if cfg.pill_mode == PillMode::FullBar { bar_t - 1.0 } else { bar_t };
     let cap_bot = if cfg.pill_mode == PillMode::FullBar { y + h } else { bar_b };
@@ -7346,6 +8774,30 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         4.5 * u
     } else if theme == TaskbarTheme::CyberArasakaDeck {
         6.5 * u
+    } else if matches!(
+        theme,
+        TaskbarTheme::Os26LiquidGlassLight
+            | TaskbarTheme::Os26LiquidGlassDark
+            | TaskbarTheme::OneUiLightChips
+            | TaskbarTheme::OneUiDarkChips
+            | TaskbarTheme::BubblesDark
+            | TaskbarTheme::BubblesLight
+            | TaskbarTheme::LiquidGlassClear
+    ) {
+        13.0 * u
+    } else if matches!(theme, TaskbarTheme::DockLikeLight | TaskbarTheme::DockLikeDark) {
+        6.5 * u
+    } else if matches!(
+        theme,
+        TaskbarTheme::MatterTilesLight
+            | TaskbarTheme::MatterTilesDark
+            | TaskbarTheme::SquircleFrosted
+            | TaskbarTheme::RosePineTiles
+            | TaskbarTheme::CatppuccinTiles
+    ) {
+        8.5 * u
+    } else if theme == TaskbarTheme::PillsDetached {
+        10.5 * u
     } else if is_mac_lift {
         12.5 * u
     } else {
@@ -7376,6 +8828,9 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
                 (y + h) * u,
                 is_full_bar,
                 false,
+                cap_idx,
+                true,
+                true,
                 &cfg,
                 &pal,
             );
@@ -7422,6 +8877,7 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
                 is_full_bar,
                 cap_idx,
                 true,
+                true,
                 &cfg,
                 viz,
                 &pal,
@@ -7432,7 +8888,7 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
     // Mini Taskbar Icons on top of capsule + visualizer
     let cy = (cap_top + cap_bot) * 0.5;
     let dock_cx = match cfg.pill_mode {
-        PillMode::SplitPills => (bar_l + 44.0 + bar_r - 78.0) * 0.5,
+        PillMode::SplitPills => (split_left_start + split_left_end) * 0.5,
         _ => x + w * 0.42,
     };
     let icon_cols = [
@@ -7442,11 +8898,111 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         (180, 188, 200), // Terminal silver
         (74, 216, 128),  // Music green
     ];
+    let icon_step = if w < 260.0 {
+        17.5
+    } else if theme.is_independent_tile_dock() {
+        26.5
+    } else if is_os26_glass {
+        24.5
+    } else if theme == TaskbarTheme::CleanSlateCards || theme == TaskbarTheme::BlobLight {
+        27.0
+    } else if theme == TaskbarTheme::AerisGlassLight {
+        24.0
+    } else {
+        22.0
+    };
+    let featured_idx = match theme {
+        TaskbarTheme::MatterTilesLight => Some(4),
+        TaskbarTheme::BubblesDark | TaskbarTheme::BubblesLight => Some(4),
+        TaskbarTheme::RosePineTiles | TaskbarTheme::CatppuccinTiles => Some(1),
+        TaskbarTheme::BlobLight | TaskbarTheme::CleanSlateCards => Some(2),
+        TaskbarTheme::AerisGlassLight => Some(1),
+        TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark => Some(2),
+        _ => None,
+    };
+    if theme.uses_icon_pads() {
+        let mut pad_rects = Vec::with_capacity(icon_cols.len());
+        for idx in 0..icon_cols.len() {
+            let ix = dock_cx + (idx as f32 - 2.0) * icon_step;
+            if is_os26_glass {
+                // Authentic OS26 Liquid Glass subtle fish-eye swell peaking at center keycap!
+                let dist = (idx as f32 - 2.0).abs();
+                let scale = if dist < 0.1 {
+                    1.20
+                } else if dist < 1.1 {
+                    1.08
+                } else {
+                    0.96
+                };
+                let pw = (if w < 260.0 { 8.6 } else { 10.6 }) * scale;
+                let ph = (if w < 260.0 { 9.2 } else { 10.6 }) * scale;
+                let lift_y = (scale - 0.96) * 11.5;
+                pad_rects.push((
+                    (ix - pw) * u,
+                    (cy - ph - lift_y) * u,
+                    (ix + pw) * u,
+                    (cy + ph - lift_y * 0.35) * u,
+                ));
+            } else if theme == TaskbarTheme::AerisGlassLight {
+                let pw = icon_step * 0.48;
+                pad_rects.push((
+                    (ix - pw) * u,
+                    cap_top * u,
+                    (ix + pw) * u,
+                    cap_bot * u,
+                ));
+            } else if theme == TaskbarTheme::CleanSlateCards || theme == TaskbarTheme::BlobLight {
+                let pw = if w < 260.0 { 8.0 } else { 11.5 };
+                let ph = (cap_bot - cap_top) * 0.39;
+                pad_rects.push((
+                    (ix - pw) * u,
+                    (cy - ph) * u,
+                    (ix + pw) * u,
+                    (cy + ph) * u,
+                ));
+            } else if theme.is_independent_tile_dock() {
+                let pad_half = if w < 260.0 { 8.0 } else { 11.2 };
+                pad_rects.push((
+                    (ix - pad_half) * u,
+                    (cy - pad_half) * u,
+                    (ix + pad_half) * u,
+                    (cy + pad_half) * u,
+                ));
+            } else {
+                let pad_half = if w < 260.0 { 7.6 } else { 9.2 };
+                pad_rects.push((
+                    (ix - pad_half) * u,
+                    (cy - pad_half) * u,
+                    (ix + pad_half) * u,
+                    (cy + pad_half) * u,
+                ));
+            }
+        }
+        draw_clean_icon_pads(rt, Some(d2d), theme, &pad_rects, u, false, true, featured_idx);
+    }
     for (idx, &(ir, ig, ib)) in icon_cols.iter().enumerate() {
-        let mut ix = dock_cx + (idx as f32 - 2.0) * 22.0;
+        let mut ix = dock_cx + (idx as f32 - 2.0) * icon_step;
         let mut icy = cy;
-        let mut half = 6.0;
-        if theme.uses_virtual_dock() {
+        let mut half = if theme.uses_icon_pads() {
+            5.2
+        } else {
+            6.0
+        };
+        if is_os26_glass {
+            let dist = (idx as f32 - 2.0).abs();
+            let scale = if dist < 0.1 {
+                1.20
+            } else if dist < 1.1 {
+                1.08
+            } else {
+                0.96
+            };
+            half = 5.4 * scale;
+            icy = cy - (scale - 0.96) * 7.5;
+        } else if matches!(theme, TaskbarTheme::MatterTilesDark | TaskbarTheme::MatterTilesLight) {
+            icy = cy - 1.2;
+            half = 5.4;
+        } else if theme.uses_virtual_dock() {
             let sweep = (anim_phase * 0.9).sin() * 1.15;
             let dist = ((idx as f32 - 2.0) - sweep).abs();
             let sw = if dist < 1.8 {
@@ -7469,20 +9025,23 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
             radiusX: (half * 0.5) * u,
             radiusY: (half * 0.5) * u,
         };
-        if let Ok(sh) = rt.CreateSolidColorBrush(&rgba_u8(10, 8, 6, 0.65), None) {
-            rt.FillRoundedRectangle(
-                &D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: icon_rr.rect.left - 1.0 * u,
-                        top: icon_rr.rect.top - 1.0 * u,
-                        right: icon_rr.rect.right + 1.0 * u,
-                        bottom: icon_rr.rect.bottom + 1.0 * u,
+        if !theme.uses_icon_pads() {
+            let sh_alpha = if theme.is_light_surface() { 0.28 } else { 0.65 };
+            if let Ok(sh) = rt.CreateSolidColorBrush(&rgba_u8(10, 8, 6, sh_alpha), None) {
+                rt.FillRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: icon_rr.rect.left - 1.0 * u,
+                            top: icon_rr.rect.top - 1.0 * u,
+                            right: icon_rr.rect.right + 1.0 * u,
+                            bottom: icon_rr.rect.bottom + 1.0 * u,
+                        },
+                        radiusX: (half * 0.5 + 0.8) * u,
+                        radiusY: (half * 0.5 + 0.8) * u,
                     },
-                    radiusX: (half * 0.5 + 0.8) * u,
-                    radiusY: (half * 0.5 + 0.8) * u,
-                },
-                &sh,
-            );
+                    &sh,
+                );
+            }
         }
         if let Ok(ibr) = rt.CreateSolidColorBrush(&rgba_u8(ir, ig, ib, 0.96), None) {
             rt.FillRoundedRectangle(&icon_rr, &ibr);
@@ -7504,15 +9063,30 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         }
     }
     // Right mini tray dots
-    let tray_x = bar_r - 44.0;
-    for k in 0..3usize {
-        if let Ok(tb) = rt.CreateSolidColorBrush(&rgba_u8(255, 243, 220, 0.85), None) {
+    let tray_x = if w < 260.0 { bar_r - 39.0 } else { bar_r - 44.0 };
+    let tray_dot_col = if theme.is_light_surface() {
+        rgba_u8(36, 44, 62, 0.82)
+    } else {
+        rgba_u8(255, 243, 220, 0.85)
+    };
+    let is_one_ui = matches!(
+        theme,
+        TaskbarTheme::OneUiLightChips | TaskbarTheme::OneUiDarkChips
+    );
+    let tray_dots = if is_one_ui { 1usize } else { 3usize };
+    for k in 0..tray_dots {
+        if let Ok(tb) = rt.CreateSolidColorBrush(&tray_dot_col, None) {
+            let tx = if is_one_ui {
+                bar_r - 58.0
+            } else {
+                tray_x + (k as f32) * 11.0
+            };
             rt.FillRoundedRectangle(
                 &D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
-                        left: (tray_x + (k as f32) * 11.0) * u,
+                        left: tx * u,
                         top: (cy - 2.5) * u,
-                        right: (tray_x + (k as f32) * 11.0 + 7.0) * u,
+                        right: (tx + 7.0) * u,
                         bottom: (cy + 2.5) * u,
                     },
                     radiusX: 1.5 * u,
@@ -8197,12 +9771,19 @@ mod tests {
             accent: pal.accent,
             accent_deep: pal.accent_deep,
             tap_connected: false,
+            sys_light: false,
         };
         let mut sig_connected = sig_fallback;
         sig_connected.tap_connected = true;
         assert_ne!(
             sig_fallback, sig_connected,
             "TAP false -> true transition must invalidate StyleSig cache immediately"
+        );
+        let mut sig_light = sig_fallback;
+        sig_light.sys_light = true;
+        assert_ne!(
+            sig_fallback, sig_light,
+            "Windows Dark -> Light mode transition must invalidate StyleSig cache immediately"
         );
     }
 

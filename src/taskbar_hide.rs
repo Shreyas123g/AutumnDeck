@@ -486,13 +486,12 @@ impl TaskbarHider {
         unsafe {
             let mut changed = false;
             for mi in Self::query_all_monitors() {
-                let target = if let Some(&(_, edge, thick)) =
-                    reserves.iter().find(|(rc, _, _)| *rc == mi.rcMonitor)
-                {
-                    Self::apply_edge_reserve(mi.rcMonitor, edge, thick)
-                } else {
-                    mi.rcMonitor
-                };
+                let target = reserves
+                    .iter()
+                    .filter(|(rc, _, _)| *rc == mi.rcMonitor)
+                    .fold(mi.rcMonitor, |acc, &(_, edge, thick)| {
+                        Self::apply_edge_reserve(acc, edge, thick)
+                    });
                 if mi.rcWork != target {
                     let mut wr = target;
                     let _ = SystemParametersInfoW(
@@ -505,6 +504,12 @@ impl TaskbarHider {
                 }
             }
             if changed {
+                let _ = SendNotifyMessageW(
+                    HWND_BROADCAST,
+                    WM_SETTINGCHANGE,
+                    WPARAM(SPI_SETWORKAREA_PARAM),
+                    LPARAM(0),
+                );
                 Self::refit_maximized_windows();
             }
             changed
@@ -814,6 +819,9 @@ impl TaskbarHider {
                             | "AutumnDeckHiddenWnd"
                             | "AutumnDeckGlassWnd"
                             | "AutumnDeckBlurWnd"
+                            | "AutumnDeckGlassAcrylicWnd"
+                            | "AutumnCleanTopBarWnd"
+                            | "AutumnTopPopoverWnd"
                             | "AutumnTaskbarHiddenWnd"
                             | "AutumnTaskbarGlassWnd"
                             | "AutumnTaskbarBlurWnd"
@@ -857,7 +865,7 @@ impl TaskbarHider {
             let _ = EnumWindows(Some(enum_zoomed), LPARAM((&mut list as *mut Vec<(HWND, RECT)>) as isize));
 
             let fg_before = GetForegroundWindow();
-            for (hwnd, _) in list {
+            for (hwnd, w) in list {
                 let _ = SetWindowPos(
                     hwnd,
                     None,
@@ -867,6 +875,40 @@ impl TaskbarHider {
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                 );
+                // UWP/XAML windows (like Windows Settings) sometimes keep their old maximized
+                // frame after SWP_FRAMECHANGED alone; if their visible bounds still intrude behind
+                // the Top Bar or Dock work area, snap their outer window rect cleanly into `w`.
+                let mut frame = RECT::default();
+                let mut win_rc = RECT::default();
+                if DwmGetWindowAttribute(
+                    hwnd,
+                    DWMWA_EXTENDED_FRAME_BOUNDS,
+                    (&mut frame as *mut RECT) as *mut _,
+                    size_of::<RECT>() as u32,
+                )
+                .is_ok()
+                    && GetWindowRect(hwnd, &mut win_rc).is_ok()
+                {
+                    let still_intrudes = frame.top < w.top - 4
+                        || frame.bottom > w.bottom + 4
+                        || frame.left < w.left - 4
+                        || frame.right > w.right + 4;
+                    if still_intrudes {
+                        let bl = (frame.left - win_rc.left).clamp(0, 16);
+                        let bt = (frame.top - win_rc.top).clamp(0, 16);
+                        let br = (win_rc.right - frame.right).clamp(0, 16);
+                        let bb = (win_rc.bottom - frame.bottom).clamp(0, 16);
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            w.left - bl,
+                            w.top - bt,
+                            (w.right - w.left) + bl + br,
+                            (w.bottom - w.top) + bt + bb,
+                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                        );
+                    }
+                }
             }
             if !fg_before.0.is_null() && GetForegroundWindow() != fg_before {
                 let _ = SetForegroundWindow(fg_before);
@@ -1011,6 +1053,11 @@ unsafe extern "system" fn enum_max_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
                 | "AutumnDeckHiddenWnd"
                 | "AutumnDeckGlassWnd"
                 | "AutumnDeckBlurWnd"
+                | "AutumnDeckGlassAcrylicWnd"
+                | "AutumnCleanTopBarWnd"
+                | "AutumnTopPopoverWnd"
+                | "AutumnMacDockWnd"
+                | "AutumnDockThumbWnd"
                 | "AutumnTaskbarHiddenWnd"
                 | "AutumnTaskbarGlassWnd"
                 | "AutumnTaskbarBlurWnd"

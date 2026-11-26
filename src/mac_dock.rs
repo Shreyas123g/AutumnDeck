@@ -25,15 +25,15 @@ use windows::Win32::Graphics::Direct2D::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_REGULAR,
+    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dwm::{
     DwmFlush, DwmGetWindowAttribute, DwmQueryThumbnailSourceSize, DwmRegisterThumbnail,
     DwmSetWindowAttribute, DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
-    DWMWA_CLOAKED, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
-    DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION,
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    DWMWCP_ROUND, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION,
     DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -57,8 +57,8 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
-    AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
+    QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
@@ -91,34 +91,40 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, LoadCursorW,
     PostMessageW, RegisterClassExW, RegisterShellHookWindow, RegisterWindowMessageW,
-    SendMessageTimeoutW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, TrackPopupMenu,
-    UpdateLayeredWindow, ASFW_ANY, GCLP_HICON, GCLP_HICONSM, GWL_EXSTYLE, GW_OWNER, HICON, HMENU,
-    HWND_TOPMOST, ICON_BIG, ICON_SMALL2, IDC_ARROW, IDC_HAND, MENUITEMINFOW, MF_BYCOMMAND,
-    MF_CHECKED, MF_GRAYED, MF_POPUP,
-    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MIIM_ID, MIIM_STRING, SMTO_ABORTIFHUNG, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-    SW_SHOWNA, SW_SHOWNORMAL, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TPM_TOPALIGN, ULW_ALPHA, WM_CLOSE, WM_GETICON, WM_NULL,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SendMessageTimeoutW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, ShowWindowAsync,
+    SwitchToThisWindow, TrackPopupMenu, UpdateLayeredWindow, ASFW_ANY, GCLP_HICON, GCLP_HICONSM,
+    GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HICON, HMENU, HWND_TOPMOST, ICON_BIG, ICON_SMALL2,
+    IDC_ARROW, IDC_HAND, MENUITEMINFOW, MF_BYCOMMAND, MF_CHECKED, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MIIM_ID, MIIM_STRING, SC_CLOSE, SC_RESTORE,
+    SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE,
+    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SW_SHOWNORMAL, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN,
+    TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TPM_TOPALIGN, ULW_ALPHA,
+    WM_CLOSE, WM_GETICON, WM_NULL, WM_SYSCOMMAND, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
 };
 use windows_core::BOOL;
 use windows_numerics::Vector2;
 
 use crate::config::{
-    read_windows_taskbar_pins, save_config, to_wide, AppConfig, AppShortcut, DockClockEngine,
-    DockClockWheelAction, DockDividerStyle, DockIndicatorStyle, DockRunningLabelMode,
-    DockSlotCardStyle, HudTelemetryContent, HudWingMode, HudWingShape, MacDockEdge,
-    MacDockHideMode, StartBadgeStyle, TaskbarTheme, TrayAudioMeterStyle,
+    read_windows_taskbar_pins, save_config, to_wide, AppConfig, AppShortcut, CleanTopBarEdge,
+    CleanTopBarStyle, DockClockEngine, DockClockWheelAction, DockDividerStyle, DockIndicatorStyle,
+    DockRunningLabelMode, DockSlotCardStyle, HudTelemetryContent, HudWingMode, HudWingShape,
+    MacDockEdge, MacDockHideMode, StartBadgeStyle, TaskbarTheme, TrayAudioMeterStyle,
     TrayBatteryMeterStyle, TrayNetMeterStyle,
 };
 use crate::desktop_widgets::{launch_app_path, load_app_bitmap_for_path, wic_src_to_d2d};
 use crate::dock_themes::{
-    chamfer_geo, dock_spec, draw_d2d_text, draw_dock_clock_module, draw_dock_divider_styled,
+    bind_active_dock_backdrop_ex, chamfer_geo, clean_acrylic_tint_abgr, dock_spec,
+    draw_clean_top_bar, draw_d2d_text, draw_dock_clock_module, draw_dock_divider_styled,
     draw_dock_indicator_styled, draw_dock_shelf_and_art_with_ripple, draw_dock_slot_fx_styled,
-    draw_dock_tooltip, is_ambient_animated_cfg, resolve_shelf_spec, resolve_widget_spec,
-    rgba as dt_rgba, unpack_rgb, DockArtLayer, DockLayoutKind, DockShelfShape, DockVisualSpec,
-    TaskbarWidgetId,
+    draw_dock_tooltip, draw_top_bar_popover, draw_unified_floating_tray_capsule,
+    is_ambient_animated_cfg, layout_clean_top_bar, layout_top_bar_popover, resolve_shelf_spec,
+    resolve_widget_spec, rgba as dt_rgba, top_bar_popover_dims, unpack_rgb,
+    uses_inside_tile_pill_indicator, CleanTopBarItem, CleanTopBarRenderInfo, CleanTopBarSlot,
+    DockArtLayer, DockBackdropCtx, DockLayoutKind, DockShelfShape, DockVisualSpec,
+    TaskbarWidgetId, TopBarPopoverHit, TopBarPopoverInfo, TopBarPopoverKind, TopBarPopoverLayout,
 };
+use crate::liquid_backdrop::{AcrylicPillRect, LiquidBackdropContext, LiquidBackdropWindow};
 use crate::system_media::CcSnapshot;
 use crate::taskbar_hide::{
     has_maximized_or_fullscreen_on_monitor, is_fullscreen_game_on_monitor,
@@ -162,6 +168,13 @@ const IDM_DOCK_TRAY_SOUND: usize = 4129;
 const IDM_DOCK_TRAY_NET: usize = 4130;
 const IDM_DOCK_TRAY_POWER: usize = 4131;
 const IDM_DOCK_TRAY_MUTE: usize = 4132;
+const IDM_CLEAN_TOPBAR_TOGGLE: usize = 4140;
+const IDM_CLEAN_TOPBAR_TOP: usize = 4141;
+const IDM_CLEAN_TOPBAR_BOT: usize = 4142;
+const IDM_CLEAN_TOPBAR_AUTO: usize = 4143;
+const IDM_CLEAN_TOPBAR_FULL: usize = 4144;
+const IDM_CLEAN_TOPBAR_FLOAT: usize = 4145;
+const IDM_CLEAN_TOPBAR_DESK_ONLY: usize = 4146;
 const IDM_DOCK_SYNC_WIN_PINS: usize = 4133;
 
 const IDM_WINX_APPS: usize = 4140;
@@ -236,6 +249,8 @@ pub enum MacDockAction {
     ConfigUpdated,
     TraySetVolume(u8),
     TrayToggleMute,
+    OpenWifiFlyout,
+    OpenBluetoothFlyout,
 }
 
 #[derive(Clone, PartialEq)]
@@ -442,6 +457,8 @@ struct DockThumbPopup {
     icon_cache: HashMap<isize, Option<ID2D1Bitmap>>,
     hovered_card: Option<usize>,
     hovered_close: Option<usize>,
+    pressed_card: Option<usize>,
+    pressed_close: Option<usize>,
     tracking_leave: bool,
     surface: DibSurface,
     dc_rt: Option<ID2D1DCRenderTarget>,
@@ -551,6 +568,8 @@ impl DockThumbPopup {
             icon_cache: HashMap::new(),
             hovered_card: None,
             hovered_close: None,
+            pressed_card: None,
+            pressed_close: None,
             tracking_leave: false,
             surface: DibSurface::new(),
             dc_rt: None,
@@ -656,6 +675,8 @@ impl DockThumbPopup {
         self.slot_key.clear();
         self.hovered_card = None;
         self.hovered_close = None;
+        self.pressed_card = None;
+        self.pressed_close = None;
         self.tracking_leave = false;
         if self.visible && !self.hwnd.0.is_null() {
             unsafe {
@@ -903,11 +924,12 @@ impl DockThumbPopup {
     }
 
     fn hit_test_client(&self, lx: f32, ly: f32) -> (Option<usize>, Option<usize>) {
+        let slop = 5.0 * self.last_u.max(1.0);
         for (i, c) in self.cards.iter().enumerate() {
-            if lx >= c.close_rect.left
-                && lx <= c.close_rect.right
-                && ly >= c.close_rect.top
-                && ly <= c.close_rect.bottom
+            if lx >= c.close_rect.left - slop
+                && lx <= c.close_rect.right + slop
+                && ly >= c.close_rect.top - slop
+                && ly <= c.close_rect.bottom + slop
             {
                 return (Some(i), Some(i));
             }
@@ -1193,7 +1215,28 @@ struct DockMonitorPane {
     layout: Vec<DockLayoutSlot>,
     island_rects_local: Vec<D2D_RECT_F>,
     island_rects_screen: Vec<RECT>,
+    unified_tray_rect_local: Option<D2D_RECT_F>,
     hud_wing_local: Option<(D2D_RECT_F, String, String)>,
+    backdrop_key: String,
+    backdrop_mtime: u64,
+    backdrop_size: (u32, u32),
+    backdrop_checked_at: Option<Instant>,
+    backdrop_bmp: Option<ID2D1Bitmap>,
+    liquid_backdrop: LiquidBackdropWindow,
+    // Paired Clean & Minimal macOS / Windhawk Status Menu Bar for this monitor
+    top_hwnd: HWND,
+    top_surface: DibSurface,
+    top_backdrop: LiquidBackdropWindow,
+    top_win_rect: RECT,
+    top_last_win_rect: RECT,
+    top_bar_local: D2D_RECT_F,
+    top_slots: Vec<CleanTopBarSlot>,
+    top_hovered: Option<CleanTopBarItem>,
+    top_pressed: Option<CleanTopBarItem>,
+    top_tracking_leave: bool,
+    top_shown: bool,
+    top_dirty: bool,
+    top_last_sig: u64,
     cur_scales: HashMap<String, f32>,
     slot_expands: HashMap<String, f32>,
     hover_mix: f32,
@@ -1231,7 +1274,27 @@ impl DockMonitorPane {
             layout: Vec::new(),
             island_rects_local: Vec::new(),
             island_rects_screen: Vec::new(),
+            unified_tray_rect_local: None,
             hud_wing_local: None,
+            backdrop_key: String::new(),
+            backdrop_mtime: 0,
+            backdrop_size: (0, 0),
+            backdrop_checked_at: None,
+            backdrop_bmp: None,
+            liquid_backdrop: LiquidBackdropWindow::new(),
+            top_hwnd: HWND::default(),
+            top_surface: DibSurface::new(),
+            top_backdrop: LiquidBackdropWindow::new(),
+            top_win_rect: RECT::default(),
+            top_last_win_rect: RECT::default(),
+            top_bar_local: D2D_RECT_F::default(),
+            top_slots: Vec::new(),
+            top_hovered: None,
+            top_pressed: None,
+            top_tracking_leave: false,
+            top_shown: false,
+            top_dirty: true,
+            top_last_sig: 0,
             cur_scales: HashMap::new(),
             slot_expands: HashMap::new(),
             hover_mix: 0.0,
@@ -1303,7 +1366,78 @@ impl DockMonitorPane {
         }
     }
 
+    fn ensure_top_window(&mut self, hinst: HINSTANCE) -> bool {
+        if !self.top_hwnd.0.is_null() && unsafe { IsWindow(Some(self.top_hwnd)).as_bool() } {
+            return true;
+        }
+        unsafe {
+            let Ok(hw) = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                MAC_DOCK_WND_CLASS,
+                w!("AutumnCleanTopBar"),
+                WS_POPUP,
+                self.mon_rect.left,
+                self.mon_rect.top,
+                64,
+                32,
+                None,
+                None,
+                Some(hinst),
+                None,
+            ) else {
+                return false;
+            };
+            if hw.0.is_null() {
+                return false;
+            }
+            self.top_hwnd = hw;
+            self.top_shown = false;
+            self.top_dirty = true;
+            true
+        }
+    }
+
+    fn hide_top_bar(&mut self) {
+        self.top_backdrop.hide();
+        if self.top_shown && !self.top_hwnd.0.is_null() {
+            unsafe {
+                let _ = ShowWindow(self.top_hwnd, SW_HIDE);
+            }
+        }
+        self.top_shown = false;
+        self.top_last_win_rect = RECT::default();
+        self.top_hovered = None;
+        self.top_pressed = None;
+        self.top_tracking_leave = false;
+    }
+
+    fn hit_top_bar_item(&self, lx: f32, ly: f32) -> Option<CleanTopBarItem> {
+        for slot in &self.top_slots {
+            if lx >= slot.rect.left
+                && lx <= slot.rect.right
+                && ly >= slot.rect.top
+                && ly <= slot.rect.bottom
+            {
+                return Some(slot.item);
+            }
+        }
+        None
+    }
+
     fn destroy(&mut self, deregister_shell: bool) {
+        self.liquid_backdrop.destroy();
+        self.top_backdrop.destroy();
+        if !self.top_hwnd.0.is_null() {
+            unsafe {
+                let _ = DestroyWindow(self.top_hwnd);
+            }
+            self.top_hwnd = HWND::default();
+        }
+        self.top_surface.release();
+        self.top_slots.clear();
+        self.top_shown = false;
+        self.top_hovered = None;
+        self.top_pressed = None;
         if !self.hwnd.0.is_null() {
             unsafe {
                 if deregister_shell {
@@ -1320,7 +1454,11 @@ impl DockMonitorPane {
         self.layout.clear();
         self.island_rects_local.clear();
         self.island_rects_screen.clear();
+        self.unified_tray_rect_local = None;
         self.hud_wing_local = None;
+        self.backdrop_bmp = None;
+        self.backdrop_key.clear();
+        self.backdrop_checked_at = None;
         self.cur_scales.clear();
         self.slot_expands.clear();
         self.last_inside_time = None;
@@ -1361,12 +1499,18 @@ impl DockMonitorPane {
         {
             return false;
         }
-        let slack = (10.0 * u).round() as i32;
+        let slack = (8.0 * u).round() as i32;
+        // Keep hover entry strictly tight to the visible dock shelf so clicking app status bars
+        // directly above the dock never triggers premature hover magnification!
         let top_pad = (hud_wing_h
-            + if layout == DockLayoutKind::FishEyeShelf {
-                20.0 * u
+            + if self.cursor_in_dock {
+                if layout == DockLayoutKind::FishEyeShelf {
+                    18.0 * u
+                } else {
+                    6.0 * u
+                }
             } else {
-                6.0 * u
+                2.0 * u
             })
             .round() as i32;
         // Vertical docks sit directly beside app scrollbars and window edges, so keep their
@@ -1468,6 +1612,106 @@ impl DockIconWorker {
     }
 }
 
+struct TopBarPopoverState {
+    hwnd: HWND,
+    surface: DibSurface,
+    backdrop: LiquidBackdropWindow,
+    visible: bool,
+    kind: TopBarPopoverKind,
+    win_rect: RECT,
+    mon_rect: RECT,
+    dpi_u: f32,
+    layout: TopBarPopoverLayout,
+    hovered: Option<TopBarPopoverHit>,
+    dragging_vol: bool,
+    tracking_leave: bool,
+    opened_at: Instant,
+}
+
+impl TopBarPopoverState {
+    fn new() -> Self {
+        Self {
+            hwnd: HWND::default(),
+            surface: DibSurface::new(),
+            backdrop: LiquidBackdropWindow::new(),
+            visible: false,
+            kind: TopBarPopoverKind::ControlCenter,
+            win_rect: RECT::default(),
+            mon_rect: RECT::default(),
+            dpi_u: 1.0,
+            layout: layout_top_bar_popover(TopBarPopoverKind::ControlCenter, 1.0),
+            hovered: None,
+            dragging_vol: false,
+            tracking_leave: false,
+            opened_at: Instant::now(),
+        }
+    }
+
+    fn ensure_window(&mut self, hinst: HINSTANCE) -> bool {
+        if !self.hwnd.0.is_null() && unsafe { IsWindow(Some(self.hwnd)).as_bool() } {
+            return true;
+        }
+        unsafe {
+            let Ok(hw) = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                MAC_DOCK_WND_CLASS,
+                w!("AutumnTopBarPopover"),
+                WS_POPUP,
+                0,
+                0,
+                64,
+                64,
+                None,
+                None,
+                Some(hinst),
+                None,
+            ) else {
+                return false;
+            };
+            if hw.0.is_null() {
+                return false;
+            }
+            self.hwnd = hw;
+            self.visible = false;
+            true
+        }
+    }
+
+    fn hit_at(&self, lx: f32, ly: f32) -> Option<TopBarPopoverHit> {
+        for &(id, r) in &self.layout.hits {
+            if lx >= r.left && lx <= r.right && ly >= r.top && ly <= r.bottom {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    fn hide(&mut self) {
+        self.backdrop.hide();
+        if self.visible && !self.hwnd.0.is_null() {
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            }
+        }
+        self.visible = false;
+        self.hovered = None;
+        self.dragging_vol = false;
+        self.tracking_leave = false;
+    }
+
+    fn destroy(&mut self) {
+        self.hide();
+        self.backdrop.destroy();
+        self.surface.release();
+        if !self.hwnd.0.is_null() {
+            unsafe {
+                let _ = DestroyWindow(self.hwnd);
+            }
+            self.hwnd = HWND::default();
+        }
+    }
+}
+
 pub struct MacDockEngine {
     hinst: HINSTANCE,
     shell_hook_msg: u32,
@@ -1479,6 +1723,10 @@ pub struct MacDockEngine {
     tf_tip: Option<IDWriteTextFormat>,
     tf_left: Option<IDWriteTextFormat>,
     tf_mono: Option<IDWriteTextFormat>,
+    tf_top_bold: Option<IDWriteTextFormat>,
+    tf_top_reg: Option<IDWriteTextFormat>,
+    liquid_ctx: LiquidBackdropContext,
+    top_popover: TopBarPopoverState,
     icon_cache: HashMap<String, Option<ID2D1Bitmap>>,
     icon_in_flight: HashSet<String>,
     icon_worker: Option<DockIconWorker>,
@@ -1493,6 +1741,7 @@ pub struct MacDockEngine {
     panes: Vec<DockMonitorPane>,
     bounce_until: HashMap<String, Instant>,
     pop_until: HashMap<String, Instant>,
+    last_app_click: HashMap<String, Instant>,
     flashing_hwnds: HashSet<isize>,
     fg_app_title: String,
     fg_full_title: String,
@@ -1798,6 +2047,10 @@ impl MacDockEngine {
             tf_tip: None,
             tf_left: None,
             tf_mono: None,
+            tf_top_bold: None,
+            tf_top_reg: None,
+            liquid_ctx: LiquidBackdropContext::new(),
+            top_popover: TopBarPopoverState::new(),
             icon_cache: HashMap::new(),
             icon_in_flight: HashSet::new(),
             icon_worker: None,
@@ -1811,6 +2064,7 @@ impl MacDockEngine {
             panes: Vec::new(),
             bounce_until: HashMap::new(),
             pop_until: HashMap::new(),
+            last_app_click: HashMap::new(),
             flashing_hwnds: HashSet::new(),
             fg_app_title: "Desktop".to_string(),
             fg_full_title: "Desktop".to_string(),
@@ -1862,7 +2116,33 @@ impl MacDockEngine {
     }
 
     pub fn owns_hwnd(&self, hwnd: HWND) -> bool {
-        !hwnd.0.is_null() && self.panes.iter().any(|p| p.hwnd == hwnd)
+        !hwnd.0.is_null()
+            && (hwnd == self.top_popover.hwnd
+                || self.panes.iter().any(|p| p.hwnd == hwnd || p.top_hwnd == hwnd))
+    }
+
+    pub fn popover_hwnd(&self) -> HWND {
+        self.top_popover.hwnd
+    }
+
+    pub fn hide_top_popover(&mut self) {
+        self.top_popover.hide();
+    }
+
+    pub fn handle_window_deactivate(&mut self, hwnd: HWND) {
+        if !hwnd.0.is_null() && hwnd == self.top_popover.hwnd && self.top_popover.visible {
+            // Brief grace window right after open prevents immediate flicker
+            if self.top_popover.opened_at.elapsed() >= Duration::from_millis(120) {
+                self.top_popover.hide();
+            }
+        }
+    }
+
+    fn pane_idx_for_top_hwnd(&self, hwnd: HWND) -> Option<usize> {
+        if hwnd.0.is_null() {
+            return None;
+        }
+        self.panes.iter().position(|p| p.top_hwnd == hwnd)
     }
 
     pub fn thumb_hwnd(&self) -> HWND {
@@ -1881,26 +2161,51 @@ impl MacDockEngine {
         &mut self,
         cfg: &AppConfig,
     ) -> Vec<(RECT, crate::taskbar_hide::TaskbarEdge, i32)> {
-        if !cfg.mac_dock_enabled
-            || cfg.mac_dock_hide != MacDockHideMode::AlwaysVisible
-            || cfg.is_dock_all_elements_off()
-        {
+        let want_top_bar = cfg.is_clean_top_bar_active() && !cfg.clean_top_bar_desktop_only;
+        let want_dock = cfg.mac_dock_enabled
+            && cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible
+            && !cfg.is_dock_all_elements_off();
+        if !want_top_bar && !want_dock {
             return Vec::new();
         }
         self.reconcile_monitors(true);
-        let edge = match cfg.mac_dock_edge {
+        let dock_edge = match cfg.mac_dock_edge {
             MacDockEdge::Bottom => crate::taskbar_hide::TaskbarEdge::Bottom,
             MacDockEdge::Top => crate::taskbar_hide::TaskbarEdge::Top,
             MacDockEdge::Left => crate::taskbar_hide::TaskbarEdge::Left,
             MacDockEdge::Right => crate::taskbar_hide::TaskbarEdge::Right,
         };
-        let mut out = Vec::with_capacity(self.panes.len());
+        let top_edge = match cfg.clean_top_bar_edge {
+            CleanTopBarEdge::Top => crate::taskbar_hide::TaskbarEdge::Top,
+            CleanTopBarEdge::Bottom => crate::taskbar_hide::TaskbarEdge::Bottom,
+        };
+        let floating_top = cfg.resolved_clean_top_bar_floating();
+        let mut out = Vec::with_capacity(self.panes.len() * 2);
         for pane in &mut self.panes {
             pane.update_dpi();
-            let (_spec, _is_vertical, _base_sz, shelf_cross, edge_gap, hud_wing_h) =
-                dock_cross_metrics(cfg, pane.dpi_u);
-            let reserve_px = (edge_gap + shelf_cross + hud_wing_h).ceil() as i32;
-            out.push((pane.mon_rect, edge, reserve_px));
+            if want_top_bar {
+                let top_h = if floating_top {
+                    (36.0 * pane.dpi_u).ceil() as i32
+                } else {
+                    (30.0 * pane.dpi_u).ceil() as i32
+                };
+                out.push((pane.mon_rect, top_edge, top_h));
+            }
+            if want_dock {
+                let (spec, _is_vertical, _base_sz, shelf_cross, edge_gap, hud_wing_h) =
+                    dock_cross_metrics(cfg, pane.dpi_u);
+                // Add slight breathing clearance so maximized windows stop cleanly above
+                // floating circular bubbles / dock rims with zero bottom overlap.
+                let extra = if spec.layout == DockLayoutKind::IndependentOrbs {
+                    (8.0 * pane.dpi_u).ceil() as i32
+                } else if spec.layout != DockLayoutKind::FullEdgeTaskbar {
+                    (4.0 * pane.dpi_u).ceil() as i32
+                } else {
+                    0
+                };
+                let reserve_px = (edge_gap + shelf_cross + hud_wing_h).ceil() as i32 + extra;
+                out.push((pane.mon_rect, dock_edge, reserve_px));
+            }
         }
         out
     }
@@ -1966,6 +2271,7 @@ impl MacDockEngine {
     pub fn mark_dirty_paint(&mut self) {
         for pane in &mut self.panes {
             pane.dirty_paint = true;
+            pane.top_dirty = true;
         }
     }
 
@@ -1973,6 +2279,9 @@ impl MacDockEngine {
         for pane in &mut self.panes {
             if pane.pressed_idx.take().is_some() {
                 pane.dirty_paint = true;
+            }
+            if pane.top_pressed.take().is_some() {
+                pane.top_dirty = true;
             }
         }
     }
@@ -2209,10 +2518,7 @@ impl MacDockEngine {
         let raw = hwnd.0 as isize;
         if raw != 0 {
             if hook_code == HSHELL_FLASH {
-                let fg = unsafe { GetForegroundWindow() };
-                if hwnd != fg {
-                    self.flashing_hwnds.insert(raw);
-                }
+                // Intentionally ignore HSHELL_FLASH yellow light halos (keeps dock clean & 0% idle CPU)
             } else if hook_code == HSHELL_WINDOWACTIVATED
                 || hook_code == HSHELL_RUDEAPPACTIVATED
                 || hook_code == HSHELL_WINDOWDESTROYED
@@ -2339,6 +2645,34 @@ impl MacDockEngine {
                         let _ = tfm.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                         self.tf_mono = Some(tfm);
                     }
+                    if let Ok(tfb) = dw.CreateTextFormat(
+                        w!("Segoe UI Variable Text"),
+                        None,
+                        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        12.5,
+                        w!("en-US"),
+                    ) {
+                        let _ = tfb.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                        let _ = tfb.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        let _ = tfb.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        self.tf_top_bold = Some(tfb);
+                    }
+                    if let Ok(tfr) = dw.CreateTextFormat(
+                        w!("Segoe UI Variable Text"),
+                        None,
+                        DWRITE_FONT_WEIGHT_REGULAR,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        12.5,
+                        w!("en-US"),
+                    ) {
+                        let _ = tfr.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                        let _ = tfr.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        let _ = tfr.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        self.tf_top_reg = Some(tfr);
+                    }
                 }
             }
             if self.dc_rt.is_none() {
@@ -2418,6 +2752,7 @@ impl MacDockEngine {
 
     pub fn disable(&mut self) {
         TRAY_OVERFLOW_ABORT.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.top_popover.destroy();
         self.thumb_popup.destroy();
         self.thumb_owner_hwnd = HWND::default();
         self.hover_dwell_pane = HWND::default();
@@ -2436,6 +2771,7 @@ impl MacDockEngine {
         self.slot_keys.clear();
         self.bounce_until.clear();
         self.pop_until.clear();
+        self.last_app_click.clear();
         self.flashing_hwnds.clear();
         self.vol_osd_until = None;
         self.hover_dwell_since = None;
@@ -2451,6 +2787,8 @@ impl MacDockEngine {
         self.tf_tip = None;
         self.tf_left = None;
         self.tf_mono = None;
+        self.tf_top_bold = None;
+        self.tf_top_reg = None;
         self.d2d = None;
         self.dw = None;
         self.wic = None;
@@ -2700,8 +3038,11 @@ impl MacDockEngine {
         };
         let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
         let show_div = cfg.w_apps.show_separators;
-        let show_clock = !cfg.w_clock.is_all_elements_off();
-        let show_tray = !cfg.w_tray.is_all_elements_off();
+        // Pure Mac Dock mode: when the Clean & Minimal Top Menu Bar is active, move tray + clock
+        // cleanly up to the Menu Bar so the bottom dock stays 100% pure apps + trash + Studio!
+        let pure_mac_dock = cfg.is_clean_top_bar_active();
+        let show_clock = !cfg.w_clock.is_all_elements_off() && !pure_mac_dock;
+        let show_tray = !cfg.w_tray.is_all_elements_off() && !pure_mac_dock;
         let show_sliver = cfg.w_util.show_desktop_sliver && !cfg.w_util.is_all_elements_off();
         let has_right_cluster = show_tray
             || show_clock
@@ -2713,26 +3054,12 @@ impl MacDockEngine {
 
         match spec.layout {
             DockLayoutKind::MultiIslandBar => {
-                // Island 1: System Navigation Trio + Live Active App Status
-                if cfg.w_util.show_start {
-                    new_slots.push(DockSlotKind::StartLauncher);
-                }
-                if cfg.w_util.show_search {
-                    new_slots.push(DockSlotKind::SearchButton);
-                }
-                if cfg.w_util.show_taskview {
-                    new_slots.push(DockSlotKind::TaskViewButton);
-                }
-                if !is_vertical && cfg.w_hud.show_active_app {
-                    new_slots.push(DockSlotKind::ActiveAppChip {
-                        title: truncate_title(&self.fg_app_title, 15),
-                    });
-                }
-                if !pinned_slots.is_empty() || !running_slots.is_empty() {
-                    if !new_slots.is_empty() {
-                        new_slots.push(DockSlotKind::IslandGap);
+                if cfg.tb_theme.is_clean_minimal() {
+                    // Authentic Windhawk 2-Island layout (`LiquidGlass2.png` & `DockLike.png`):
+                    // Island 1: [Start + Pinned & Active Apps]  |  Island 2: [Unified Tray + Clock]
+                    if cfg.w_util.show_start {
+                        new_slots.push(DockSlotKind::StartLauncher);
                     }
-                    // Island 2: Pinned & Active Windows Hub
                     let has_pinned = !pinned_slots.is_empty();
                     new_slots.extend(pinned_slots);
                     if !running_slots.is_empty() {
@@ -2741,26 +3068,76 @@ impl MacDockEngine {
                         }
                         new_slots.extend(running_slots);
                     }
-                }
-                if show_tray || show_clock || cfg.w_util.show_trash || cfg.w_util.show_studio {
-                    if !new_slots.is_empty() {
-                        new_slots.push(DockSlotKind::IslandGap);
+                    if show_tray || show_clock || cfg.w_util.show_trash || cfg.w_util.show_studio {
+                        if !new_slots.is_empty() {
+                            new_slots.push(DockSlotKind::IslandGap);
+                        }
+                        if show_tray {
+                            new_slots.push(DockSlotKind::HiddenTrayChevron);
+                            new_slots.push(DockSlotKind::TrayStatusCluster);
+                        }
+                        if show_clock {
+                            new_slots.push(clock_slot);
+                        }
+                        if cfg.w_util.show_trash {
+                            new_slots.push(DockSlotKind::TrashBin {
+                                items: self.trash_items,
+                            });
+                        }
+                        if cfg.w_util.show_studio {
+                            new_slots.push(DockSlotKind::StudioLauncher);
+                        }
                     }
-                    // Island 3: Hidden Tray Chevron + Windows Tray + Clock + Trash + Studio
-                    if show_tray {
-                        new_slots.push(DockSlotKind::HiddenTrayChevron);
-                        new_slots.push(DockSlotKind::TrayStatusCluster);
+                } else {
+                    // Island 1: System Navigation Trio + Live Active App Status
+                    if cfg.w_util.show_start {
+                        new_slots.push(DockSlotKind::StartLauncher);
                     }
-                    if show_clock {
-                        new_slots.push(clock_slot);
+                    if cfg.w_util.show_search {
+                        new_slots.push(DockSlotKind::SearchButton);
                     }
-                    if cfg.w_util.show_trash {
-                        new_slots.push(DockSlotKind::TrashBin {
-                            items: self.trash_items,
+                    if cfg.w_util.show_taskview {
+                        new_slots.push(DockSlotKind::TaskViewButton);
+                    }
+                    if !is_vertical && cfg.w_hud.show_active_app {
+                        new_slots.push(DockSlotKind::ActiveAppChip {
+                            title: truncate_title(&self.fg_app_title, 15),
                         });
                     }
-                    if cfg.w_util.show_studio {
-                        new_slots.push(DockSlotKind::StudioLauncher);
+                    if !pinned_slots.is_empty() || !running_slots.is_empty() {
+                        if !new_slots.is_empty() {
+                            new_slots.push(DockSlotKind::IslandGap);
+                        }
+                        // Island 2: Pinned & Active Windows Hub
+                        let has_pinned = !pinned_slots.is_empty();
+                        new_slots.extend(pinned_slots);
+                        if !running_slots.is_empty() {
+                            if show_div && has_pinned {
+                                new_slots.push(DockSlotKind::Divider);
+                            }
+                            new_slots.extend(running_slots);
+                        }
+                    }
+                    if show_tray || show_clock || cfg.w_util.show_trash || cfg.w_util.show_studio {
+                        if !new_slots.is_empty() {
+                            new_slots.push(DockSlotKind::IslandGap);
+                        }
+                        // Island 3: Hidden Tray Chevron + Windows Tray + Clock + Trash + Studio
+                        if show_tray {
+                            new_slots.push(DockSlotKind::HiddenTrayChevron);
+                            new_slots.push(DockSlotKind::TrayStatusCluster);
+                        }
+                        if show_clock {
+                            new_slots.push(clock_slot);
+                        }
+                        if cfg.w_util.show_trash {
+                            new_slots.push(DockSlotKind::TrashBin {
+                                items: self.trash_items,
+                            });
+                        }
+                        if cfg.w_util.show_studio {
+                            new_slots.push(DockSlotKind::StudioLauncher);
+                        }
                     }
                 }
             }
@@ -2809,20 +3186,22 @@ impl MacDockEngine {
                 }
             }
             DockLayoutKind::IndependentOrbs => {
-                // Barless standalone orbs/jewels floating over desktop + Left Pinned | Right Opened + Tray & Clock
+                // Barless standalone tiles/bubbles floating directly over desktop + unified right tray capsule
                 if cfg.w_util.show_start {
                     new_slots.push(DockSlotKind::StartLauncher);
                 }
                 let has_pinned = !pinned_slots.is_empty();
                 new_slots.extend(pinned_slots);
                 if !running_slots.is_empty() {
-                    if show_div && has_pinned {
+                    if show_div && has_pinned && !cfg.tb_theme.is_clean_minimal() {
                         new_slots.push(DockSlotKind::Divider);
                     }
                     new_slots.extend(running_slots);
                 }
-                if show_div && !new_slots.is_empty() && has_right_cluster {
-                    new_slots.push(DockSlotKind::EndDivider);
+                if !new_slots.is_empty() && has_right_cluster {
+                    if cfg.tb_theme.is_clean_minimal() || show_div {
+                        new_slots.push(DockSlotKind::EndDivider);
+                    }
                 }
                 if show_tray {
                     new_slots.push(DockSlotKind::HiddenTrayChevron);
@@ -3048,6 +3427,7 @@ impl MacDockEngine {
         let mut panes = std::mem::take(&mut self.panes);
         for pane in &mut panes {
             self.tick_pane(pane, cfg, pt, got_cursor, dt, now);
+            self.tick_top_bar_pane(pane, cfg, pt, got_cursor);
         }
         self.panes = panes;
         self.bounce_until.retain(|_, &mut t| t > now);
@@ -3070,18 +3450,42 @@ impl MacDockEngine {
         let u = pane.dpi_u;
         let (spec, is_vertical, base_sz, shelf_cross, edge_gap, hud_wing_h) =
             dock_cross_metrics(cfg, u);
-        let gap = match spec.layout {
-            DockLayoutKind::IndependentOrbs => (11.0 * u).max(8.0),
-            DockLayoutKind::FullEdgeTaskbar => (5.0 * u).max(4.0),
-            DockLayoutKind::InlineMorphRail => (6.0 * u).max(4.0),
-            DockLayoutKind::HudConsoleDeck => (9.0 * u).max(6.0),
-            DockLayoutKind::MultiIslandBar => (7.0 * u).max(5.0),
-            DockLayoutKind::FishEyeShelf => (8.0 * u).max(5.0),
+        let gap = if cfg.tb_theme.is_clean_minimal() {
+            match cfg.tb_theme {
+                TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark => {
+                    (5.5 * u).max(4.5)
+                }
+                TaskbarTheme::OneUiLightChips | TaskbarTheme::OneUiDarkChips => (6.0 * u).max(5.0),
+                TaskbarTheme::MatterTilesLight
+                | TaskbarTheme::MatterTilesDark
+                | TaskbarTheme::SquircleFrosted
+                | TaskbarTheme::PillsDetached
+                | TaskbarTheme::RosePineTiles
+                | TaskbarTheme::CatppuccinTiles => (6.0 * u).max(5.0),
+                TaskbarTheme::BubblesDark | TaskbarTheme::BubblesLight => (7.0 * u).max(6.0),
+                _ => (6.5 * u).max(5.0),
+            }
+        } else {
+            match spec.layout {
+                DockLayoutKind::IndependentOrbs => (11.0 * u).max(8.0),
+                DockLayoutKind::FullEdgeTaskbar => (5.0 * u).max(4.0),
+                DockLayoutKind::InlineMorphRail => (6.0 * u).max(4.0),
+                DockLayoutKind::HudConsoleDeck => (9.0 * u).max(6.0),
+                DockLayoutKind::MultiIslandBar => (7.0 * u).max(5.0),
+                DockLayoutKind::FishEyeShelf => (8.0 * u).max(5.0),
+            }
         };
-        let pad_span = match spec.layout {
-            DockLayoutKind::IndependentOrbs => 10.0 * u,
-            DockLayoutKind::FullEdgeTaskbar => 8.0 * u,
-            _ => 12.0 * u,
+        let pad_span = if matches!(
+            cfg.tb_theme,
+            TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark
+        ) {
+            8.0 * u
+        } else {
+            match spec.layout {
+                DockLayoutKind::IndependentOrbs => 10.0 * u,
+                DockLayoutKind::FullEdgeTaskbar => 8.0 * u,
+                _ => 12.0 * u,
+            }
         };
         let right_pad_span = if spec.layout == DockLayoutKind::FullEdgeTaskbar {
             2.0 * u
@@ -3093,12 +3497,32 @@ impl MacDockEngine {
         let max_scale = if !cfg.tb_hover_react {
             1.0
         } else {
+            let user_mag = (cfg.mac_dock_mag_pct as f32 / 100.0).clamp(1.0, 1.85);
             match spec.layout {
-                DockLayoutKind::FishEyeShelf => (cfg.mac_dock_mag_pct as f32 / 100.0).clamp(1.0, 1.85),
-                DockLayoutKind::MultiIslandBar => 1.14,
-                DockLayoutKind::IndependentOrbs => 1.22,
+                DockLayoutKind::FishEyeShelf => user_mag,
+                DockLayoutKind::MultiIslandBar => {
+                    if cfg.tb_theme.is_clean_minimal() {
+                        (1.0 + (user_mag - 1.0) * 0.48).clamp(1.14, 1.36)
+                    } else {
+                        1.14
+                    }
+                }
+                DockLayoutKind::IndependentOrbs => {
+                    if cfg.tb_theme.is_clean_minimal() {
+                        (1.0 + (user_mag - 1.0) * 0.64).clamp(1.22, 1.48)
+                    } else {
+                        1.22
+                    }
+                }
                 DockLayoutKind::HudConsoleDeck => 1.06,
-                DockLayoutKind::FullEdgeTaskbar | DockLayoutKind::InlineMorphRail => 1.0,
+                DockLayoutKind::FullEdgeTaskbar => {
+                    if cfg.tb_theme.is_clean_minimal() {
+                        (1.0 + (user_mag - 1.0) * 0.24).clamp(1.08, 1.18)
+                    } else {
+                        1.0
+                    }
+                }
+                DockLayoutKind::InlineMorphRail => 1.0,
             }
         };
         let mag_radius = base_sz * 3.05;
@@ -3186,6 +3610,7 @@ impl MacDockEngine {
                 self.hover_dwell_key.clear();
             }
             if pane.window_shown {
+                pane.liquid_backdrop.hide();
                 unsafe {
                     let _ = ShowWindow(pane.hwnd, SW_HIDE);
                 }
@@ -3262,14 +3687,16 @@ impl MacDockEngine {
                 DockSlotKind::HiddenTrayChevron => {
                     if is_vertical {
                         if spec.layout == DockLayoutKind::IndependentOrbs {
-                            (26.0 * u, false, false)
+                            (24.0 * u, false, false)
                         } else {
                             (24.0 * u, false, false)
                         }
-                    } else if spec.layout == DockLayoutKind::IndependentOrbs {
+                    } else if spec.layout == DockLayoutKind::IndependentOrbs
+                        && !cfg.tb_theme.is_clean_minimal()
+                    {
                         (28.0 * u, false, false)
                     } else {
-                        (22.0 * u, false, false)
+                        (20.0 * u, false, false)
                     }
                 }
                 DockSlotKind::TrayStatusCluster => {
@@ -3311,7 +3738,10 @@ impl MacDockEngine {
                             DockRunningLabelMode::AllRunningApps => true,
                             DockRunningLabelMode::ActiveAppOnly => is_act,
                             DockRunningLabelMode::IconOnly | DockRunningLabelMode::HoverExpandMorph => false,
-                            DockRunningLabelMode::InheritTheme => spec.layout == DockLayoutKind::FullEdgeTaskbar,
+                            DockRunningLabelMode::InheritTheme => {
+                                spec.layout == DockLayoutKind::FullEdgeTaskbar
+                                    && !cfg.tb_theme.is_clean_minimal()
+                            }
                         };
                     if want_wide {
                         (142.0 * u, false, false)
@@ -3528,12 +3958,23 @@ impl MacDockEngine {
                 non_wave_hover == Some(idx)
             };
 
-            let steady_wide = matches!(
-                s,
-                DockSlotKind::ClockModule { .. }
-                    | DockSlotKind::TrayStatusCluster
-                    | DockSlotKind::HiddenTrayChevron
-            );
+            let in_unified_clean_tray = spec.layout == DockLayoutKind::IndependentOrbs
+                && cfg.tb_theme.is_clean_minimal()
+                && matches!(
+                    s,
+                    DockSlotKind::HiddenTrayChevron
+                        | DockSlotKind::TrayStatusCluster
+                        | DockSlotKind::ClockModule { .. }
+                        | DockSlotKind::TrashBin { .. }
+                        | DockSlotKind::StudioLauncher
+                );
+            let steady_wide = in_unified_clean_tray
+                || matches!(
+                    s,
+                    DockSlotKind::ClockModule { .. }
+                        | DockSlotKind::TrayStatusCluster
+                        | DockSlotKind::HiddenTrayChevron
+                );
             let tgt_s = if steady_wide {
                 1.0
             } else {
@@ -3547,12 +3988,33 @@ impl MacDockEngine {
                             1.0
                         }
                     }
-                    DockLayoutKind::MultiIslandBar
-                    | DockLayoutKind::IndependentOrbs
-                    | DockLayoutKind::HudConsoleDeck => {
+                    DockLayoutKind::IndependentOrbs | DockLayoutKind::MultiIslandBar => {
+                        if cfg.tb_theme.is_clean_minimal() {
+                            let wave_r = base_sz * 2.55;
+                            let d = (rest_centers[idx] - cursor_rest).abs();
+                            if pane.hover_mix > 0.01 && max_scale > 1.005 && d < wave_r {
+                                let c = (std::f32::consts::FRAC_PI_2 * (d / wave_r)).cos();
+                                1.0 + pane.hover_mix * (max_scale - 1.0) * c * c
+                            } else {
+                                1.0
+                            }
+                        } else if is_hov {
+                            max_scale
+                        } else {
+                            1.0
+                        }
+                    }
+                    DockLayoutKind::HudConsoleDeck => {
                         if is_hov { max_scale } else { 1.0 }
                     }
-                    DockLayoutKind::FullEdgeTaskbar | DockLayoutKind::InlineMorphRail => 1.0,
+                    DockLayoutKind::FullEdgeTaskbar => {
+                        if cfg.tb_theme.is_clean_minimal() && is_hov {
+                            max_scale
+                        } else {
+                            1.0
+                        }
+                    }
+                    DockLayoutKind::InlineMorphRail => 1.0,
                 }
             };
 
@@ -3627,14 +4089,24 @@ impl MacDockEngine {
                         * if spec.mechanical_lift { 0.56 } else { 0.44 }
                 }
                 DockLayoutKind::IndependentOrbs if !steady_wide => {
-                    let wave = if cfg.tb_theme == TaskbarTheme::BiolumAbyssDock {
-                        ((self.dock_anim_phase * 1.15 + idx as f32 * 0.85).sin() * 0.5 + 0.5)
-                            * 5.0
-                            * u
+                    if cfg.tb_theme.is_clean_minimal() {
+                        (sm_s - 1.0).max(0.0) * base_sz * 0.42
                     } else {
-                        0.0
-                    };
-                    wave + if is_hov { 3.5 * u } else { 0.0 }
+                        let wave = if cfg.tb_theme == TaskbarTheme::BiolumAbyssDock {
+                            ((self.dock_anim_phase * 1.15 + idx as f32 * 0.85).sin() * 0.5 + 0.5)
+                                * 5.0
+                                * u
+                        } else {
+                            0.0
+                        };
+                        wave + if is_hov { 3.5 * u } else { 0.0 }
+                    }
+                }
+                DockLayoutKind::MultiIslandBar if !steady_wide && cfg.tb_theme.is_clean_minimal() => {
+                    (sm_s - 1.0).max(0.0) * base_sz * 0.30
+                }
+                DockLayoutKind::FullEdgeTaskbar if !steady_wide && cfg.tb_theme.is_clean_minimal() => {
+                    (sm_s - 1.0).max(0.0) * base_sz * 0.24
                 }
                 _ => 0.0,
             };
@@ -3958,9 +4430,10 @@ impl MacDockEngine {
         }
         pane.layout = layout;
 
-        // Build island shelf rectangles and stepped HUD telemetry wing
+        // Build island shelf rectangles, unified Clean & Minimal floating tray capsule, and HUD wing
         pane.island_rects_local.clear();
         pane.island_rects_screen.clear();
+        pane.unified_tray_rect_local = None;
         pane.hud_wing_local = None;
 
         if spec.layout == DockLayoutKind::MultiIslandBar {
@@ -4019,6 +4492,60 @@ impl MacDockEngine {
             }
         } else if spec.layout != DockLayoutKind::IndependentOrbs && !cfg.w_shelf.is_all_elements_off() {
             pane.island_rects_local.push(shelf_rect_f);
+        }
+
+        // Unify right-side system tray + clock + utility slots into ONE sleek Windhawk/macOS floating capsule
+        // on barless Clean & Minimal `IndependentOrbs` themes (only when the Top Bar is disabled)
+        if spec.layout == DockLayoutKind::IndependentOrbs
+            && cfg.tb_theme.is_clean_minimal()
+            && !cfg.is_clean_top_bar_active()
+        {
+            let mut u_lo: Option<f32> = None;
+            let mut u_hi = 0.0f32;
+            for item in &pane.layout {
+                let Some(slot) = self.slots.get(item.slot_idx) else {
+                    continue;
+                };
+                if matches!(
+                    slot,
+                    DockSlotKind::HiddenTrayChevron
+                        | DockSlotKind::TrayStatusCluster
+                        | DockSlotKind::ClockModule { .. }
+                        | DockSlotKind::TrashBin { .. }
+                        | DockSlotKind::StudioLauncher
+                ) {
+                    let (lo_v, hi_v) = if is_vertical {
+                        (item.slot_rect.top, item.slot_rect.bottom)
+                    } else {
+                        (item.slot_rect.left, item.slot_rect.right)
+                    };
+                    u_lo = Some(match u_lo {
+                        None => lo_v,
+                        Some(p) => p.min(lo_v),
+                    });
+                    u_hi = u_hi.max(hi_v);
+                }
+            }
+            if let Some(lo) = u_lo {
+                let cap_pad = 8.0 * u;
+                let cap_half_cross = (base_sz * 0.58).max(20.0 * u);
+                let ur = if is_vertical {
+                    D2D_RECT_F {
+                        left: base_center_cross - cap_half_cross,
+                        top: lo - cap_pad,
+                        right: base_center_cross + cap_half_cross,
+                        bottom: u_hi + cap_pad,
+                    }
+                } else {
+                    D2D_RECT_F {
+                        left: lo - cap_pad,
+                        top: base_center_cross - cap_half_cross,
+                        right: u_hi + cap_pad,
+                        bottom: base_center_cross + cap_half_cross,
+                    }
+                };
+                pane.unified_tray_rect_local = Some(ur);
+            }
         }
 
         for r in &pane.island_rects_local {
@@ -4292,6 +4819,31 @@ impl MacDockEngine {
     }
 
     pub fn handle_nchittest(&self, hwnd: HWND, sx: i32, sy: i32) -> LRESULT {
+        if !hwnd.0.is_null() && hwnd == self.top_popover.hwnd {
+            if !self.top_popover.visible {
+                return LRESULT(-1);
+            }
+            let lx = (sx - self.top_popover.win_rect.left) as f32;
+            let ly = (sy - self.top_popover.win_rect.top) as f32;
+            let pr = self.top_popover.layout.panel_r;
+            if lx >= pr.left && lx <= pr.right && ly >= pr.top && ly <= pr.bottom {
+                return LRESULT(1);
+            }
+            return LRESULT(-1);
+        }
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            let pane = &self.panes[pi];
+            if !pane.top_shown {
+                return LRESULT(-1);
+            }
+            let lx = (sx - pane.top_win_rect.left) as f32;
+            let ly = (sy - pane.top_win_rect.top) as f32;
+            let br = pane.top_bar_local;
+            if lx >= br.left && lx <= br.right && ly >= br.top && ly <= br.bottom {
+                return LRESULT(1); // HTCLIENT
+            }
+            return LRESULT(-1); // HTTRANSPARENT on floating shadow margin
+        }
         let Some(pidx) = self.pane_idx_for_hwnd(hwnd) else {
             return LRESULT(-1);
         };
@@ -4326,6 +4878,25 @@ impl MacDockEngine {
     }
 
     pub fn handle_set_cursor(&self, hwnd: HWND) -> LRESULT {
+        if !hwnd.0.is_null() && hwnd == self.top_popover.hwnd {
+            let cur = if self.top_popover.hovered.is_some() || self.top_popover.dragging_vol {
+                IDC_HAND
+            } else {
+                IDC_ARROW
+            };
+            unsafe {
+                let _ = SetCursor(LoadCursorW(None, cur).ok());
+            }
+            return LRESULT(1);
+        }
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            let hovered = self.panes[pi].top_hovered.is_some();
+            unsafe {
+                let cur = if hovered { IDC_HAND } else { IDC_ARROW };
+                let _ = SetCursor(LoadCursorW(None, cur).ok());
+            }
+            return LRESULT(1);
+        }
         let hovered = self
             .pane_idx_for_hwnd(hwnd)
             .and_then(|pi| self.panes[pi].hovered_idx)
@@ -4337,9 +4908,80 @@ impl MacDockEngine {
         LRESULT(1)
     }
 
-    pub fn handle_mouse_move(&mut self, hwnd: HWND, cfg: &AppConfig) {
+    pub fn handle_mouse_move(&mut self, hwnd: HWND, cfg: &AppConfig) -> MacDockAction {
+        if !hwnd.0.is_null() && hwnd == self.top_popover.hwnd {
+            if !self.top_popover.tracking_leave {
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                unsafe {
+                    if TrackMouseEvent(&mut tme).is_ok() {
+                        self.top_popover.tracking_leave = true;
+                    }
+                }
+            }
+            let mut pt = POINT::default();
+            if unsafe { GetCursorPos(&mut pt).is_ok() } {
+                let lx = (pt.x - self.top_popover.win_rect.left) as f32;
+                let ly = (pt.y - self.top_popover.win_rect.top) as f32;
+                if self.top_popover.dragging_vol {
+                    let tr = self.top_popover.layout.vol_track_r;
+                    let w = (tr.right - tr.left).max(8.0);
+                    let frac = ((lx - tr.left) / w).clamp(0.0, 1.0);
+                    let pct = (frac * 100.0).round() as u8;
+                    if pct != self.tray_vol_pct || self.tray_vol_muted {
+                        self.tray_vol_pct = pct;
+                        if pct > 0 {
+                            self.tray_vol_muted = false;
+                        }
+                        self.render_top_popover(cfg);
+                        self.mark_dirty_paint();
+                        return MacDockAction::TraySetVolume(pct);
+                    }
+                    return MacDockAction::None;
+                }
+                let next_hov = self.top_popover.hit_at(lx, ly);
+                if next_hov != self.top_popover.hovered {
+                    self.top_popover.hovered = next_hov;
+                    self.render_top_popover(cfg);
+                }
+            }
+            return MacDockAction::None;
+        }
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            if !self.panes[pi].top_tracking_leave && !hwnd.0.is_null() {
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                unsafe {
+                    if TrackMouseEvent(&mut tme).is_ok() {
+                        self.panes[pi].top_tracking_leave = true;
+                    }
+                }
+            }
+            let mut pt = POINT::default();
+            if unsafe { GetCursorPos(&mut pt).is_ok() } {
+                let lx = (pt.x - self.panes[pi].top_win_rect.left) as f32;
+                let ly = (pt.y - self.panes[pi].top_win_rect.top) as f32;
+                let next_hov = self.panes[pi].hit_top_bar_item(lx, ly);
+                if next_hov != self.panes[pi].top_hovered {
+                    self.panes[pi].top_hovered = next_hov;
+                    self.panes[pi].top_dirty = true;
+                    let mut pane = self.panes.remove(pi);
+                    self.render_top_bar_pane(&mut pane, cfg);
+                    self.panes.insert(pi, pane);
+                }
+            }
+            return MacDockAction::None;
+        }
         let Some(pi) = self.pane_idx_for_hwnd(hwnd) else {
-            return;
+            return MacDockAction::None;
         };
         if !self.panes[pi].tracking_leave && !hwnd.0.is_null() {
             let mut tme = TRACKMOUSEEVENT {
@@ -4365,14 +5007,33 @@ impl MacDockEngine {
         if cfg.tb_hover_react || !was_in {
             self.panes[pi].dirty_paint = true;
         }
-        // Only run an immediate tick on first entry when the dock was hidden;
-        // subsequent mouse moves paint asynchronously via TIMER_DOCK_TICK without stalling video wallpaper.
         if !was_in && !self.panes[pi].window_shown {
             self.tick(cfg);
         }
+        MacDockAction::None
     }
 
     pub fn handle_mouse_leave(&mut self, hwnd: HWND, cfg: &AppConfig) {
+        if !hwnd.0.is_null() && hwnd == self.top_popover.hwnd {
+            self.top_popover.tracking_leave = false;
+            self.top_popover.dragging_vol = false;
+            if self.top_popover.hovered.take().is_some() {
+                self.render_top_popover(cfg);
+            }
+            return;
+        }
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            self.panes[pi].top_tracking_leave = false;
+            if self.panes[pi].top_hovered.take().is_some()
+                || self.panes[pi].top_pressed.take().is_some()
+            {
+                self.panes[pi].top_dirty = true;
+                let mut pane = self.panes.remove(pi);
+                self.render_top_bar_pane(&mut pane, cfg);
+                self.panes.insert(pi, pane);
+            }
+            return;
+        }
         let Some(pi) = self.pane_idx_for_hwnd(hwnd) else {
             return;
         };
@@ -4470,27 +5131,45 @@ impl MacDockEngine {
         self.tick(cfg);
     }
 
-    pub fn handle_thumb_lbutton_up(&mut self, lx: f32, ly: f32, cfg: &AppConfig) -> MacDockAction {
+    pub fn handle_thumb_lbutton_down(&mut self, lx: f32, ly: f32) {
         let (hc, hx) = self.thumb_popup.hit_test_client(lx, ly);
-        if let Some(ci) = hx {
+        self.thumb_popup.pressed_card = hc;
+        self.thumb_popup.pressed_close = hx;
+    }
+
+    pub fn handle_thumb_lbutton_up(&mut self, lx: f32, ly: f32, cfg: &AppConfig) -> MacDockAction {
+        let (pc, px) = (
+            self.thumb_popup.pressed_card.take(),
+            self.thumb_popup.pressed_close.take(),
+        );
+        let (hc, hx) = self.thumb_popup.hit_test_client(lx, ly);
+        let close_idx = hx.or_else(|| if hc.is_some() && hc == px { px } else { None });
+        if let Some(ci) = close_idx {
             if let Some(card) = self.thumb_popup.cards.get(ci) {
                 let target_hwnd = card.win_hwnd;
                 self.flashing_hwnds.remove(&(target_hwnd.0 as isize));
-                unsafe {
-                    let _ = PostMessageW(Some(target_hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                }
+                let closed_ok = close_window_gracefully(target_hwnd);
                 self.thumb_popup.hide();
                 self.thumb_owner_hwnd = HWND::default();
+                if !closed_ok {
+                    // Target is an elevated Administrator window (e.g. Task Manager) protected by
+                    // Windows UIPI; bring it forward so the user can interact with or close it directly.
+                    bring_window_to_front(target_hwnd);
+                }
                 self.dirty_windows = true;
                 self.mark_dirty_paint();
                 self.tick(cfg);
             }
             return MacDockAction::None;
         }
-        if let Some(ci) = hc {
+        if let Some(ci) = hc.or(pc) {
             if let Some(card) = self.thumb_popup.cards.get(ci) {
                 let target_hwnd = card.win_hwnd;
                 self.flashing_hwnds.remove(&(target_hwnd.0 as isize));
+                let s_key = self.thumb_popup.slot_key.clone();
+                if !s_key.is_empty() {
+                    self.last_app_click.insert(s_key, Instant::now());
+                }
                 self.thumb_popup.hide();
                 self.thumb_owner_hwnd = HWND::default();
                 bring_window_to_front(target_hwnd);
@@ -4507,9 +5186,7 @@ impl MacDockEngine {
             if let Some(card) = self.thumb_popup.cards.get(ci) {
                 let target_hwnd = card.win_hwnd;
                 self.flashing_hwnds.remove(&(target_hwnd.0 as isize));
-                unsafe {
-                    let _ = PostMessageW(Some(target_hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                }
+                let _ = close_window_gracefully(target_hwnd);
                 self.thumb_popup.hide();
                 self.thumb_owner_hwnd = HWND::default();
                 self.dirty_windows = true;
@@ -4520,6 +5197,32 @@ impl MacDockEngine {
     }
 
     pub fn handle_lbutton_down(&mut self, hwnd: HWND, lx: f32, ly: f32, cfg: &AppConfig) {
+        if !hwnd.0.is_null() && hwnd == self.top_popover.hwnd {
+            let hit = self.top_popover.hit_at(lx, ly);
+            self.top_popover.hovered = hit;
+            if hit == Some(TopBarPopoverHit::VolumeTrack) {
+                self.top_popover.dragging_vol = true;
+                let tr = self.top_popover.layout.vol_track_r;
+                let w = (tr.right - tr.left).max(8.0);
+                let pct = (((lx - tr.left) / w).clamp(0.0, 1.0) * 100.0).round() as u8;
+                self.tray_vol_pct = pct;
+                if pct > 0 {
+                    self.tray_vol_muted = false;
+                }
+                self.render_top_popover(cfg);
+            }
+            return;
+        }
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            let hit = self.panes[pi].hit_top_bar_item(lx, ly);
+            self.panes[pi].top_pressed = hit;
+            self.panes[pi].top_hovered = hit;
+            self.panes[pi].top_dirty = true;
+            let mut pane = self.panes.remove(pi);
+            self.render_top_bar_pane(&mut pane, cfg);
+            self.panes.insert(pi, pane);
+            return;
+        }
         let Some(pi) = self.pane_idx_for_hwnd(hwnd) else {
             return;
         };
@@ -4534,19 +5237,228 @@ impl MacDockEngine {
         }
     }
 
-    pub fn handle_lbutton_up(&mut self, hwnd: HWND, lx: f32, ly: f32, cfg: &AppConfig) -> MacDockAction {
+    pub fn handle_lbutton_up(&mut self, hwnd: HWND, lx: f32, ly: f32, cfg: &mut AppConfig) -> MacDockAction {
+        if !hwnd.0.is_null() && hwnd == self.top_popover.hwnd {
+            let was_drag = self.top_popover.dragging_vol;
+            self.top_popover.dragging_vol = false;
+            if was_drag {
+                let tr = self.top_popover.layout.vol_track_r;
+                let w = (tr.right - tr.left).max(8.0);
+                let pct = (((lx - tr.left) / w).clamp(0.0, 1.0) * 100.0).round() as u8;
+                self.tray_vol_pct = pct;
+                if pct > 0 {
+                    self.tray_vol_muted = false;
+                }
+                self.render_top_popover(cfg);
+                self.mark_dirty_paint();
+                return MacDockAction::TraySetVolume(pct);
+            }
+            let Some(hit) = self.top_popover.hit_at(lx, ly) else {
+                return MacDockAction::None;
+            };
+            match hit {
+                TopBarPopoverHit::WifiRow => {
+                    self.top_popover.hide();
+                    unsafe {
+                        let _ = AllowSetForegroundWindow(ASFW_ANY);
+                    }
+                    return MacDockAction::OpenWifiFlyout;
+                }
+                TopBarPopoverHit::BluetoothRow => {
+                    self.top_popover.hide();
+                    unsafe {
+                        let _ = AllowSetForegroundWindow(ASFW_ANY);
+                    }
+                    return MacDockAction::OpenBluetoothFlyout;
+                }
+                TopBarPopoverHit::StudioRow => {
+                    self.top_popover.hide();
+                    return MacDockAction::OpenSettingsDock;
+                }
+                TopBarPopoverHit::ToggleDesktopOnly => {
+                    cfg.clean_top_bar_desktop_only = !cfg.clean_top_bar_desktop_only;
+                    save_config(cfg);
+                    self.render_top_popover(cfg);
+                    return MacDockAction::ConfigUpdated;
+                }
+                TopBarPopoverHit::ToggleBarEdge => {
+                    cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge.toggle());
+                    save_config(cfg);
+                    self.top_popover.hide();
+                    return MacDockAction::ConfigUpdated;
+                }
+                TopBarPopoverHit::ToggleMute => {
+                    self.tray_vol_muted = !self.tray_vol_muted;
+                    self.render_top_popover(cfg);
+                    self.mark_dirty_paint();
+                    return MacDockAction::TrayToggleMute;
+                }
+                TopBarPopoverHit::VolumeTrack => {
+                    let tr = self.top_popover.layout.vol_track_r;
+                    let w = (tr.right - tr.left).max(8.0);
+                    let pct = (((lx - tr.left) / w).clamp(0.0, 1.0) * 100.0).round() as u8;
+                    self.tray_vol_pct = pct;
+                    if pct > 0 {
+                        self.tray_vol_muted = false;
+                    }
+                    self.render_top_popover(cfg);
+                    self.mark_dirty_paint();
+                    return MacDockAction::TraySetVolume(pct);
+                }
+                TopBarPopoverHit::BatteryRow => {
+                    self.top_popover.hide();
+                    launch_app_path("ms-settings:powersleep");
+                    return MacDockAction::None;
+                }
+                TopBarPopoverHit::OpenQuickSettings => {
+                    self.top_popover.hide();
+                    send_win_chord(0x41);
+                    return MacDockAction::None;
+                }
+                TopBarPopoverHit::OpenNotifications => {
+                    self.top_popover.hide();
+                    send_win_chord(0x4E);
+                    return MacDockAction::None;
+                }
+            }
+        }
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            let clicked = self.panes[pi].hit_top_bar_item(lx, ly);
+            let pressed = self.panes[pi].top_pressed.take();
+            self.panes[pi].top_dirty = true;
+            let mut pane = self.panes.remove(pi);
+            self.render_top_bar_pane(&mut pane, cfg);
+            let mon_rc = pane.mon_rect;
+            let top_rc = pane.top_win_rect;
+            let bar_loc = pane.top_bar_local;
+            let slot_rect_opt = clicked.and_then(|it| {
+                pane.top_slots.iter().find(|s| s.item == it).map(|s| s.rect)
+            });
+            self.panes.insert(pi, pane);
+
+            let Some(item) = clicked else {
+                return MacDockAction::None;
+            };
+            if pressed.is_some() && pressed != Some(item) {
+                return MacDockAction::None;
+            }
+            match item {
+                CleanTopBarItem::StartLogo => {
+                    send_win_chord(0);
+                    return MacDockAction::None;
+                }
+                CleanTopBarItem::ActiveApp => {
+                    // Focus / switch overview or open menu
+                    send_win_chord(0x09); // Win+Tab
+                    return MacDockAction::None;
+                }
+                CleanTopBarItem::MenuFiles => {
+                    launch_app_path("explorer.exe");
+                    return MacDockAction::None;
+                }
+                CleanTopBarItem::MenuWindows => {
+                    send_win_chord(0x09); // Win+Tab Task View
+                    return MacDockAction::None;
+                }
+                CleanTopBarItem::MenuStudio => {
+                    return MacDockAction::OpenSettingsDock;
+                }
+                CleanTopBarItem::MenuDock => {
+                    self.active_menu_target = (hwnd, mon_rc);
+                    let at_bot = cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom;
+                    let anchor_x = slot_rect_opt
+                        .map(|r| top_rc.left + ((r.left + r.right) * 0.5).round() as i32)
+                        .unwrap_or(top_rc.left + lx.round() as i32);
+                    let anchor_y = if at_bot {
+                        top_rc.top + bar_loc.top.round() as i32 - 4
+                    } else {
+                        top_rc.top + bar_loc.bottom.round() as i32 + 4
+                    };
+                    return self.show_empty_dock_menu(POINT { x: anchor_x, y: anchor_y }, cfg);
+                }
+                CleanTopBarItem::HiddenTray => {
+                    let anchor_rc = slot_rect_opt
+                        .map(|r| RECT {
+                            left: top_rc.left + r.left.round() as i32,
+                            top: top_rc.top + r.top.round() as i32,
+                            right: top_rc.left + r.right.round() as i32,
+                            bottom: top_rc.top + r.bottom.round() as i32,
+                        })
+                        .unwrap_or(RECT {
+                            left: top_rc.left + lx.round() as i32 - 12,
+                            top: top_rc.top + bar_loc.top.round() as i32,
+                            right: top_rc.left + lx.round() as i32 + 12,
+                            bottom: top_rc.top + bar_loc.bottom.round() as i32,
+                        });
+                    let edge_for_popup = if cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom {
+                        MacDockEdge::Bottom
+                    } else {
+                        MacDockEdge::Top
+                    };
+                    toggle_hidden_tray_overflow(hwnd, anchor_rc, edge_for_popup);
+                    return MacDockAction::None;
+                }
+                CleanTopBarItem::Volume
+                | CleanTopBarItem::Wifi
+                | CleanTopBarItem::Battery
+                | CleanTopBarItem::ControlCenter => {
+                    let anchor_x = slot_rect_opt
+                        .map(|r| top_rc.left + ((r.left + r.right) * 0.5).round() as i32)
+                        .unwrap_or(top_rc.left + lx.round() as i32);
+                    let bar_screen = RECT {
+                        left: top_rc.left + bar_loc.left.round() as i32,
+                        top: top_rc.top + bar_loc.top.round() as i32,
+                        right: top_rc.left + bar_loc.right.round() as i32,
+                        bottom: top_rc.top + bar_loc.bottom.round() as i32,
+                    };
+                    self.open_or_toggle_top_popover(
+                        TopBarPopoverKind::ControlCenter,
+                        anchor_x,
+                        bar_screen,
+                        mon_rc,
+                        self.panes[pi].dpi_u,
+                        cfg,
+                    );
+                    return MacDockAction::None;
+                }
+                CleanTopBarItem::Search => {
+                    self.top_popover.hide();
+                    send_win_chord(0x53); // Win+S Spotlight / Windows Search
+                    return MacDockAction::None;
+                }
+                CleanTopBarItem::Clock => {
+                    let anchor_x = slot_rect_opt
+                        .map(|r| top_rc.left + ((r.left + r.right) * 0.5).round() as i32)
+                        .unwrap_or(top_rc.left + lx.round() as i32);
+                    let bar_screen = RECT {
+                        left: top_rc.left + bar_loc.left.round() as i32,
+                        top: top_rc.top + bar_loc.top.round() as i32,
+                        right: top_rc.left + bar_loc.right.round() as i32,
+                        bottom: top_rc.top + bar_loc.bottom.round() as i32,
+                    };
+                    self.open_or_toggle_top_popover(
+                        TopBarPopoverKind::ClockCalendar,
+                        anchor_x,
+                        bar_screen,
+                        mon_rc,
+                        self.panes[pi].dpi_u,
+                        cfg,
+                    );
+                    return MacDockAction::None;
+                }
+            }
+        }
         let Some(pi) = self.pane_idx_for_hwnd(hwnd) else {
             return MacDockAction::None;
         };
         let clicked = self.panes[pi].hit_slot_at_client(lx, ly);
         let pressed = self.panes[pi].pressed_idx.take();
         self.panes[pi].dirty_paint = true;
-        let Some(idx) = clicked else {
+        // If dock magnification shifted slots by a few pixels between mouse-down and mouse-up,
+        // fall back cleanly to `pressed` so fast clicks on dock icons are never dropped.
+        let Some(idx) = clicked.or(pressed) else {
             return MacDockAction::None;
         };
-        if pressed.is_some() && pressed != Some(idx) {
-            return MacDockAction::None;
-        }
         let Some(slot) = self.slots.get(idx).cloned() else {
             return MacDockAction::None;
         };
@@ -4641,6 +5553,15 @@ impl MacDockEngine {
                 for w in &windows {
                     self.flashing_hwnds.remove(&(w.hwnd.0 as isize));
                 }
+                if self.last_app_click.len() > 64 {
+                    self.last_app_click.clear();
+                }
+                let within_dblclk = self
+                    .last_app_click
+                    .get(&id_key)
+                    .map(|t| t.elapsed() < Duration::from_millis(650))
+                    .unwrap_or(false);
+                self.last_app_click.insert(id_key.clone(), Instant::now());
                 let target = if !path.is_empty() {
                     path.clone()
                 } else {
@@ -4655,15 +5576,18 @@ impl MacDockEngine {
                         .insert(id_key, Instant::now() + Duration::from_millis(180));
                     launch_app_path(&target);
                 } else if windows.is_empty() {
-                    if cfg.mac_dock_bounce {
-                        self.bounce_until
-                            .insert(id_key, Instant::now() + Duration::from_millis(2400));
+                    if !within_dblclk {
+                        if cfg.mac_dock_bounce {
+                            self.bounce_until
+                                .insert(id_key, Instant::now() + Duration::from_millis(2400));
+                        }
+                        launch_app_path(&path);
                     }
-                    launch_app_path(&path);
                 } else if windows.len() >= 2 {
-                    if self.thumb_popup.visible
-                        && self.thumb_owner_hwnd == hwnd
-                        && self.thumb_popup.slot_key == id_key
+                    if within_dblclk
+                        || (self.thumb_popup.visible
+                            && self.thumb_owner_hwnd == hwnd
+                            && self.thumb_popup.slot_key == id_key)
                     {
                         self.thumb_popup.hide();
                         self.thumb_owner_hwnd = HWND::default();
@@ -4700,6 +5624,15 @@ impl MacDockEngine {
                 for w in &windows {
                     self.flashing_hwnds.remove(&(w.hwnd.0 as isize));
                 }
+                if self.last_app_click.len() > 64 {
+                    self.last_app_click.clear();
+                }
+                let within_dblclk = self
+                    .last_app_click
+                    .get(&id_key)
+                    .map(|t| t.elapsed() < Duration::from_millis(650))
+                    .unwrap_or(false);
+                self.last_app_click.insert(id_key.clone(), Instant::now());
                 let target = running_launch_target(&exe_path, &windows);
                 if ctrl_held && shift_held && !target.is_empty() {
                     unsafe { run_as_admin(&target); }
@@ -4708,9 +5641,10 @@ impl MacDockEngine {
                         .insert(id_key, Instant::now() + Duration::from_millis(180));
                     launch_app_path(&target);
                 } else if windows.len() >= 2 {
-                    if self.thumb_popup.visible
-                        && self.thumb_owner_hwnd == hwnd
-                        && self.thumb_popup.slot_key == id_key
+                    if within_dblclk
+                        || (self.thumb_popup.visible
+                            && self.thumb_owner_hwnd == hwnd
+                            && self.thumb_popup.slot_key == id_key)
                     {
                         self.thumb_popup.hide();
                         self.thumb_owner_hwnd = HWND::default();
@@ -4763,9 +5697,7 @@ impl MacDockEngine {
             DockSlotKind::PinnedApp { path, windows, .. } => {
                 if cfg.w_apps.middle_click_action == 1 && !windows.is_empty() {
                     if let Some(w) = windows.first() {
-                        unsafe {
-                            let _ = PostMessageW(Some(w.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                        }
+                        let _ = close_window_gracefully(w.hwnd);
                         self.dirty_windows = true;
                         self.mark_dirty_paint();
                     }
@@ -4797,9 +5729,7 @@ impl MacDockEngine {
             DockSlotKind::RunningApp { exe_path, windows, .. } => {
                 if cfg.w_apps.middle_click_action == 1 && !windows.is_empty() {
                     if let Some(w) = windows.first() {
-                        unsafe {
-                            let _ = PostMessageW(Some(w.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                        }
+                        let _ = close_window_gracefully(w.hwnd);
                         self.dirty_windows = true;
                         self.mark_dirty_paint();
                     }
@@ -4850,6 +5780,44 @@ impl MacDockEngine {
         sy: i32,
         cfg: &mut AppConfig,
     ) -> MacDockAction {
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            if !self.panes[pi].top_shown {
+                return MacDockAction::None;
+            }
+            let now = Instant::now();
+            let stale = self
+                .wheel_last_at
+                .map(|t| now.duration_since(t) > Duration::from_millis(450))
+                .unwrap_or(true);
+            let d = delta as i32;
+            if stale || (self.wheel_accum != 0 && self.wheel_accum.signum() != d.signum()) {
+                self.wheel_accum = 0;
+            }
+            self.wheel_last_at = Some(now);
+            self.wheel_accum = (self.wheel_accum + d).clamp(-360, 360);
+            if self.wheel_accum.abs() < 120 {
+                return MacDockAction::None;
+            }
+            let notches = (self.wheel_accum / 120).clamp(-2, 2);
+            self.wheel_accum %= 120;
+            let unit = cfg.w_tray.wheel_step_pct.clamp(1, 10) as i32;
+            let prev_v = self.tray_vol_pct;
+            let prev_m = self.tray_vol_muted;
+            let next_v = (self.tray_vol_pct as i32 + notches * unit).clamp(0, 100) as u8;
+            self.tray_vol_pct = next_v;
+            if next_v > 0 {
+                self.tray_vol_muted = false;
+            }
+            self.tray_anim.on_volume_change(
+                prev_v,
+                next_v,
+                prev_m,
+                self.tray_vol_muted,
+                cfg.w_tray.show_osd_on_scroll,
+            );
+            self.mark_dirty_paint();
+            return MacDockAction::TraySetVolume(next_v);
+        }
         let Some(pi) = self.pane_idx_for_hwnd(hwnd) else {
             return MacDockAction::None;
         };
@@ -4948,6 +5916,26 @@ impl MacDockEngine {
     }
 
     pub fn handle_rbutton_up(&mut self, hwnd: HWND, lx: f32, ly: f32, cfg: &mut AppConfig) -> MacDockAction {
+        if let Some(pi) = self.pane_idx_for_top_hwnd(hwnd) {
+            let mon_rc = self.panes[pi].mon_rect;
+            let top_rc = self.panes[pi].top_win_rect;
+            let bar_loc = self.panes[pi].top_bar_local;
+            let hit_item = self.panes[pi].hit_top_bar_item(lx, ly);
+            self.active_menu_target = (hwnd, mon_rc);
+            let at_bot = cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom;
+            let popup_pt = POINT {
+                x: top_rc.left + lx.round() as i32,
+                y: if at_bot {
+                    top_rc.top + bar_loc.top.round() as i32 - 4
+                } else {
+                    top_rc.top + bar_loc.bottom.round() as i32 + 4
+                },
+            };
+            if hit_item == Some(CleanTopBarItem::StartLogo) {
+                return self.show_start_winx_menu(popup_pt, cfg);
+            }
+            return self.show_empty_dock_menu(popup_pt, cfg);
+        }
         let Some(pi) = self.pane_idx_for_hwnd(hwnd) else {
             return MacDockAction::None;
         };
@@ -5150,6 +6138,57 @@ impl MacDockEngine {
                 add_menu_item(hmenu, IDM_DOCK_EXPLORER, "File Explorer");
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
+                if cfg.tb_theme.is_clean_minimal() {
+                    add_checked_item(
+                        hmenu,
+                        IDM_CLEAN_TOPBAR_TOGGLE,
+                        "Top Menu Bar (Clean & Minimal)",
+                        cfg.clean_top_bar_enabled,
+                    );
+                    add_checked_item(
+                        hmenu,
+                        IDM_CLEAN_TOPBAR_DESK_ONLY,
+                        "Top Bar: Desktop Only (Hide in Apps)",
+                        cfg.clean_top_bar_desktop_only,
+                    );
+                    if let Ok(tb_sub) = CreatePopupMenu() {
+                        add_checked_item(
+                            tb_sub,
+                            IDM_CLEAN_TOPBAR_TOP,
+                            "Position: Top of Screen (Up)",
+                            cfg.clean_top_bar_edge == CleanTopBarEdge::Top,
+                        );
+                        add_checked_item(
+                            tb_sub,
+                            IDM_CLEAN_TOPBAR_BOT,
+                            "Position: Bottom of Screen (Down)",
+                            cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom,
+                        );
+                        let _ = AppendMenuW(tb_sub, MF_SEPARATOR, 0, PCWSTR::null());
+                        add_checked_item(
+                            tb_sub,
+                            IDM_CLEAN_TOPBAR_AUTO,
+                            "Style: Auto (Match Theme)",
+                            cfg.clean_top_bar_style == CleanTopBarStyle::Auto,
+                        );
+                        add_checked_item(
+                            tb_sub,
+                            IDM_CLEAN_TOPBAR_FULL,
+                            "Style: Full-Width macOS Bar",
+                            cfg.clean_top_bar_style == CleanTopBarStyle::FullWidth,
+                        );
+                        add_checked_item(
+                            tb_sub,
+                            IDM_CLEAN_TOPBAR_FLOAT,
+                            "Style: Floating Glass Pill",
+                            cfg.clean_top_bar_style == CleanTopBarStyle::Floating,
+                        );
+                        let lbl = to_wide("Menu Bar Position & Style");
+                        let _ = AppendMenuW(hmenu, MF_POPUP, tb_sub.0 as usize, PCWSTR(lbl.as_ptr()));
+                    }
+                    let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                }
+
                 if let Ok(edge_sub) = CreatePopupMenu() {
                     add_checked_item(edge_sub, IDM_DOCK_EDGE_BOTTOM, "Bottom Edge", cfg.mac_dock_edge == MacDockEdge::Bottom);
                     add_checked_item(edge_sub, IDM_DOCK_EDGE_TOP, "Top Edge", cfg.mac_dock_edge == MacDockEdge::Top);
@@ -5187,23 +6226,63 @@ impl MacDockEngine {
                     IDM_DOCK_TASKMGR => { keep_focus = true; launch_app_path("taskmgr.exe"); }
                     IDM_DOCK_SHOW_DESKTOP => { keep_focus = true; send_win_chord(0x44); }
                     IDM_DOCK_EXPLORER => { keep_focus = true; launch_app_path("explorer.exe"); }
+                    IDM_CLEAN_TOPBAR_TOGGLE => {
+                        cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
+                        if cfg.clean_top_bar_enabled {
+                            cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
+                        }
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
+                    IDM_CLEAN_TOPBAR_TOP => {
+                        cfg.clean_top_bar_enabled = true;
+                        cfg.set_clean_top_bar_edge(CleanTopBarEdge::Top);
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
+                    IDM_CLEAN_TOPBAR_BOT => {
+                        cfg.clean_top_bar_enabled = true;
+                        cfg.set_clean_top_bar_edge(CleanTopBarEdge::Bottom);
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
+                    IDM_CLEAN_TOPBAR_AUTO => {
+                        cfg.clean_top_bar_style = CleanTopBarStyle::Auto;
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
+                    IDM_CLEAN_TOPBAR_FULL => {
+                        cfg.clean_top_bar_style = CleanTopBarStyle::FullWidth;
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
+                    IDM_CLEAN_TOPBAR_FLOAT => {
+                        cfg.clean_top_bar_style = CleanTopBarStyle::Floating;
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
+                    IDM_CLEAN_TOPBAR_DESK_ONLY => {
+                        cfg.clean_top_bar_desktop_only = !cfg.clean_top_bar_desktop_only;
+                        save_config(cfg);
+                        action = MacDockAction::ConfigUpdated;
+                    }
                     IDM_DOCK_EDGE_BOTTOM => {
-                        cfg.mac_dock_edge = MacDockEdge::Bottom;
+                        cfg.set_mac_dock_edge_smart(MacDockEdge::Bottom);
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
                     IDM_DOCK_EDGE_TOP => {
-                        cfg.mac_dock_edge = MacDockEdge::Top;
+                        cfg.set_mac_dock_edge_smart(MacDockEdge::Top);
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
                     IDM_DOCK_EDGE_LEFT => {
-                        cfg.mac_dock_edge = MacDockEdge::Left;
+                        cfg.set_mac_dock_edge_smart(MacDockEdge::Left);
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
                     IDM_DOCK_EDGE_RIGHT => {
-                        cfg.mac_dock_edge = MacDockEdge::Right;
+                        cfg.set_mac_dock_edge_smart(MacDockEdge::Right);
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
@@ -5649,7 +6728,7 @@ impl MacDockEngine {
                         }
                         IDM_DOCK_CLOSE_WIN => {
                             for w in windows {
-                                let _ = PostMessageW(Some(w.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                                let _ = close_window_gracefully(w.hwnd);
                             }
                         }
                         IDM_DOCK_RUN_ADMIN => {
@@ -6018,6 +7097,709 @@ impl MacDockEngine {
         bmp
     }
 
+    fn ensure_pane_backdrop(&mut self, pane: &mut DockMonitorPane, cfg: &AppConfig) {
+        if !cfg.tb_theme.is_clean_minimal() {
+            return;
+        }
+        let Some(ref rt) = self.dc_rt else {
+            return;
+        };
+        let mon_w = (pane.mon_rect.right - pane.mon_rect.left).max(64) as u32;
+        let mon_h = (pane.mon_rect.bottom - pane.mon_rect.top).max(64) as u32;
+        let bw = (mon_w / 3).clamp(320, 640);
+        let bh = (mon_h / 3).clamp(180, 360);
+        let now = Instant::now();
+        let need_check = pane.backdrop_size != (bw, bh)
+            || pane
+                .backdrop_checked_at
+                .map(|t| now.duration_since(t) >= Duration::from_secs(4))
+                .unwrap_or(true);
+        if !need_check {
+            return;
+        }
+        pane.backdrop_checked_at = Some(now);
+        let Some((key, mtime)) = crate::theme::active_wallpaper_image_key_and_mtime(cfg) else {
+            return;
+        };
+        if pane.backdrop_key == key
+            && pane.backdrop_mtime == mtime
+            && pane.backdrop_size == (bw, bh)
+        {
+            return;
+        }
+        // Cache key unconditionally so an undecodable/video wallpaper never loops on the UI thread
+        pane.backdrop_key = key.clone();
+        pane.backdrop_mtime = mtime;
+        pane.backdrop_size = (bw, bh);
+        if let Some(bgra) = crate::theme::decode_blurred_wallpaper_bgra(&key, bw, bh, 8) {
+            let props = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
+            let bmp = unsafe {
+                rt.CreateBitmap(
+                    D2D_SIZE_U {
+                        width: bw,
+                        height: bh,
+                    },
+                    Some(bgra.as_ptr() as *const c_void),
+                    bw * 4,
+                    &props,
+                )
+                .ok()
+            };
+            if bmp.is_some() {
+                pane.backdrop_bmp = bmp;
+            }
+        }
+    }
+
+    /// Returns `true` when the Clean & Minimal Top Menu Bar should temporarily hide on `pane`:
+    /// - Always hides on fullscreen games/videos
+    /// - When `clean_top_bar_desktop_only` is ON: hides whenever any normal app window is focused on this monitor
+    /// - When `clean_top_bar_desktop_only` is OFF: smartly dodges whenever an active floating (non-maximized)
+    ///   app window's title bar is parked inside the Top Bar strip so you can always grab & move it!
+    fn should_hide_top_bar_for_apps(
+        &self,
+        pane: &DockMonitorPane,
+        cfg: &AppConfig,
+        bar_h_px: i32,
+        pt: POINT,
+        got_cursor: bool,
+    ) -> bool {
+        if cfg.game_mode_pause && is_fullscreen_game_on_monitor(pane.mon_rect) {
+            return true;
+        }
+        if self.menu_open || self.top_popover.visible {
+            return false;
+        }
+        let fg = unsafe { GetForegroundWindow() };
+        if fg.0.is_null() || unsafe { !IsWindowVisible(fg).as_bool() || IsIconic(fg).as_bool() } {
+            return false;
+        }
+        let mut fg_pid = 0u32;
+        unsafe {
+            let _ = GetWindowThreadProcessId(fg, Some(&mut fg_pid));
+        }
+        if fg_pid == unsafe { GetCurrentProcessId() } {
+            // Keep bar visible while interacting with AutumnDeck Studio / Dock / Top Bar itself
+            return false;
+        }
+        let mut cls_buf = [0u16; 64];
+        let clen = unsafe { GetClassNameW(fg, &mut cls_buf) }.max(0) as usize;
+        let cls = String::from_utf16_lossy(&cls_buf[..clen]);
+        if matches!(
+            cls.as_str(),
+            "Progman"
+                | "WorkerW"
+                | "Shell_TrayWnd"
+                | "Shell_SecondaryTrayWnd"
+                | "NotifyIconOverflowWindow"
+                | "TopLevelWindowForOverflowXamlIsland"
+        ) {
+            return false;
+        }
+        let mut vis_rc = RECT::default();
+        let got_vis = unsafe {
+            DwmGetWindowAttribute(
+                fg,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                (&mut vis_rc as *mut RECT) as *mut _,
+                size_of::<RECT>() as u32,
+            )
+            .is_ok()
+        };
+        if !got_vis && unsafe { GetWindowRect(fg, &mut vis_rc).is_err() } {
+            return false;
+        }
+        let mon = pane.mon_rect;
+        let overlap_w = vis_rc.right.min(mon.right) - vis_rc.left.max(mon.left);
+        let overlap_h = vis_rc.bottom.min(mon.bottom) - vis_rc.top.max(mon.top);
+        if overlap_w < 80 || overlap_h < 60 {
+            return false;
+        }
+        if cfg.clean_top_bar_desktop_only {
+            return true;
+        }
+        // Smart Titlebar Dodge: if ANY active window's actual visible frame (floating OR a
+        // maximized UWP/borderless app such as Windows Settings that snaps to y=0) intrudes
+        // behind the Top Bar strip, step the bar aside automatically so its title bar, search
+        // bar, and close/maximize buttons are NEVER trapped! Apps that respect the reserved
+        // work area (vis_rc.top >= mon.top + bar_h_px - 4) keep the Top Bar visible above them.
+        let at_bot = cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom;
+        let traps_titlebar = if at_bot {
+            vis_rc.bottom > mon.bottom - bar_h_px + 4 && vis_rc.bottom <= mon.bottom + 16
+        } else {
+            vis_rc.top >= mon.top - 16 && vis_rc.top < mon.top + bar_h_px - 4
+        };
+        if traps_titlebar {
+            let cursor_in_bar = got_cursor
+                && pane.top_shown
+                && pt.x >= pane.top_win_rect.left
+                && pt.x <= pane.top_win_rect.right
+                && pt.y >= pane.top_win_rect.top
+                && pt.y <= pane.top_win_rect.bottom
+                && pane.top_hovered.is_some();
+            if !cursor_in_bar {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn top_bar_app_name(&self) -> String {
+        let raw = self.fg_full_title.trim();
+        let base = raw.split(" - ").next().unwrap_or(raw).trim();
+        if base.is_empty() {
+            "Desktop".to_string()
+        } else {
+            truncate_title(base, 20)
+        }
+    }
+
+    fn tick_top_bar_pane(
+        &mut self,
+        pane: &mut DockMonitorPane,
+        cfg: &AppConfig,
+        pt: POINT,
+        got_cursor: bool,
+    ) {
+        let u = pane.dpi_u;
+        let floating = cfg.resolved_clean_top_bar_floating();
+        let bar_reserve_px = if floating {
+            (36.0 * u).round() as i32
+        } else {
+            (30.0 * u).round() as i32
+        };
+        if !cfg.is_clean_top_bar_active()
+            || self.should_hide_top_bar_for_apps(pane, cfg, bar_reserve_px, pt, got_cursor)
+        {
+            pane.hide_top_bar();
+            return;
+        }
+        if !pane.ensure_top_window(self.hinst) {
+            return;
+        }
+        let at_bottom = cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom;
+        let mon_w = (pane.mon_rect.right - pane.mon_rect.left).max(320);
+        let bar_h = (30.0 * u).round();
+        let ch = if floating {
+            (46.0 * u).round() as i32
+        } else {
+            (36.0 * u).round() as i32
+        };
+        let win_rect = if at_bottom {
+            RECT {
+                left: pane.mon_rect.left,
+                top: pane.mon_rect.bottom - ch,
+                right: pane.mon_rect.right,
+                bottom: pane.mon_rect.bottom,
+            }
+        } else {
+            RECT {
+                left: pane.mon_rect.left,
+                top: pane.mon_rect.top,
+                right: pane.mon_rect.right,
+                bottom: pane.mon_rect.top + ch,
+            }
+        };
+        let bar_local = if floating {
+            let pad_x = (10.0 * u).round();
+            let edge_gap = (5.0 * u).round();
+            let top_y = if at_bottom {
+                (ch as f32 - edge_gap - bar_h).max(2.0 * u)
+            } else {
+                edge_gap
+            };
+            D2D_RECT_F {
+                left: pad_x,
+                top: top_y,
+                right: (mon_w as f32 - pad_x).max(pad_x + 200.0 * u),
+                bottom: top_y + bar_h,
+            }
+        } else {
+            let top_y = if at_bottom { (ch as f32 - bar_h).max(0.0) } else { 0.0 };
+            D2D_RECT_F {
+                left: 0.0,
+                top: top_y,
+                right: mon_w as f32,
+                bottom: top_y + bar_h,
+            }
+        };
+
+        let clock_label = format_top_bar_clock(cfg);
+        let fg_app = self.top_bar_app_name();
+        let net_is_wifi = !self.tray_wifi_name.eq_ignore_ascii_case("ethernet");
+        let info_for_layout = CleanTopBarRenderInfo {
+            fg_app_name: &fg_app,
+            clock_label: &clock_label,
+            vol_pct: self.tray_vol_pct,
+            vol_muted: self.tray_vol_muted,
+            net_connected: self.tray_wifi_on,
+            net_wifi: net_is_wifi,
+            net_strength: self.tray_wifi_signal,
+            bat_pct: self.tray_bat_pct,
+            bat_charging: self.tray_bat_charging,
+            bat_saver: self.tray_bat_saver,
+            hovered: pane.top_hovered,
+            pressed: pane.top_pressed,
+            floating,
+            at_bottom,
+        };
+        let slots = layout_clean_top_bar(bar_local, &info_for_layout, u);
+
+        // Update hover state when cursor is over this monitor's Top Bar
+        let next_hov = if got_cursor
+            && pt.x >= win_rect.left
+            && pt.x <= win_rect.right
+            && pt.y >= win_rect.top
+            && pt.y <= win_rect.bottom
+        {
+            let lx = (pt.x - win_rect.left) as f32;
+            let ly = (pt.y - win_rect.top) as f32;
+            slots
+                .iter()
+                .find(|s| {
+                    lx >= s.rect.left
+                        && lx <= s.rect.right
+                        && ly >= s.rect.top
+                        && ly <= s.rect.bottom
+                })
+                .map(|s| s.item)
+        } else {
+            None
+        };
+
+        // Compact state hash so idle Top Bar performs 0 redraws (0% CPU)
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (cfg.tb_theme as u32).hash(&mut h);
+        cfg.clean_top_bar_edge.as_str().hash(&mut h);
+        cfg.clean_top_bar_style.as_str().hash(&mut h);
+        cfg.clean_top_bar_desktop_only.hash(&mut h);
+        cfg.tb_match_wallpaper.hash(&mut h);
+        clock_label.hash(&mut h);
+        fg_app.hash(&mut h);
+        self.tray_vol_pct.hash(&mut h);
+        self.tray_vol_muted.hash(&mut h);
+        self.tray_wifi_on.hash(&mut h);
+        self.tray_wifi_signal.hash(&mut h);
+        self.tray_bat_pct.hash(&mut h);
+        self.tray_bat_charging.hash(&mut h);
+        self.tray_bat_saver.hash(&mut h);
+        (next_hov.map(|x| x as u8)).hash(&mut h);
+        (pane.top_pressed.map(|x| x as u8)).hash(&mut h);
+        win_rect.left.hash(&mut h);
+        win_rect.top.hash(&mut h);
+        win_rect.right.hash(&mut h);
+        win_rect.bottom.hash(&mut h);
+        let sig = h.finish();
+
+        pane.top_win_rect = win_rect;
+        pane.top_bar_local = bar_local;
+        pane.top_slots = slots;
+        pane.top_hovered = next_hov;
+
+        if pane.top_dirty || !pane.top_shown || pane.top_last_sig != sig {
+            pane.top_last_sig = sig;
+            pane.top_dirty = false;
+            self.render_top_bar_pane(pane, cfg);
+        }
+    }
+
+    fn render_top_bar_pane(&mut self, pane: &mut DockMonitorPane, cfg: &AppConfig) {
+        if pane.top_hwnd.0.is_null() || !self.ensure_graphics() {
+            return;
+        }
+        let cw = (pane.top_win_rect.right - pane.top_win_rect.left).max(16);
+        let ch = (pane.top_win_rect.bottom - pane.top_win_rect.top).max(16);
+        if !pane.top_surface.ensure_size(cw, ch) {
+            return;
+        }
+        self.ensure_pane_backdrop(pane, cfg);
+
+        let u = pane.dpi_u;
+        let floating = cfg.resolved_clean_top_bar_floating();
+        let at_bottom = cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom;
+        let bar_r = pane.top_bar_local;
+        let inset = if floating { 1 } else { 0 };
+        let screen_bar = RECT {
+            left: pane.top_win_rect.left + bar_r.left.round() as i32 + inset,
+            top: pane.top_win_rect.top + bar_r.top.round() as i32 + inset,
+            right: (pane.top_win_rect.left + bar_r.right.round() as i32 - inset).max(pane.top_win_rect.left + 8),
+            bottom: (pane.top_win_rect.top + bar_r.bottom.round() as i32 - inset).max(pane.top_win_rect.top + 8),
+        };
+        let abgr = clean_acrylic_tint_abgr(cfg.tb_theme, true);
+        let live_hw_blur = pane.top_backdrop.sync_pills(
+            self.hinst,
+            &mut self.liquid_ctx,
+            pane.top_hwnd,
+            &[AcrylicPillRect {
+                screen_rect: screen_bar,
+                rounded: floating,
+            }],
+            abgr,
+            true,
+        );
+
+        let pal = effective_taskbar_palette(cfg);
+        if self.solid_brush.is_none() {
+            if let Some(ref rt) = self.dc_rt {
+                self.solid_brush =
+                    unsafe { rt.CreateSolidColorBrush(&rgba(255, 255, 255, 1.0), None).ok() };
+            }
+        }
+        let clock_label = format_top_bar_clock(cfg);
+        let fg_app = self.top_bar_app_name();
+        let net_is_wifi = !self.tray_wifi_name.eq_ignore_ascii_case("ethernet");
+        let info = CleanTopBarRenderInfo {
+            fg_app_name: &fg_app,
+            clock_label: &clock_label,
+            vol_pct: self.tray_vol_pct,
+            vol_muted: self.tray_vol_muted,
+            net_connected: self.tray_wifi_on,
+            net_wifi: net_is_wifi,
+            net_strength: self.tray_wifi_signal,
+            bat_pct: self.tray_bat_pct,
+            bat_charging: self.tray_bat_charging,
+            bat_saver: self.tray_bat_saver,
+            hovered: pane.top_hovered,
+            pressed: pane.top_pressed,
+            floating,
+            at_bottom,
+        };
+
+        let ok = unsafe {
+            self.paint_top_bar_surface(pane, cw, ch, &info, cfg, &pal, u, live_hw_blur)
+        };
+        if !ok {
+            return;
+        }
+        unsafe {
+            let dst_pt = POINT {
+                x: pane.top_win_rect.left,
+                y: pane.top_win_rect.top,
+            };
+            let size = SIZE { cx: cw, cy: ch };
+            let src_pt = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            let _ = UpdateLayeredWindow(
+                pane.top_hwnd,
+                None,
+                Some(&dst_pt),
+                Some(&size),
+                Some(pane.top_surface.mem_dc),
+                Some(&src_pt),
+                COLORREF(0),
+                Some(&blend),
+                ULW_ALPHA,
+            );
+            // CRITICAL: Only invoke SetWindowPos when newly shown or resized/moved!
+            // Avoiding SetWindowPos on normal text/hover repaints eliminates app-switch DWM stalls.
+            if !pane.top_shown || pane.top_last_win_rect != pane.top_win_rect {
+                let _ = SetWindowPos(
+                    pane.top_hwnd,
+                    Some(HWND_TOPMOST),
+                    pane.top_win_rect.left,
+                    pane.top_win_rect.top,
+                    cw,
+                    ch,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+                pane.top_shown = true;
+                pane.top_last_win_rect = pane.top_win_rect;
+                if live_hw_blur {
+                    pane.top_backdrop.ensure_behind(pane.top_hwnd);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_or_toggle_top_popover(
+        &mut self,
+        kind: TopBarPopoverKind,
+        anchor_x: i32,
+        bar_screen: RECT,
+        mon_rect: RECT,
+        u: f32,
+        cfg: &AppConfig,
+    ) {
+        if self.top_popover.visible && self.top_popover.kind == kind {
+            self.top_popover.hide();
+            return;
+        }
+        if !self.top_popover.ensure_window(self.hinst) {
+            return;
+        }
+        let (cw_dip, ch_dip, pad_dip) = top_bar_popover_dims(kind);
+        let cw = (cw_dip * u).round() as i32;
+        let ch = (ch_dip * u).round() as i32;
+        let pad_px = (pad_dip * u).round() as i32;
+        let gap = (4.0 * u).round() as i32;
+        let at_bot = cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom;
+        let left = (anchor_x - cw / 2).clamp(mon_rect.left + 4, (mon_rect.right - cw - 4).max(mon_rect.left));
+        let top = if at_bot {
+            (bar_screen.top - ch + pad_px - gap).max(mon_rect.top + 4)
+        } else {
+            (bar_screen.bottom - pad_px + gap).min((mon_rect.bottom - ch - 4).max(mon_rect.top))
+        };
+        self.top_popover.kind = kind;
+        self.top_popover.mon_rect = mon_rect;
+        self.top_popover.dpi_u = u;
+        self.top_popover.win_rect = RECT {
+            left,
+            top,
+            right: left + cw,
+            bottom: top + ch,
+        };
+        self.top_popover.layout = layout_top_bar_popover(kind, u);
+        self.top_popover.hovered = None;
+        self.top_popover.dragging_vol = false;
+        self.top_popover.opened_at = Instant::now();
+        self.top_popover.visible = true;
+        self.render_top_popover(cfg);
+        unsafe {
+            let _ = SetWindowPos(
+                self.top_popover.hwnd,
+                Some(HWND_TOPMOST),
+                left,
+                top,
+                cw,
+                ch,
+                SWP_SHOWWINDOW,
+            );
+            let _ = SetForegroundWindow(self.top_popover.hwnd);
+            self.top_popover.backdrop.ensure_behind(self.top_popover.hwnd);
+        }
+    }
+
+    fn render_top_popover(&mut self, cfg: &AppConfig) {
+        if !self.top_popover.visible || self.top_popover.hwnd.0.is_null() || !self.ensure_graphics() {
+            return;
+        }
+        let cw = (self.top_popover.win_rect.right - self.top_popover.win_rect.left).max(16);
+        let ch = (self.top_popover.win_rect.bottom - self.top_popover.win_rect.top).max(16);
+        if !self.top_popover.surface.ensure_size(cw, ch) {
+            return;
+        }
+        let u = self.top_popover.dpi_u;
+        let pr = self.top_popover.layout.panel_r;
+        let screen_panel = RECT {
+            left: self.top_popover.win_rect.left + pr.left.round() as i32 + 2,
+            top: self.top_popover.win_rect.top + pr.top.round() as i32 + 2,
+            right: (self.top_popover.win_rect.left + pr.right.round() as i32 - 2).max(self.top_popover.win_rect.left + 8),
+            bottom: (self.top_popover.win_rect.top + pr.bottom.round() as i32 - 2).max(self.top_popover.win_rect.top + 8),
+        };
+        let abgr = clean_acrylic_tint_abgr(cfg.tb_theme, true);
+        let live_hw = self.top_popover.backdrop.sync_pills(
+            self.hinst,
+            &mut self.liquid_ctx,
+            self.top_popover.hwnd,
+            &[AcrylicPillRect {
+                screen_rect: screen_panel,
+                rounded: true,
+            }],
+            abgr,
+            true,
+        );
+
+        let st: SYSTEMTIME = unsafe { GetLocalTime() };
+        let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        let months = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        ];
+        let time_big = if cfg.widgets_24h {
+            format!("{:02}:{:02}", st.wHour, st.wMinute)
+        } else {
+            let pm = st.wHour >= 12;
+            let h12 = match st.wHour % 12 { 0 => 12, h => h };
+            format!("{}:{:02} {}", h12, st.wMinute, if pm { "PM" } else { "AM" })
+        };
+        let date_full = format!(
+            "{}, {} {}, {}",
+            days[(st.wDayOfWeek as usize).min(6)],
+            months[st.wMonth.saturating_sub(1).min(11) as usize],
+            st.wDay,
+            st.wYear
+        );
+        let info = TopBarPopoverInfo {
+            kind: self.top_popover.kind,
+            wifi_on: self.tray_wifi_on,
+            wifi_name: &self.tray_wifi_name,
+            wifi_signal: self.tray_wifi_signal,
+            vol_pct: self.tray_vol_pct,
+            vol_muted: self.tray_vol_muted,
+            bat_pct: self.tray_bat_pct,
+            bat_charging: self.tray_bat_charging,
+            desktop_only: cfg.clean_top_bar_desktop_only,
+            bar_at_bottom: cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom,
+            time_big: &time_big,
+            date_full: &date_full,
+            year: st.wYear as i32,
+            month: st.wMonth as u32,
+            today: st.wDay as u32,
+            hovered: self.top_popover.hovered,
+        };
+
+        if self.solid_brush.is_none() {
+            if let Some(ref rt) = self.dc_rt {
+                self.solid_brush =
+                    unsafe { rt.CreateSolidColorBrush(&rgba(255, 255, 255, 1.0), None).ok() };
+            }
+        }
+        let Some(ref rt) = self.dc_rt else {
+            return;
+        };
+        let rc = RECT { left: 0, top: 0, right: cw, bottom: ch };
+        unsafe {
+            if rt.BindDC(self.top_popover.surface.mem_dc, &rc).is_err() {
+                return;
+            }
+            rt.BeginDraw();
+            rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            let fallback_ctx = self.panes.iter().find(|p| p.mon_rect == self.top_popover.mon_rect).and_then(|p| {
+                p.backdrop_bmp.as_ref().map(|bmp| DockBackdropCtx {
+                    bmp: bmp.clone(),
+                    bmp_w: p.backdrop_size.0.max(1) as f32,
+                    bmp_h: p.backdrop_size.1.max(1) as f32,
+                    mon_left: p.mon_rect.left as f32,
+                    mon_top: p.mon_rect.top as f32,
+                    mon_w: (p.mon_rect.right - p.mon_rect.left).max(1) as f32,
+                    mon_h: (p.mon_rect.bottom - p.mon_rect.top).max(1) as f32,
+                    canvas_left: self.top_popover.win_rect.left as f32,
+                    canvas_top: self.top_popover.win_rect.top as f32,
+                })
+            });
+            let _guard = bind_active_dock_backdrop_ex(fallback_ctx, live_hw);
+            if let (Some(br), Some(tf_b), Some(tf_r), Some(tf_l)) = (
+                self.solid_brush.clone(),
+                self.tf_top_bold.as_ref().or(self.tf_tip.as_ref()),
+                self.tf_top_reg.as_ref().or(self.tf_tip.as_ref()),
+                self.tf_left.as_ref().or(self.tf_tip.as_ref()),
+            ) {
+                draw_top_bar_popover(
+                    rt,
+                    self.d2d.as_ref(),
+                    &br,
+                    tf_b,
+                    tf_r,
+                    tf_l,
+                    &self.top_popover.layout,
+                    &info,
+                    cfg,
+                    u,
+                );
+            }
+            if rt.EndDraw(None, None).is_err() {
+                return;
+            }
+            let dst_pt = POINT { x: self.top_popover.win_rect.left, y: self.top_popover.win_rect.top };
+            let size = SIZE { cx: cw, cy: ch };
+            let src_pt = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            let _ = UpdateLayeredWindow(
+                self.top_popover.hwnd,
+                None,
+                Some(&dst_pt),
+                Some(&size),
+                Some(self.top_popover.surface.mem_dc),
+                Some(&src_pt),
+                COLORREF(0),
+                Some(&blend),
+                ULW_ALPHA,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn paint_top_bar_surface(
+        &self,
+        pane: &DockMonitorPane,
+        cw: i32,
+        ch: i32,
+        info: &CleanTopBarRenderInfo<'_>,
+        cfg: &AppConfig,
+        pal: &ThemePalette,
+        u: f32,
+        live_hw_blur: bool,
+    ) -> bool {
+        let Some(ref rt) = self.dc_rt else {
+            return false;
+        };
+        let rc = RECT {
+            left: 0,
+            top: 0,
+            right: cw,
+            bottom: ch,
+        };
+        if rt.BindDC(pane.top_surface.mem_dc, &rc).is_err() {
+            return false;
+        }
+        rt.BeginDraw();
+        rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        rt.Clear(Some(&D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        }));
+
+        let backdrop_ctx = pane.backdrop_bmp.as_ref().map(|bmp| DockBackdropCtx {
+            bmp: bmp.clone(),
+            bmp_w: pane.backdrop_size.0.max(1) as f32,
+            bmp_h: pane.backdrop_size.1.max(1) as f32,
+            mon_left: pane.mon_rect.left as f32,
+            mon_top: pane.mon_rect.top as f32,
+            mon_w: (pane.mon_rect.right - pane.mon_rect.left).max(1) as f32,
+            mon_h: (pane.mon_rect.bottom - pane.mon_rect.top).max(1) as f32,
+            canvas_left: pane.top_win_rect.left as f32,
+            canvas_top: pane.top_win_rect.top as f32,
+        });
+        let _guard = bind_active_dock_backdrop_ex(backdrop_ctx, live_hw_blur);
+
+        let br_opt = self
+            .solid_brush
+            .clone()
+            .or_else(|| rt.CreateSolidColorBrush(&rgba(255, 255, 255, 1.0), None).ok());
+        if let (Some(br), Some(tf_b), Some(tf_r)) = (
+            br_opt,
+            self.tf_top_bold.as_ref().or(self.tf_tip.as_ref()),
+            self.tf_top_reg.as_ref().or(self.tf_tip.as_ref()),
+        ) {
+            draw_clean_top_bar(
+                rt,
+                self.d2d.as_ref(),
+                &br,
+                tf_b,
+                tf_r,
+                pane.top_bar_local,
+                &pane.top_slots,
+                info,
+                cfg,
+                pal,
+                u,
+            );
+        }
+        rt.EndDraw(None, None).is_ok()
+    }
+
     fn render_pane(&mut self, pane: &mut DockMonitorPane, cfg: &AppConfig, shelf_r: D2D_RECT_F) {
         if !self.ensure_graphics() {
             return;
@@ -6028,11 +7810,31 @@ impl MacDockEngine {
             return;
         }
 
+        self.ensure_pane_backdrop(pane, cfg);
+
+        // Synchronize native Windows 11 hardware DWM Acrylic strictly bounded to the visible
+        // Clean & Minimal glass shelf/islands (100% click-through, never black, never oversized!)
+        let u = pane.dpi_u;
+        let acrylic_pills = collect_dock_acrylic_pills(pane, cfg, u);
+        let live_hw_blur = if !acrylic_pills.is_empty() && !cfg.is_dock_all_elements_off() {
+            let abgr = clean_acrylic_tint_abgr(cfg.tb_theme, false);
+            pane.liquid_backdrop.sync_pills(
+                self.hinst,
+                &mut self.liquid_ctx,
+                pane.hwnd,
+                &acrylic_pills,
+                abgr,
+                true,
+            )
+        } else {
+            pane.liquid_backdrop.hide();
+            false
+        };
+
         let bitmaps: Vec<Option<ID2D1Bitmap>> = (0..self.slots.len())
             .map(|i| self.resolve_icon_bitmap(i))
             .collect();
         let pal = effective_taskbar_palette(cfg);
-        let u = pane.dpi_u;
 
         if self.solid_brush.is_none() {
             if let Some(ref rt) = self.dc_rt {
@@ -6049,12 +7851,14 @@ impl MacDockEngine {
                 cfg,
                 &pal,
                 u,
+                live_hw_blur,
             )
         };
         if !ok {
             if let Some(ref rt) = self.dc_rt {
                 crate::realistic_pbr::evict_rt(rt);
             }
+            pane.backdrop_bmp = None;
             self.solid_brush = None;
             self.dc_rt = None;
             self.icon_cache.clear();
@@ -6097,6 +7901,9 @@ impl MacDockEngine {
                 );
                 pane.window_shown = true;
                 pane.last_win_rect = pane.canvas_rect;
+                if live_hw_blur {
+                    pane.liquid_backdrop.ensure_behind(pane.hwnd);
+                }
             } else if pane.last_win_rect != pane.canvas_rect {
                 let _ = SetWindowPos(
                     pane.hwnd,
@@ -6108,6 +7915,9 @@ impl MacDockEngine {
                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
                 );
                 pane.last_win_rect = pane.canvas_rect;
+                if live_hw_blur {
+                    pane.liquid_backdrop.ensure_behind(pane.hwnd);
+                }
             }
         }
     }
@@ -6123,6 +7933,7 @@ impl MacDockEngine {
         cfg: &AppConfig,
         pal: &ThemePalette,
         u: f32,
+        live_hw_blur: bool,
     ) -> bool {
         let Some(ref rt) = self.dc_rt else {
             return false;
@@ -6147,6 +7958,19 @@ impl MacDockEngine {
         if cfg.is_dock_all_elements_off() {
             return rt.EndDraw(None, None).is_ok();
         }
+
+        let backdrop_ctx = pane.backdrop_bmp.as_ref().map(|bmp| DockBackdropCtx {
+            bmp: bmp.clone(),
+            bmp_w: pane.backdrop_size.0.max(1) as f32,
+            bmp_h: pane.backdrop_size.1.max(1) as f32,
+            mon_left: pane.mon_rect.left as f32,
+            mon_top: pane.mon_rect.top as f32,
+            mon_w: (pane.mon_rect.right - pane.mon_rect.left).max(1) as f32,
+            mon_h: (pane.mon_rect.bottom - pane.mon_rect.top).max(1) as f32,
+            canvas_left: pane.canvas_rect.left as f32,
+            canvas_top: pane.canvas_rect.top as f32,
+        });
+        let _backdrop_guard = bind_active_dock_backdrop_ex(backdrop_ctx, live_hw_blur);
 
         let br_opt = self
             .solid_brush
@@ -6307,10 +8131,49 @@ impl MacDockEngine {
                 );
             }
 
+            // Render ONE unified photorealistic floating tray+clock capsule for barless Clean & Minimal docks
+            if let Some(u_rect) = pane.unified_tray_rect_local {
+                let any_tray_hov = pane.hovered_idx.and_then(|hi| self.slots.get(hi)).map(|s| {
+                    matches!(
+                        s,
+                        DockSlotKind::HiddenTrayChevron
+                            | DockSlotKind::TrayStatusCluster
+                            | DockSlotKind::ClockModule { .. }
+                            | DockSlotKind::TrashBin { .. }
+                            | DockSlotKind::StudioLauncher
+                    )
+                }).unwrap_or(false);
+                draw_unified_floating_tray_capsule(
+                    rt,
+                    self.d2d.as_ref(),
+                    &br,
+                    u_rect,
+                    cfg.tb_theme,
+                    any_tray_hov,
+                    u,
+                );
+            }
+
             let (util_theme, util_spec) = resolve_widget_spec(cfg, TaskbarWidgetId::Utilities);
             let (_, tray_spec) = resolve_widget_spec(cfg, TaskbarWidgetId::SystemTray);
-            let draw_util_plate = util_spec.shape != DockShelfShape::FloatingZero
+            let draw_start_plate = (util_spec.shape != DockShelfShape::FloatingZero
+                && !util_theme.is_clean_minimal())
                 || util_theme == TaskbarTheme::InvisibleGhostDock;
+            let draw_util_plate = (util_spec.shape != DockShelfShape::FloatingZero
+                && !util_theme.is_clean_minimal())
+                || util_theme == TaskbarTheme::InvisibleGhostDock;
+            let inside_pill_ind = uses_inside_tile_pill_indicator(cfg.tb_theme);
+            let clean_padded = cfg.tb_theme.uses_icon_pads();
+            let (ico_shift_x, ico_shift_y) = if inside_pill_ind {
+                match cfg.mac_dock_edge {
+                    MacDockEdge::Bottom => (0.0, -2.6 * u),
+                    MacDockEdge::Top => (0.0, 2.6 * u),
+                    MacDockEdge::Left => (2.6 * u, 0.0),
+                    MacDockEdge::Right => (-2.6 * u, 0.0),
+                }
+            } else {
+                (0.0, 0.0)
+            };
 
             // Render slots (dividers, custom containers, icons, inline labels, clock, indicator dots)
             for item in &pane.layout {
@@ -6342,6 +8205,15 @@ impl MacDockEngine {
                     bottom: item.center_y + sz * 0.5,
                 };
                 let is_hov = pane.hovered_idx == Some(item.slot_idx);
+                let in_unified_tray = pane.unified_tray_rect_local.is_some()
+                    && matches!(
+                        slot,
+                        DockSlotKind::HiddenTrayChevron
+                            | DockSlotKind::TrayStatusCluster
+                            | DockSlotKind::ClockModule { .. }
+                            | DockSlotKind::TrashBin { .. }
+                            | DockSlotKind::StudioLauncher
+                    );
                 let slot_widget_id = match slot {
                     DockSlotKind::PinnedApp { .. } | DockSlotKind::RunningApp { .. } => {
                         TaskbarWidgetId::AppDock
@@ -6354,27 +8226,52 @@ impl MacDockEngine {
                 };
                 let brand_rgb = resolve_slot_brand_rgb(slot, cfg);
 
-                draw_dock_slot_fx_styled(
-                    rt,
-                    self.d2d.as_ref(),
-                    &br,
-                    item.slot_rect,
-                    item.center_x,
-                    item.center_y,
-                    sz,
-                    shelf_r,
-                    cfg,
-                    slot_widget_id,
-                    brand_rgb,
-                    is_hov,
-                    item.is_active,
-                    item.has_windows,
-                    item.is_flashing,
-                    is_vertical,
-                    self.dock_anim_phase,
-                    item.slot_idx,
-                    u,
-                );
+                if in_unified_tray {
+                    if is_hov {
+                        let hr = D2D_RECT_F {
+                            left: item.slot_rect.left + 1.0 * u,
+                            top: item.slot_rect.top + 3.0 * u,
+                            right: item.slot_rect.right - 1.0 * u,
+                            bottom: item.slot_rect.bottom - 3.0 * u,
+                        };
+                        let h_rad = ((hr.bottom - hr.top) * 0.42).min(12.0 * u);
+                        br.SetColor(&if spec.light_mode_paper {
+                            rgba(0, 0, 0, 0.08)
+                        } else {
+                            rgba(255, 255, 255, 0.12)
+                        });
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: hr,
+                                radiusX: h_rad,
+                                radiusY: h_rad,
+                            },
+                            &br,
+                        );
+                    }
+                } else {
+                    draw_dock_slot_fx_styled(
+                        rt,
+                        self.d2d.as_ref(),
+                        &br,
+                        item.slot_rect,
+                        item.center_x,
+                        item.center_y,
+                        sz,
+                        shelf_r,
+                        cfg,
+                        slot_widget_id,
+                        brand_rgb,
+                        is_hov,
+                        item.is_active,
+                        item.has_windows,
+                        item.is_flashing,
+                        is_vertical,
+                        self.dock_anim_phase,
+                        item.slot_idx,
+                        u,
+                    );
+                }
 
                 let draw_inline_text = |text: &str, alpha: f32| {
                     if alpha > 0.04 && !text.is_empty() {
@@ -6400,14 +8297,25 @@ impl MacDockEngine {
 
                 match slot {
                     DockSlotKind::StartLauncher => {
+                        let start_dest = if clean_padded {
+                            let s_pad = sz * 0.06;
+                            D2D_RECT_F {
+                                left: dest.left + s_pad,
+                                top: dest.top + s_pad,
+                                right: dest.right - s_pad,
+                                bottom: dest.bottom - s_pad,
+                            }
+                        } else {
+                            dest
+                        };
                         draw_start_badge(
                             rt,
                             &br,
-                            dest,
+                            start_dest,
                             util_spec.dot_active,
                             util_spec.art == DockArtLayer::PhosphorCrt,
                             cfg.w_util.start_style,
-                            draw_util_plate,
+                            draw_start_plate,
                             u,
                         );
                         draw_inline_text(&item.inline_text, item.inline_alpha);
@@ -6487,11 +8395,51 @@ impl MacDockEngine {
                         }
                     }
                     DockSlotKind::TrashBin { items } => {
-                        draw_trash_badge(rt, &br, dest, *items > 0, util_spec.light_mode_paper, u);
+                        let t_dest = if in_unified_tray || clean_padded {
+                            let tp = sz * 0.14;
+                            D2D_RECT_F {
+                                left: dest.left + tp,
+                                top: dest.top + tp,
+                                right: dest.right - tp,
+                                bottom: dest.bottom - tp,
+                            }
+                        } else {
+                            dest
+                        };
+                        let trash_dark_ink = match util_theme {
+                            TaskbarTheme::OneUiLightChips => true,
+                            TaskbarTheme::OneUiDarkChips => false,
+                            _ => util_spec.light_mode_paper,
+                        };
+                        draw_trash_badge(rt, &br, t_dest, *items > 0, trash_dark_ink, u);
                         draw_inline_text(&item.inline_text, item.inline_alpha);
                     }
                     DockSlotKind::StudioLauncher => {
-                        draw_studio_badge(rt, &br, dest, pal.accent, draw_util_plate, u);
+                        let st_dest = if in_unified_tray || clean_padded {
+                            let sp = sz * 0.14;
+                            D2D_RECT_F {
+                                left: dest.left + sp,
+                                top: dest.top + sp,
+                                right: dest.right - sp,
+                                bottom: dest.bottom - sp,
+                            }
+                        } else {
+                            dest
+                        };
+                        let studio_dark_ink = match util_theme {
+                            TaskbarTheme::OneUiLightChips => true,
+                            TaskbarTheme::OneUiDarkChips => false,
+                            _ => util_spec.light_mode_paper,
+                        };
+                        draw_studio_badge(
+                            rt,
+                            &br,
+                            st_dest,
+                            pal.accent,
+                            draw_util_plate,
+                            studio_dark_ink,
+                            u,
+                        );
                         draw_inline_text(&item.inline_text, item.inline_alpha);
                     }
                     DockSlotKind::ClockModule {
@@ -6501,10 +8449,15 @@ impl MacDockEngine {
                         minute,
                         second,
                     } => {
+                        let clock_tf = if cfg.tb_theme.is_clean_minimal() {
+                            self.tf_tip.as_ref().or(self.tf_mono.as_ref())
+                        } else {
+                            self.tf_mono.as_ref()
+                        };
                         draw_dock_clock_module(
                             rt,
                             &br,
-                            self.tf_mono.as_ref(),
+                            clock_tf,
                             item.slot_rect,
                             cfg,
                             pal,
@@ -6549,14 +8502,25 @@ impl MacDockEngine {
                     }
                     DockSlotKind::PinnedApp { .. } | DockSlotKind::RunningApp { .. } => {
                         if cfg.w_apps.show_icons {
+                            let pad_i = if clean_padded {
+                                sz * 0.175
+                            } else if cfg.tb_theme.is_clean_minimal() {
+                                sz * 0.10
+                            } else {
+                                sz * 0.08
+                            };
+                            let (sx_o, sy_o) = if inside_pill_ind && item.dot_count > 0 {
+                                (ico_shift_x, ico_shift_y)
+                            } else {
+                                (0.0, 0.0)
+                            };
+                            let ico_r = D2D_RECT_F {
+                                left: dest.left + pad_i + sx_o,
+                                top: dest.top + pad_i + sy_o,
+                                right: dest.right - pad_i + sx_o,
+                                bottom: dest.bottom - pad_i + sy_o,
+                            };
                             if let Some(Some(bmp)) = bitmaps.get(item.slot_idx) {
-                                let pad_i = sz * 0.08;
-                                let ico_r = D2D_RECT_F {
-                                    left: dest.left + pad_i,
-                                    top: dest.top + pad_i,
-                                    right: dest.right - pad_i,
-                                    bottom: dest.bottom - pad_i,
-                                };
                                 rt.DrawBitmap(
                                     bmp,
                                     Some(&ico_r),
@@ -6565,7 +8529,7 @@ impl MacDockEngine {
                                     None,
                                 );
                             } else {
-                                draw_fallback_badge(rt, &br, dest, u);
+                                draw_fallback_badge(rt, &br, ico_r, u);
                             }
                             draw_inline_text(&item.inline_text, item.inline_alpha);
                         }
@@ -6787,6 +8751,104 @@ fn clock_bucket(cfg: &AppConfig) -> u32 {
     } else {
         (st.wDay as u32) * 1440 + (st.wHour as u32) * 60 + (st.wMinute as u32)
     }
+}
+
+fn format_top_bar_clock(cfg: &AppConfig) -> String {
+    let st: SYSTEMTIME = unsafe { GetLocalTime() };
+    let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let dow = days[(st.wDayOfWeek as usize).min(6)];
+    let mon = months[st.wMonth.saturating_sub(1).min(11) as usize];
+    if cfg.widgets_24h {
+        format!("{} {} {:02}  {:02}:{:02}", dow, mon, st.wDay, st.wHour, st.wMinute)
+    } else {
+        let pm = st.wHour >= 12;
+        let h12 = match st.wHour % 12 {
+            0 => 12,
+            h => h,
+        };
+        format!(
+            "{} {} {:02}  {}:{:02} {}",
+            dow,
+            mon,
+            st.wDay,
+            h12,
+            st.wMinute,
+            if pm { "PM" } else { "AM" }
+        )
+    }
+}
+
+/// Collects strictly bounded screen-space Windows 11 DWM Acrylic backdrop rectangles for Clean &
+/// Minimal glass shelves/islands (inset by 2px so native `DWMWCP_ROUND` sits 100% inside the
+/// anti-aliased Fresnel rim, NEVER pokes out, and NEVER extends above the dock!).
+fn collect_dock_acrylic_pills(
+    pane: &DockMonitorPane,
+    cfg: &AppConfig,
+    u: f32,
+) -> Vec<AcrylicPillRect> {
+    if !cfg.tb_theme.is_clean_minimal() {
+        return Vec::new();
+    }
+    let theme = cfg.tb_theme;
+    let mut out = Vec::with_capacity(4);
+    match theme {
+        // Matte card & circular bubble themes rely on Direct2D optical frosted glass rather than rectangular DWM pills
+        TaskbarTheme::MatterTilesLight
+        | TaskbarTheme::MatterTilesDark
+        | TaskbarTheme::RosePineTiles
+        | TaskbarTheme::CatppuccinTiles
+        | TaskbarTheme::BubblesDark
+        | TaskbarTheme::BubblesLight
+        | TaskbarTheme::SquircleFrosted
+        | TaskbarTheme::PillsDetached
+        | TaskbarTheme::BorderlessGhost => {
+            if let Some(ur) = pane.unified_tray_rect_local {
+                if matches!(
+                    theme,
+                    TaskbarTheme::SquircleFrosted
+                        | TaskbarTheme::BubblesDark
+                        | TaskbarTheme::BubblesLight
+                        | TaskbarTheme::PillsDetached
+                        | TaskbarTheme::BorderlessGhost
+                ) {
+                    let ins = (2.0 * u).round() as i32;
+                    let r = RECT {
+                        left: pane.canvas_rect.left + ur.left.round() as i32 + ins,
+                        top: pane.canvas_rect.top + ur.top.round() as i32 + ins,
+                        right: pane.canvas_rect.left + ur.right.round() as i32 - ins,
+                        bottom: pane.canvas_rect.top + ur.bottom.round() as i32 - ins,
+                    };
+                    if r.right - r.left >= 12 && r.bottom - r.top >= 12 {
+                        out.push(AcrylicPillRect { screen_rect: r, rounded: true });
+                    }
+                }
+            }
+            return out;
+        }
+        _ => {}
+    }
+
+    let spec = resolve_shelf_spec(cfg);
+    let rounded = spec.layout != DockLayoutKind::FullEdgeTaskbar;
+    let ins = if rounded { (2.0 * u).round() as i32 } else { 0 };
+    for &ir in &pane.island_rects_screen {
+        let r = RECT {
+            left: ir.left + ins,
+            top: ir.top + ins,
+            right: ir.right - ins,
+            bottom: ir.bottom - ins,
+        };
+        if r.right - r.left >= 12 && r.bottom - r.top >= 12 {
+            out.push(AcrylicPillRect {
+                screen_rect: r,
+                rounded,
+            });
+        }
+    }
+    out
 }
 
 fn format_dock_clock(cfg: &AppConfig) -> (String, String, u32, u32, u32) {
@@ -7692,11 +9754,18 @@ fn dock_cross_metrics(cfg: &AppConfig, u: f32) -> (DockVisualSpec, bool, f32, f3
     let spec = resolve_shelf_spec(cfg);
     let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
     let base_sz = (cfg.mac_dock_icon_size as f32).clamp(34.0, 56.0) * u;
-    let shelf_cross = match spec.layout {
-        DockLayoutKind::FullEdgeTaskbar => (base_sz + 14.0 * u).max(46.0 * u),
-        DockLayoutKind::HudConsoleDeck => base_sz + 22.0 * u,
-        DockLayoutKind::IndependentOrbs => base_sz + 20.0 * u,
-        _ => base_sz + 18.0 * u,
+    let shelf_cross = if matches!(
+        cfg.tb_theme,
+        TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark
+    ) {
+        base_sz + 13.0 * u
+    } else {
+        match spec.layout {
+            DockLayoutKind::FullEdgeTaskbar => (base_sz + 14.0 * u).max(46.0 * u),
+            DockLayoutKind::HudConsoleDeck => base_sz + 22.0 * u,
+            DockLayoutKind::IndependentOrbs => base_sz + 20.0 * u,
+            _ => base_sz + 18.0 * u,
+        }
     };
     let edge_gap = match spec.layout {
         DockLayoutKind::FullEdgeTaskbar => 0.0,
@@ -7714,23 +9783,17 @@ fn dock_cross_metrics(cfg: &AppConfig, u: f32) -> (DockVisualSpec, bool, f32, f3
     (spec, is_vertical, base_sz, shelf_cross, edge_gap, hud_wing_h)
 }
 
+/// Authentic macOS Dock activation: left-clicking or double-clicking any app icon ALWAYS
+/// opens, restores, or focuses the app (cycling between multiple windows if present) and
+/// NEVER minimizes it! (Minimizing remains available via right-click -> Minimize, middle-click
+/// action, or the window's own `-` button.)
 fn activate_or_toggle_windows(windows: &[WinEntry]) {
     if windows.is_empty() {
         return;
     }
     let fg = unsafe { GetForegroundWindow() };
     if windows.len() == 1 {
-        let w = &windows[0];
-        let is_iconic_now = unsafe { IsIconic(w.hwnd).as_bool() };
-        let fg_owned_by_w = unsafe { GetWindow(fg, GW_OWNER).unwrap_or_default() == w.hwnd };
-        let popup_matches = unsafe { GetLastActivePopup(w.hwnd) == fg };
-        if !is_iconic_now && (w.hwnd == fg || fg_owned_by_w || popup_matches) {
-            unsafe {
-                let _ = ShowWindow(w.hwnd, SW_MINIMIZE);
-            }
-        } else {
-            bring_window_to_front(w.hwnd);
-        }
+        bring_window_to_front(windows[0].hwnd);
         return;
     }
     // Cycle among multiple open windows of the same app
@@ -7743,6 +9806,33 @@ fn activate_or_toggle_windows(windows: &[WinEntry]) {
     }
 }
 
+/// Gracefully closes a window like clicking its native title-bar `×` button.
+/// Uses `WM_SYSCOMMAND(SC_CLOSE)` first (required by UWP / WinUI 3 / Electron hosts such as
+/// Settings, WhatsApp, Explorer, and Antigravity), falling back to `WM_CLOSE`.
+/// Returns `false` if Windows UIPI rejects the message (e.g., an elevated Administrator window
+/// like Task Manager when AutumnDeck runs as a standard user).
+fn close_window_gracefully(hwnd: HWND) -> bool {
+    unsafe {
+        if hwnd.0.is_null() || !IsWindow(Some(hwnd)).as_bool() {
+            return false;
+        }
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if (style & WS_SYSMENU.0) != 0 {
+            if PostMessageW(
+                Some(hwnd),
+                WM_SYSCOMMAND,
+                WPARAM(SC_CLOSE as usize),
+                LPARAM(0),
+            )
+            .is_ok()
+            {
+                return true;
+            }
+        }
+        PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok()
+    }
+}
+
 fn bring_window_to_front(hwnd: HWND) {
     unsafe {
         if hwnd.0.is_null() || !IsWindow(Some(hwnd)).as_bool() {
@@ -7750,7 +9840,15 @@ fn bring_window_to_front(hwnd: HWND) {
         }
         // Only restore minimized windows; never pass SW_SHOWNORMAL to a zoomed window!
         if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+            if IsIconic(hwnd).as_bool() {
+                let _ = PostMessageW(
+                    Some(hwnd),
+                    WM_SYSCOMMAND,
+                    WPARAM(SC_RESTORE as usize),
+                    LPARAM(0),
+                );
+            }
         }
         let popup = GetLastActivePopup(hwnd);
         let target = if !popup.0.is_null()
@@ -7783,6 +9881,11 @@ fn bring_window_to_front(hwnd: HWND) {
         }
         if cur_tid != 0 && fg_tid != 0 && fg_tid != cur_tid {
             let _ = AttachThreadInput(cur_tid, fg_tid, false);
+        }
+        // Official Windows Alt+Tab activation fallback: reliably restores minimized windows and
+        // activates UWP/Electron/background apps even from our WS_EX_NOACTIVATE dock & thumb popup!
+        if IsIconic(hwnd).as_bool() || GetForegroundWindow() != target {
+            SwitchToThisWindow(target, true);
         }
     }
 }
@@ -8973,19 +11076,19 @@ unsafe fn draw_start_badge(
             );
         }
         StartBadgeStyle::InheritTheme | StartBadgeStyle::Windows11Grid => {
-            let tile_s = w * 0.20;
-            let off = tile_s * 0.72;
+            let tile_s = w * 0.24;
+            let off = tile_s * 0.58;
             let cols = if eff_crt {
                 [(78u8, 246u8, 128u8), (118, 255, 162), (62, 212, 108), (94, 242, 138)]
             } else {
-                [(108u8, 198u8, 255u8), (146, 224, 255), (82, 168, 245), (120, 214, 248)]
+                [(78u8, 196u8, 255u8), (122, 218, 255), (46, 154, 244), (92, 188, 252)]
             };
             for (idx, (ox, oy)) in [(-off, -off), (off, -off), (-off, off), (off, off)]
                 .into_iter()
                 .enumerate()
             {
                 let (cr, cg, cb) = cols[idx];
-                br.SetColor(&rgba(cr, cg, cb, 0.95));
+                br.SetColor(&rgba(cr, cg, cb, 0.98));
                 let t_rr = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
                         left: cx + ox - tile_s * 0.5,
@@ -8993,8 +11096,8 @@ unsafe fn draw_start_badge(
                         right: cx + ox + tile_s * 0.5,
                         bottom: cy + oy + tile_s * 0.5,
                     },
-                    radiusX: 2.2 * u,
-                    radiusY: 2.2 * u,
+                    radiusX: 1.2 * u,
+                    radiusY: 1.2 * u,
                 };
                 rt.FillRoundedRectangle(&t_rr, br);
             }
@@ -9077,6 +11180,7 @@ unsafe fn draw_studio_badge(
     rect: D2D_RECT_F,
     accent: (u8, u8, u8),
     draw_plate: bool,
+    dark_ink: bool,
     u: f32,
 ) {
     let w = rect.right - rect.left;
@@ -9123,7 +11227,11 @@ unsafe fn draw_studio_badge(
         radiusX: 2.5 * u,
         radiusY: 2.5 * u,
     };
-    br.SetColor(&rgba(255, 242, 220, 0.90));
+    if !draw_plate && dark_ink {
+        br.SetColor(&rgba(34, 42, 58, 0.90));
+    } else {
+        br.SetColor(&rgba(255, 242, 220, 0.90));
+    }
     rt.FillRoundedRectangle(&bar2, br);
 }
 
@@ -10914,5 +13022,848 @@ mod tests {
             Some(t0),
             t0 + Duration::from_millis(10)
         ));
+    }
+
+    #[test]
+    fn live_dock_photorealistic_render_verification() {
+        use std::f32::consts::FRAC_PI_2;
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut eng = MacDockEngine::new(HINSTANCE::default());
+        assert!(eng.ensure_graphics());
+        let rt = eng.dc_rt.as_ref().unwrap().clone();
+        eng.tray_vol_pct = 74;
+        eng.tray_wifi_on = true;
+        eng.tray_wifi_signal = 86;
+        eng.tray_bat_pct = Some(82);
+        eng.tray_bat_charging = false;
+
+        // Build colorful miniature app icon bitmaps (Explorer, Spotify, WhatsApp, Chrome, Code, Settings)
+        let make_icon_bmp = |kind: usize| -> Option<ID2D1Bitmap> {
+            let sz = 64u32;
+            let mut px = vec![0u8; (sz * sz * 4) as usize];
+            for y in 0..sz {
+                for x in 0..sz {
+                    let fx = (x as f32 + 0.5) / sz as f32 * 2.0 - 1.0;
+                    let fy = (y as f32 + 0.5) / sz as f32 * 2.0 - 1.0;
+                    let r2 = fx * fx + fy * fy;
+                    let (r, g, b, a) = match kind % 6 {
+                        0 => {
+                            // Golden File Explorer folder
+                            let in_body = fx.abs() < 0.84 && fy > -0.45 && fy < 0.72;
+                            let in_tab = fx > -0.84 && fx < -0.06 && fy > -0.72 && fy <= -0.42;
+                            if in_body || in_tab {
+                                if fy > 0.30 && fx.abs() < 0.36 && fy < 0.62 {
+                                    (36u8, 128u8, 224u8, 255u8)
+                                } else if in_tab {
+                                    (230, 174, 42, 255)
+                                } else {
+                                    (252, 204, 68, 255)
+                                }
+                            } else {
+                                (0, 0, 0, 0)
+                            }
+                        }
+                        1 => {
+                            // Emerald Spotify orb
+                            if r2 < 0.78 {
+                                let stripe = ((fy + 0.28).abs() < 0.06
+                                    || (fy - 0.02).abs() < 0.06
+                                    || (fy - 0.30).abs() < 0.06)
+                                    && fx.abs() < 0.48;
+                                if stripe { (14, 34, 20, 255) } else { (38, 212, 102, 255) }
+                            } else {
+                                (0, 0, 0, 0)
+                            }
+                        }
+                        2 => {
+                            // Chrome vivid tri-color ring
+                            if r2 < 0.14 {
+                                (48, 134, 246, 255)
+                            } else if r2 < 0.22 {
+                                (252, 252, 255, 255)
+                            } else if r2 < 0.78 {
+                                let ang = fy.atan2(fx);
+                                if ang < -0.52 && ang > -2.62 {
+                                    (236, 72, 58, 255)
+                                } else if ang >= -0.52 && ang < 1.57 {
+                                    (248, 198, 48, 255)
+                                } else {
+                                    (54, 184, 96, 255)
+                                }
+                            } else {
+                                (0, 0, 0, 0)
+                            }
+                        }
+                        3 => {
+                            // WhatsApp bright green badge
+                            if r2 < 0.76 {
+                                let ring = r2 > 0.30 && r2 < 0.46;
+                                if ring { (252, 255, 252, 255) } else { (42, 210, 96, 255) }
+                            } else {
+                                (0, 0, 0, 0)
+                            }
+                        }
+                        4 => {
+                            // VS Code blue rounded tile
+                            if fx.abs() < 0.78 && fy.abs() < 0.78 {
+                                let diag = (fx - fy).abs() < 0.14 || (fx + fy).abs() < 0.14;
+                                if diag && fx.abs() < 0.48 { (244, 250, 255, 255) } else { (34, 146, 242, 255) }
+                            } else {
+                                (0, 0, 0, 0)
+                            }
+                        }
+                        _ => {
+                            // Settings slate gear
+                            if r2 < 0.76 && r2 > 0.18 {
+                                (168, 178, 196, 255)
+                            } else if r2 <= 0.18 {
+                                (42, 118, 214, 255)
+                            } else {
+                                (0, 0, 0, 0)
+                            }
+                        }
+                    };
+                    let idx = ((y * sz + x) * 4) as usize;
+                    px[idx] = b;
+                    px[idx + 1] = g;
+                    px[idx + 2] = r;
+                    px[idx + 3] = a;
+                }
+            }
+            let props = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
+            unsafe {
+                rt.CreateBitmap(
+                    D2D_SIZE_U { width: sz, height: sz },
+                    Some(px.as_ptr() as *const c_void),
+                    sz * 4,
+                    &props,
+                )
+                .ok()
+            }
+        };
+
+        let icons: Vec<Option<ID2D1Bitmap>> = (0..6).map(make_icon_bmp).collect();
+        let dump_dir = std::env::var("AUTUMN_LIVE_DOCK_DUMP_DIR").ok();
+        let themes = [
+            (TaskbarTheme::Os26LiquidGlassDark, "live_1_os26_dark", (8u8, 28u8, 52u8), (28, 78, 118)),
+            (TaskbarTheme::Os26LiquidGlassLight, "live_2_os26_light", (94, 156, 218), (186, 218, 246)),
+            (TaskbarTheme::MatterTilesDark, "live_3_matter_dark", (232, 74, 184), (176, 118, 238)),
+            (TaskbarTheme::MatterTilesLight, "live_4_matter_light", (232, 74, 184), (176, 118, 238)),
+            (TaskbarTheme::LiquidGlassClear, "live_5_liquid_clear", (92, 134, 42), (168, 156, 122)),
+            (TaskbarTheme::BubblesDark, "live_6_bubbles_dark", (58, 28, 18), (164, 96, 48)),
+            (TaskbarTheme::OneUiLightChips, "live_7_oneui_light", (22, 34, 44), (62, 86, 98)),
+            (TaskbarTheme::DockLikeDark, "live_8_docklike_dark", (12, 48, 146), (26, 102, 216)),
+            (TaskbarTheme::BorderlessGhost, "live_9_borderless_ghost", (92, 64, 38), (52, 88, 42)),
+        ];
+
+        let cw = 1120i32;
+        let ch = 220i32;
+        for &(th, name, c0, c1) in &themes {
+            let mut cfg = AppConfig::default();
+            cfg.apply_taskbar_theme_preset(th);
+            cfg.mac_dock_icon_size = 44;
+            cfg.mac_dock_mag_pct = 155;
+            cfg.clean_top_bar_enabled = true;
+            cfg.clean_top_bar_edge = CleanTopBarEdge::Top;
+            let spec = resolve_shelf_spec(&cfg);
+            let pal = effective_taskbar_palette(&cfg);
+
+            // Build scenic textured wallpaper + Gaussian-blurred monitor backdrop
+            let bw = 560u32;
+            let bh = 220u32;
+            let mut wp_sharp = vec![0u8; (cw as usize) * (ch as usize) * 4];
+            for y in 0..ch as usize {
+                let fy = y as f32 / ch as f32;
+                for x in 0..cw as usize {
+                    let fx = x as f32 / cw as f32;
+                    let wave = ((fx * 9.0 + fy * 3.5).sin() * 0.5 + 0.5) * 0.35
+                        + ((fx * 23.0 - fy * 11.0).cos() * 0.5 + 0.5) * 0.12;
+                    let t = (fx * 0.65 + fy * 0.35 + wave * 0.45).clamp(0.0, 1.0);
+                    let r = (c0.0 as f32 * (1.0 - t) + c1.0 as f32 * t).clamp(0.0, 255.0) as u8;
+                    let g = (c0.1 as f32 * (1.0 - t) + c1.1 as f32 * t).clamp(0.0, 255.0) as u8;
+                    let b = (c0.2 as f32 * (1.0 - t) + c1.2 as f32 * t).clamp(0.0, 255.0) as u8;
+                    let i = (y * cw as usize + x) * 4;
+                    wp_sharp[i] = b;
+                    wp_sharp[i + 1] = g;
+                    wp_sharp[i + 2] = r;
+                    wp_sharp[i + 3] = 255;
+                }
+            }
+            let mut wp_blur = vec![0u8; (bw * bh * 4) as usize];
+            for y in 0..bh as usize {
+                for x in 0..bw as usize {
+                    let sx = (x * 2).min(cw as usize - 1);
+                    let si = (y * cw as usize + sx) * 4;
+                    let di = (y * bw as usize + x) * 4;
+                    wp_blur[di..di + 4].copy_from_slice(&wp_sharp[si..si + 4]);
+                }
+            }
+            crate::theme::apply_macos_frosted_blur_bgra(&mut wp_blur, bw as usize, bh as usize, 8);
+            let props = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
+            let blur_bmp = unsafe {
+                rt.CreateBitmap(
+                    D2D_SIZE_U { width: bw, height: bh },
+                    Some(wp_blur.as_ptr() as *const c_void),
+                    bw * 4,
+                    &props,
+                )
+                .ok()
+            };
+
+            // Pure Mac Dock mode slots (Start + 6 apps | Trash + Studio — Tray & Clock now live in Top Bar!)
+            let mut slots = Vec::new();
+            slots.push(DockSlotKind::StartLauncher);
+            let names = ["Explorer", "Spotify", "Chrome", "WhatsApp", "VS Code", "Settings"];
+            for (i, &nm) in names.iter().enumerate() {
+                let running = i == 0 || i == 2 || i == 3 || i == 4;
+                let wins = if running {
+                    vec![WinEntry {
+                        hwnd: HWND((0x1000 + i) as *mut c_void),
+                        icon_hwnd: HWND((0x1000 + i) as *mut c_void),
+                        title: nm.to_string(),
+                        exe_path: String::new(),
+                        aumid: String::new(),
+                        is_iconic: false,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                slots.push(DockSlotKind::PinnedApp {
+                    name: nm.to_string(),
+                    path: format!("C:\\Demo\\{}.exe", nm),
+                    windows: wins,
+                });
+            }
+            if spec.layout == DockLayoutKind::MultiIslandBar {
+                slots.push(DockSlotKind::IslandGap);
+            } else {
+                slots.push(DockSlotKind::EndDivider);
+            }
+            slots.push(DockSlotKind::TrashBin { items: 2 });
+            slots.push(DockSlotKind::StudioLauncher);
+            eng.slots = slots;
+            eng.slot_keys = eng.slots.iter().map(slot_id_key).collect();
+
+            // Layout slots with simulated live hover over Chrome (slot 3)
+            let mut pane = DockMonitorPane::new(RECT { left: 0, top: 0, right: cw, bottom: ch }, true);
+            pane.canvas_rect = RECT { left: 0, top: 0, right: cw, bottom: ch };
+            pane.backdrop_bmp = blur_bmp;
+            pane.backdrop_size = (bw, bh);
+            pane.hover_mix = 1.0;
+            pane.hovered_idx = Some(3);
+            pane.cursor_axis_norm = 0.36;
+            assert!(pane.surface.ensure_size(cw, ch));
+
+            // Prepare paired Top Menu Bar surface & slots
+            let top_floating = cfg.resolved_clean_top_bar_floating();
+            let top_ch = if top_floating { 46i32 } else { 36i32 };
+            pane.top_win_rect = RECT { left: 0, top: 0, right: cw, bottom: top_ch };
+            pane.top_bar_local = if top_floating {
+                D2D_RECT_F { left: 10.0, top: 5.0, right: cw as f32 - 10.0, bottom: 35.0 }
+            } else {
+                D2D_RECT_F { left: 0.0, top: 0.0, right: cw as f32, bottom: 30.0 }
+            };
+            assert!(pane.top_surface.ensure_size(cw, top_ch));
+            let top_info = CleanTopBarRenderInfo {
+                fg_app_name: "Chrome",
+                clock_label: "Thu Nov 26  8:15 PM",
+                vol_pct: 74,
+                vol_muted: false,
+                net_connected: true,
+                net_wifi: true,
+                net_strength: 92,
+                bat_pct: Some(86),
+                bat_charging: true,
+                bat_saver: false,
+                hovered: Some(CleanTopBarItem::ControlCenter),
+                pressed: None,
+                floating: top_floating,
+                at_bottom: false,
+            };
+            pane.top_slots = layout_clean_top_bar(pane.top_bar_local, &top_info, 1.0);
+            let top_ok = unsafe {
+                eng.paint_top_bar_surface(&pane, cw, top_ch, &top_info, &cfg, &pal, 1.0, false)
+            };
+            assert!(top_ok, "Clean Top Bar paint failed for {:?}", th);
+
+            let (_, _, base_sz, shelf_cross, edge_gap, _) = dock_cross_metrics(&cfg, 1.0);
+            let gap = match th {
+                TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark => 5.5,
+                TaskbarTheme::OneUiLightChips | TaskbarTheme::OneUiDarkChips => 6.0,
+                TaskbarTheme::BubblesDark | TaskbarTheme::BubblesLight => 7.0,
+                _ if th.is_independent_tile_dock() => 6.0,
+                _ => 6.5,
+            };
+            let pad_span = if matches!(th, TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark) {
+                8.0
+            } else {
+                12.0
+            };
+            let hover_idx = 3usize;
+            let mut widths = Vec::new();
+            let mut sizes = Vec::new();
+            let mut lifts = Vec::new();
+            for (idx, s) in eng.slots.iter().enumerate() {
+                let (rw, is_app) = match s {
+                    DockSlotKind::EndDivider => (12.0, false),
+                    DockSlotKind::IslandGap => (38.0, false),
+                    DockSlotKind::HiddenTrayChevron => (20.0, false),
+                    DockSlotKind::TrayStatusCluster => (82.0, false),
+                    DockSlotKind::ClockModule { .. } => (82.0, false),
+                    DockSlotKind::TrashBin { .. } | DockSlotKind::StudioLauncher => {
+                        (base_sz, spec.layout != DockLayoutKind::IndependentOrbs)
+                    }
+                    _ => (base_sz, true),
+                };
+                let scale = if is_app {
+                    let d = (idx as f32 - hover_idx as f32).abs();
+                    if d < 2.2 {
+                        let c = (FRAC_PI_2 * (d / 2.2)).cos();
+                        let max_s = match spec.layout {
+                            DockLayoutKind::FishEyeShelf => 1.48,
+                            DockLayoutKind::IndependentOrbs => 1.32,
+                            _ => 1.24,
+                        };
+                        1.0 + (max_s - 1.0) * c * c
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+                widths.push(rw * scale);
+                sizes.push(if matches!(s, DockSlotKind::HiddenTrayChevron) { 18.0 } else { base_sz * scale });
+                lifts.push((scale - 1.0).max(0.0) * base_sz * 0.42);
+            }
+            let total_w: f32 = pad_span * 2.0
+                + widths.iter().sum::<f32>()
+                + (widths.len().saturating_sub(1) as f32) * gap;
+            let sb = ch as f32 - edge_gap - 6.0;
+            let st = sb - shelf_cross;
+            let shelf_r = D2D_RECT_F {
+                left: (cw as f32 - total_w) * 0.5,
+                top: st,
+                right: (cw as f32 + total_w) * 0.5,
+                bottom: sb,
+            };
+            let base_cy = (st + sb) * 0.5 - 2.0;
+            let slot_cross = (shelf_cross - 10.0).max(base_sz);
+            let mut sx = shelf_r.left + pad_span;
+            for (idx, s) in eng.slots.iter().enumerate() {
+                let w = widths[idx];
+                let cy = base_cy - lifts[idx];
+                let slot_r = D2D_RECT_F {
+                    left: sx,
+                    top: cy - slot_cross * 0.5,
+                    right: sx + w,
+                    bottom: cy + slot_cross * 0.5,
+                };
+                let (dot_count, is_act) = match s {
+                    DockSlotKind::PinnedApp { windows, .. } => (windows.len(), idx == hover_idx),
+                    _ => (0, false),
+                };
+                pane.layout.push(DockLayoutSlot {
+                    slot_idx: idx,
+                    is_divider: matches!(s, DockSlotKind::EndDivider),
+                    is_spacer: matches!(s, DockSlotKind::IslandGap),
+                    center_x: sx + w * 0.5,
+                    center_y: cy,
+                    icon_size: sizes[idx],
+                    slot_rect: slot_r,
+                    hit_rect: slot_r,
+                    label: String::new(),
+                    inline_text: String::new(),
+                    inline_alpha: 0.0,
+                    dot_count,
+                    has_windows: dot_count > 0,
+                    is_active: is_act,
+                    is_flashing: false,
+                });
+                sx += w + gap;
+            }
+            if spec.layout == DockLayoutKind::MultiIslandBar {
+                let mut lo: Option<f32> = None;
+                let mut hi = 0.0f32;
+                for it in &pane.layout {
+                    if it.is_spacer {
+                        if let Some(l) = lo.take() {
+                            pane.island_rects_local.push(D2D_RECT_F {
+                                left: l - pad_span,
+                                top: st,
+                                right: hi + pad_span,
+                                bottom: sb,
+                            });
+                        }
+                        continue;
+                    }
+                    lo = Some(lo.map_or(it.slot_rect.left, |p| p.min(it.slot_rect.left)));
+                    hi = hi.max(it.slot_rect.right);
+                }
+                if let Some(l) = lo {
+                    pane.island_rects_local.push(D2D_RECT_F {
+                        left: l - pad_span,
+                        top: st,
+                        right: hi + pad_span,
+                        bottom: sb,
+                    });
+                }
+            } else if spec.layout != DockLayoutKind::IndependentOrbs {
+                pane.island_rects_local.push(shelf_r);
+            } else if !cfg.is_clean_top_bar_active() {
+                let mut u_lo: Option<f32> = None;
+                let mut u_hi = 0.0f32;
+                for it in &pane.layout {
+                    if matches!(
+                        eng.slots[it.slot_idx],
+                        DockSlotKind::HiddenTrayChevron
+                            | DockSlotKind::TrayStatusCluster
+                            | DockSlotKind::ClockModule { .. }
+                            | DockSlotKind::TrashBin { .. }
+                            | DockSlotKind::StudioLauncher
+                    ) {
+                        u_lo = Some(u_lo.map_or(it.slot_rect.left, |p| p.min(it.slot_rect.left)));
+                        u_hi = u_hi.max(it.slot_rect.right);
+                    }
+                }
+                if let Some(l) = u_lo {
+                    let hc = base_sz * 0.58;
+                    pane.unified_tray_rect_local = Some(D2D_RECT_F {
+                        left: l - 8.0,
+                        top: base_cy - hc,
+                        right: u_hi + 8.0,
+                        bottom: base_cy + hc,
+                    });
+                }
+            }
+
+            let bitmaps: Vec<Option<ID2D1Bitmap>> = eng
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(i, s)| match s {
+                    DockSlotKind::PinnedApp { .. } => icons[(i.saturating_sub(1)) % icons.len()].clone(),
+                    _ => None,
+                })
+                .collect();
+
+            let ok = unsafe {
+                eng.paint_pane_surface(&pane, cw, ch, shelf_r, &bitmaps, &cfg, &pal, 1.0, false)
+            };
+            assert!(ok, "Live dock paint failed for {:?}", th);
+
+            if let Some(ref d) = dump_dir {
+                let p = std::path::PathBuf::from(d);
+                let _ = std::fs::create_dir_all(&p);
+                // Composite premultiplied ARGB Top Bar + Pure Bottom Dock over sharp scenic wallpaper!
+                let mut out = wp_sharp.clone();
+                if !pane.top_surface.hbmp.0.is_null() {
+                    let mut top_src = vec![0u8; (cw as usize) * (top_ch as usize) * 4];
+                    let mut bi = BITMAPINFO::default();
+                    bi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                    bi.bmiHeader.biWidth = cw;
+                    bi.bmiHeader.biHeight = -top_ch;
+                    bi.bmiHeader.biPlanes = 1;
+                    bi.bmiHeader.biBitCount = 32;
+                    bi.bmiHeader.biCompression = BI_RGB.0;
+                    unsafe {
+                        let _ = windows::Win32::Graphics::Gdi::GetDIBits(
+                            pane.top_surface.mem_dc,
+                            pane.top_surface.hbmp,
+                            0,
+                            top_ch as u32,
+                            Some(top_src.as_mut_ptr() as *mut c_void),
+                            &mut bi,
+                            DIB_RGB_COLORS,
+                        );
+                    }
+                    for i in (0..top_src.len()).step_by(4) {
+                        let a = top_src[i + 3] as f32 / 255.0;
+                        let inv = 1.0 - a;
+                        out[i] = (top_src[i] as f32 + out[i] as f32 * inv).clamp(0.0, 255.0) as u8;
+                        out[i + 1] = (top_src[i + 1] as f32 + out[i + 1] as f32 * inv).clamp(0.0, 255.0) as u8;
+                        out[i + 2] = (top_src[i + 2] as f32 + out[i + 2] as f32 * inv).clamp(0.0, 255.0) as u8;
+                        out[i + 3] = 255;
+                    }
+                }
+                if !pane.surface.hbmp.0.is_null() {
+                    let mut src = vec![0u8; (cw as usize) * (ch as usize) * 4];
+                    let mut bi = BITMAPINFO::default();
+                    bi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                    bi.bmiHeader.biWidth = cw;
+                    bi.bmiHeader.biHeight = -ch;
+                    bi.bmiHeader.biPlanes = 1;
+                    bi.bmiHeader.biBitCount = 32;
+                    bi.bmiHeader.biCompression = BI_RGB.0;
+                    unsafe {
+                        let _ = windows::Win32::Graphics::Gdi::GetDIBits(
+                            pane.surface.mem_dc,
+                            pane.surface.hbmp,
+                            0,
+                            ch as u32,
+                            Some(src.as_mut_ptr() as *mut c_void),
+                            &mut bi,
+                            DIB_RGB_COLORS,
+                        );
+                    }
+                    for i in (0..out.len()).step_by(4) {
+                        let a = src[i + 3] as f32 / 255.0;
+                        let inv = 1.0 - a;
+                        out[i] = (src[i] as f32 + out[i] as f32 * inv).clamp(0.0, 255.0) as u8;
+                        out[i + 1] = (src[i + 1] as f32 + out[i + 1] as f32 * inv).clamp(0.0, 255.0) as u8;
+                        out[i + 2] = (src[i + 2] as f32 + out[i + 2] as f32 * inv).clamp(0.0, 255.0) as u8;
+                        out[i + 3] = 255;
+                    }
+                }
+                let row_bytes = (cw as usize) * 4;
+                let img_bytes = row_bytes * (ch as usize);
+                let file_size = 54 + img_bytes;
+                let mut bmp_file = Vec::with_capacity(file_size);
+                bmp_file.extend_from_slice(b"BM");
+                bmp_file.extend_from_slice(&(file_size as u32).to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&54u32.to_le_bytes());
+                bmp_file.extend_from_slice(&40u32.to_le_bytes());
+                bmp_file.extend_from_slice(&(cw as i32).to_le_bytes());
+                bmp_file.extend_from_slice(&(-(ch as i32)).to_le_bytes());
+                bmp_file.extend_from_slice(&1u16.to_le_bytes());
+                bmp_file.extend_from_slice(&32u16.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&(img_bytes as u32).to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&out);
+                let _ = std::fs::write(p.join(format!("{}.bmp", name)), &bmp_file);
+            }
+            pane.top_surface.release();
+            pane.surface.release();
+        }
+
+        // Also verify & dump macOS Top Bar Sub-UI Popovers (Control Center Dark, Control Center Light, Clock & Calendar)
+        let popover_cases = [
+            ("popover_control_center_dark", TaskbarTheme::Os26LiquidGlassDark, TopBarPopoverKind::ControlCenter),
+            ("popover_control_center_light", TaskbarTheme::Os26LiquidGlassLight, TopBarPopoverKind::ControlCenter),
+            ("popover_clock_calendar", TaskbarTheme::LiquidGlassClear, TopBarPopoverKind::ClockCalendar),
+        ];
+        for (pname, ptheme, pkind) in popover_cases {
+            let mut pcfg = AppConfig::default();
+            pcfg.apply_taskbar_theme_preset(ptheme);
+            pcfg.clean_top_bar_enabled = true;
+            let (pw_f, ph_f, _pad) = top_bar_popover_dims(pkind);
+            let pw = pw_f.round() as i32;
+            let ph = ph_f.round() as i32;
+            let layout = layout_top_bar_popover(pkind, 1.0);
+            assert!(layout.panel_r.right > layout.panel_r.left);
+            let mut surf = DibSurface::new();
+            assert!(surf.ensure_size(pw, ph));
+            let info = TopBarPopoverInfo {
+                kind: pkind,
+                wifi_on: true,
+                wifi_name: "Home Wi-Fi 6E",
+                wifi_signal: 88,
+                vol_pct: 68,
+                vol_muted: false,
+                bat_pct: Some(84),
+                bat_charging: true,
+                desktop_only: false,
+                bar_at_bottom: false,
+                time_big: "9:41 PM",
+                date_full: "Thursday, November 26, 2026",
+                year: 2026,
+                month: 11,
+                today: 26,
+                hovered: Some(if pkind == TopBarPopoverKind::ControlCenter {
+                    TopBarPopoverHit::WifiRow
+                } else {
+                    TopBarPopoverHit::OpenNotifications
+                }),
+            };
+            let ok = unsafe {
+                let Some(ref rt) = eng.dc_rt else {
+                    panic!("dc_rt missing");
+                };
+                let rc = RECT { left: 0, top: 0, right: pw, bottom: ph };
+                assert!(rt.BindDC(surf.mem_dc, &rc).is_ok());
+                rt.BeginDraw();
+                rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+                let _guard = bind_active_dock_backdrop_ex(None, false);
+                if let (Ok(br), Some(tf_b), Some(tf_r), Some(tf_l)) = (
+                    rt.CreateSolidColorBrush(&rgba(255, 255, 255, 1.0), None),
+                    eng.tf_top_bold.as_ref().or(eng.tf_tip.as_ref()),
+                    eng.tf_top_reg.as_ref().or(eng.tf_tip.as_ref()),
+                    eng.tf_left.as_ref().or(eng.tf_tip.as_ref()),
+                ) {
+                    draw_top_bar_popover(
+                        rt,
+                        eng.d2d.as_ref(),
+                        &br,
+                        tf_b,
+                        tf_r,
+                        tf_l,
+                        &layout,
+                        &info,
+                        &pcfg,
+                        1.0,
+                    );
+                }
+                rt.EndDraw(None, None).is_ok()
+            };
+            assert!(ok, "Popover paint failed for {}", pname);
+
+            if let Some(ref d) = dump_dir {
+                let p = std::path::PathBuf::from(d);
+                let _ = std::fs::create_dir_all(&p);
+                let mut src = vec![0u8; (pw as usize) * (ph as usize) * 4];
+                let mut bi = BITMAPINFO::default();
+                bi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                bi.bmiHeader.biWidth = pw;
+                bi.bmiHeader.biHeight = -ph;
+                bi.bmiHeader.biPlanes = 1;
+                bi.bmiHeader.biBitCount = 32;
+                bi.bmiHeader.biCompression = BI_RGB.0;
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::GetDIBits(
+                        surf.mem_dc,
+                        surf.hbmp,
+                        0,
+                        ph as u32,
+                        Some(src.as_mut_ptr() as *mut c_void),
+                        &mut bi,
+                        DIB_RGB_COLORS,
+                    );
+                }
+                // Composite over colorful scenic wallpaper crop so glass frosting is clearly visible
+                let mut out = vec![0u8; (pw as usize) * (ph as usize) * 4];
+                for y in 0..(ph as usize) {
+                    for x in 0..(pw as usize) {
+                        let fx = x as f32 / (pw.max(1) as f32);
+                        let fy = y as f32 / (ph.max(1) as f32);
+                        let bg_r = (32.0 + fx * 64.0 + (1.0 - fy) * 58.0 + ((fx * 8.0).sin() * 26.0))
+                            .clamp(12.0, 235.0);
+                        let bg_g = (68.0 + (1.0 - fx) * 78.0 + fy * 44.0 + ((fy * 6.0).cos() * 24.0))
+                            .clamp(18.0, 240.0);
+                        let bg_b = (128.0 + fx * 86.0 + (1.0 - fy) * 42.0).clamp(32.0, 248.0);
+                        let idx = (y * (pw as usize) + x) * 4;
+                        let a = src[idx + 3] as f32 / 255.0;
+                        let inv = 1.0 - a;
+                        out[idx] = (src[idx] as f32 + bg_b * inv).clamp(0.0, 255.0) as u8;
+                        out[idx + 1] = (src[idx + 1] as f32 + bg_g * inv).clamp(0.0, 255.0) as u8;
+                        out[idx + 2] = (src[idx + 2] as f32 + bg_r * inv).clamp(0.0, 255.0) as u8;
+                        out[idx + 3] = 255;
+                    }
+                }
+                let img_bytes = (pw as usize) * (ph as usize) * 4;
+                let file_size = 54 + img_bytes;
+                let mut bmp_file = Vec::with_capacity(file_size);
+                bmp_file.extend_from_slice(b"BM");
+                bmp_file.extend_from_slice(&(file_size as u32).to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&54u32.to_le_bytes());
+                bmp_file.extend_from_slice(&40u32.to_le_bytes());
+                bmp_file.extend_from_slice(&pw.to_le_bytes());
+                bmp_file.extend_from_slice(&(-ph).to_le_bytes());
+                bmp_file.extend_from_slice(&1u16.to_le_bytes());
+                bmp_file.extend_from_slice(&32u16.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&(img_bytes as u32).to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&0u32.to_le_bytes());
+                bmp_file.extend_from_slice(&out);
+                let _ = std::fs::write(p.join(format!("{}.bmp", pname)), &bmp_file);
+            }
+            surf.release();
+        }
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn clean_top_bar_config_pure_dock_and_smart_edge_swap() {
+        let mut cfg = AppConfig::default();
+        assert!(cfg.clean_top_bar_enabled, "Clean Top Bar must default ON");
+        assert_eq!(cfg.clean_top_bar_edge, CleanTopBarEdge::Top, "Clean Top Bar must default Top");
+        assert_eq!(cfg.clean_top_bar_style, CleanTopBarStyle::Auto);
+
+        // Must stay OFF for non-Clean & Minimal themes
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::CupertinoDock);
+        assert!(!cfg.is_clean_top_bar_active());
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::AutumnCrystal);
+        assert!(!cfg.is_clean_top_bar_active());
+
+        // Must be active for all 20 Clean & Minimal themes
+        for &th in &TaskbarTheme::CLEAN_MINIMAL_FOLDER {
+            cfg.apply_taskbar_theme_preset(th);
+            assert!(
+                cfg.is_clean_top_bar_active(),
+                "Clean Top Bar must be active for {:?}",
+                th
+            );
+        }
+
+        // Smart edge swap prevents Top Bar & Bottom Dock colliding on same horizontal edge
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassDark);
+        cfg.mac_dock_edge = MacDockEdge::Bottom;
+        cfg.set_clean_top_bar_edge(CleanTopBarEdge::Bottom);
+        assert_eq!(cfg.clean_top_bar_edge, CleanTopBarEdge::Bottom);
+        assert_eq!(cfg.mac_dock_edge, MacDockEdge::Top);
+
+        cfg.set_mac_dock_edge_smart(MacDockEdge::Bottom);
+        assert_eq!(cfg.mac_dock_edge, MacDockEdge::Bottom);
+        assert_eq!(cfg.clean_top_bar_edge, CleanTopBarEdge::Top);
+
+        // Left/Right dock keeps Top Bar edge untouched
+        cfg.set_mac_dock_edge_smart(MacDockEdge::Left);
+        assert_eq!(cfg.mac_dock_edge, MacDockEdge::Left);
+        assert_eq!(cfg.clean_top_bar_edge, CleanTopBarEdge::Top);
+
+        // Pure Mac Dock mode strips Tray & Clock from bottom dock when Top Bar is ON,
+        // and restores them immediately when Top Bar is turned OFF
+        cfg.mac_dock_edge = MacDockEdge::Bottom;
+        cfg.clean_top_bar_enabled = true;
+        let mut eng = MacDockEngine::new(HINSTANCE::default());
+        eng.rebuild_slots(&cfg);
+        assert!(
+            !eng.slots.iter().any(|s| matches!(
+                s,
+                DockSlotKind::ClockModule { .. } | DockSlotKind::TrayStatusCluster
+            )),
+            "Pure Mac Dock must move clock & tray to Top Bar when enabled"
+        );
+
+        cfg.clean_top_bar_enabled = false;
+        eng.rebuild_slots(&cfg);
+        assert!(
+            eng.slots
+                .iter()
+                .any(|s| matches!(s, DockSlotKind::ClockModule { .. })),
+            "Clock must return to bottom dock when Clean Top Bar is toggled OFF"
+        );
+        assert!(
+            eng.slots
+                .iter()
+                .any(|s| matches!(s, DockSlotKind::TrayStatusCluster)),
+            "Tray status must return to bottom dock when Clean Top Bar is toggled OFF"
+        );
+
+        // Config round-trip persistence (including Desktop Only mode)
+        assert!(!cfg.clean_top_bar_desktop_only, "Desktop Only must default OFF");
+        cfg.clean_top_bar_enabled = false;
+        cfg.clean_top_bar_edge = CleanTopBarEdge::Bottom;
+        cfg.clean_top_bar_style = CleanTopBarStyle::Floating;
+        cfg.clean_top_bar_desktop_only = true;
+        let saved = crate::config::serialize_config_ini(&cfg);
+        let loaded = crate::config::parse_config_ini(&saved).expect("config ini must parse");
+        assert!(!loaded.clean_top_bar_enabled);
+        assert_eq!(loaded.clean_top_bar_edge, CleanTopBarEdge::Bottom);
+        assert_eq!(loaded.clean_top_bar_style, CleanTopBarStyle::Floating);
+        assert!(loaded.clean_top_bar_desktop_only);
+
+        // Acrylic pill bounds MUST strictly match visible glass islands (never canvas headroom above dock)
+        let mut p = DockMonitorPane::new(RECT { left: 0, top: 0, right: 1920, bottom: 1080 }, true);
+        p.canvas_rect = RECT { left: 500, top: 930, right: 1420, bottom: 1080 };
+        p.island_rects_screen = vec![
+            RECT { left: 600, top: 1010, right: 1200, bottom: 1072 },
+            RECT { left: 1220, top: 1010, right: 1320, bottom: 1072 },
+        ];
+        let mut acrylic_cfg = AppConfig::default();
+        acrylic_cfg.apply_taskbar_theme_preset(TaskbarTheme::LiquidGlassClear);
+        let pills = collect_dock_acrylic_pills(&p, &acrylic_cfg, 1.0);
+        assert_eq!(pills.len(), 2);
+        for (pill, island) in pills.iter().zip(p.island_rects_screen.iter()) {
+            assert!(
+                pill.screen_rect.top >= island.top && pill.screen_rect.bottom <= island.bottom,
+                "Acrylic pill must NEVER extend above dock shelf (would block clicks above dock!)"
+            );
+            assert!(pill.screen_rect.left >= island.left && pill.screen_rect.right <= island.right);
+        }
+
+        // Control Center & Clock Calendar popovers must expose valid non-overlapping hit targets
+        let cc_lay = layout_top_bar_popover(TopBarPopoverKind::ControlCenter, 1.0);
+        assert!(cc_lay.vol_track_r.right > cc_lay.vol_track_r.left);
+        assert!(cc_lay.hits.iter().any(|(h, _)| *h == TopBarPopoverHit::ToggleDesktopOnly));
+        assert!(cc_lay.hits.iter().any(|(h, _)| *h == TopBarPopoverHit::VolumeTrack));
+        let wifi_pt = cc_lay
+            .hits
+            .iter()
+            .find(|(h, _)| *h == TopBarPopoverHit::WifiRow)
+            .map(|(_, r)| ((r.left + r.right) * 0.5, (r.top + r.bottom) * 0.5))
+            .expect("WifiRow hit rect");
+        let bt_pt = cc_lay
+            .hits
+            .iter()
+            .find(|(h, _)| *h == TopBarPopoverHit::BluetoothRow)
+            .map(|(_, r)| ((r.left + r.right) * 0.5, (r.top + r.bottom) * 0.5))
+            .expect("BluetoothRow hit rect");
+        let clk_lay = layout_top_bar_popover(TopBarPopoverKind::ClockCalendar, 1.0);
+        assert!(clk_lay.hits.iter().any(|(h, _)| *h == TopBarPopoverHit::OpenNotifications));
+
+        // Verify WifiRow & BluetoothRow route to Quick Settings flyouts (not full Settings)
+        unsafe extern "system" fn test_wnd_proc(
+            hwnd: HWND,
+            msg: u32,
+            wp: WPARAM,
+            lp: LPARAM,
+        ) -> LRESULT {
+            unsafe { windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        let hmod: HINSTANCE = unsafe {
+            windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+                .map(|m| HINSTANCE(m.0))
+                .unwrap_or_default()
+        };
+        register_mac_dock_class(hmod, test_wnd_proc);
+        let mut fake_pop_cfg = AppConfig::default();
+        fake_pop_cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassDark);
+        let mut pop_eng = MacDockEngine::new(hmod);
+        assert!(pop_eng.top_popover.ensure_window(hmod));
+        pop_eng.top_popover.kind = TopBarPopoverKind::ControlCenter;
+        pop_eng.top_popover.layout = cc_lay;
+        pop_eng.top_popover.visible = true;
+        let pop_hw = pop_eng.top_popover.hwnd;
+        assert_eq!(
+            pop_eng.handle_lbutton_up(pop_hw, wifi_pt.0, wifi_pt.1, &mut fake_pop_cfg),
+            MacDockAction::OpenWifiFlyout
+        );
+        pop_eng.top_popover.visible = true;
+        assert_eq!(
+            pop_eng.handle_lbutton_up(pop_hw, bt_pt.0, bt_pt.1, &mut fake_pop_cfg),
+            MacDockAction::OpenBluetoothFlyout
+        );
+        pop_eng.disable();
+
+        // Multi-edge work area reserve preserves BOTH Top Bar and Bottom Dock simultaneously
+        let mon = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let r_top = crate::taskbar_hide::TaskbarHider::apply_edge_reserve(
+            mon,
+            crate::taskbar_hide::TaskbarEdge::Top,
+            30,
+        );
+        let r_both = crate::taskbar_hide::TaskbarHider::apply_edge_reserve(
+            r_top,
+            crate::taskbar_hide::TaskbarEdge::Bottom,
+            68,
+        );
+        assert_eq!(r_both, RECT { left: 0, top: 30, right: 1920, bottom: 1012 });
     }
 }

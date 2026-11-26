@@ -33,7 +33,7 @@
   <tr>
     <td align="center" width="50%">
       <img src="assets/screenshots/studio-taskbar-themes.png" alt="AutumnDeck Studio Taskbar Folders" width="100%" /><br/>
-      <sub><b>Taskbar Studio</b> — 70 curated taskbar &amp; dock themes across 7 styles</sub>
+      <sub><b>Taskbar Studio</b> — 90 curated taskbar &amp; dock themes across 8 styles</sub>
     </td>
     <td align="center" width="50%">
       <img src="assets/screenshots/studio-music-players.png" alt="AutumnDeck Studio Music Players" width="100%" /><br/>
@@ -46,7 +46,7 @@
 
 ## Features
 - **Native Windows 11 Taskbar Styler:** Blur, Acrylic, Clear, Split Pill, and Katana Smoked Glass via lightweight XAML TAP composition.
-- **Interactive & PBR Realistic Docks:** Smooth macOS-style magnification, live app previews, tray overflow, and 12 baked PBR surface materials (Carbon, Titanium, Walnut, Silk, Marble, and more).
+- **Interactive & PBR Realistic Docks:** 90 curated themes including **20 Clean & Minimal** macOS Liquid Glass / Windhawk themes (Paired Top Menu Bar with Control Center & Calendar Popovers, Desktop-Only mode, Smart Titlebar Dodge, Pure Bottom Dock) plus smooth magnification, live app previews, tray overflow, and 12 baked PBR surface materials (Carbon, Titanium, Walnut, Silk, Marble, and more).
 - **Modular Desktop Widgets + Pen & Canvas 2.0:**
   - Clock & Script Date
   - Dynamic Island Capsule Music Player & Turntable with Live Visualizer
@@ -80,8 +80,8 @@
 > Standalone binaries distributed on GitHub are compiled directly from open-source code and are **not digitally signed** (commercial certificates cost \$300+/year). For the **official digitally signed edition with zero security warnings**, please use **[Option 1: Microsoft Store](https://apps.microsoft.com/detail/9P6NTH74WSMD)**.
 
 1. Download from **Releases**:
-   - **Portable Edition:** `AutumnDeck-2.0.7-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
-   - **Installer:** `AutumnDeck-Setup-2.0.7.exe`
+   - **Portable Edition:** `AutumnDeck-2.0.8-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
+   - **Installer:** `AutumnDeck-Setup-2.0.8.exe`
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 

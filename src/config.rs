@@ -487,6 +487,7 @@ impl VizColorMode {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TaskbarThemeFolder {
+    CleanMinimal,
     RealisticMaterials,
     InteractiveDocks,
     OsDocks,
@@ -499,7 +500,8 @@ pub enum TaskbarThemeFolder {
 
 impl TaskbarThemeFolder {
     #[allow(dead_code)]
-    pub const ALL: [TaskbarThemeFolder; 8] = [
+    pub const ALL: [TaskbarThemeFolder; 9] = [
+        TaskbarThemeFolder::CleanMinimal,
         TaskbarThemeFolder::RealisticMaterials,
         TaskbarThemeFolder::InteractiveDocks,
         TaskbarThemeFolder::OsDocks,
@@ -510,7 +512,8 @@ impl TaskbarThemeFolder {
         TaskbarThemeFolder::All,
     ];
 
-    pub const CURATED: [TaskbarThemeFolder; 7] = [
+    pub const CURATED: [TaskbarThemeFolder; 8] = [
+        TaskbarThemeFolder::CleanMinimal,
         TaskbarThemeFolder::RealisticMaterials,
         TaskbarThemeFolder::InteractiveDocks,
         TaskbarThemeFolder::OsDocks,
@@ -522,6 +525,7 @@ impl TaskbarThemeFolder {
 
     pub fn label(self) -> &'static str {
         match self {
+            TaskbarThemeFolder::CleanMinimal => "Clean & Minimal (20)",
             TaskbarThemeFolder::RealisticMaterials => "Realistic Themes (18)",
             TaskbarThemeFolder::InteractiveDocks => "Interactive Docks (20)",
             TaskbarThemeFolder::OsDocks => "OS & Iconic Docks (6)",
@@ -529,12 +533,17 @@ impl TaskbarThemeFolder {
             TaskbarThemeFolder::InteractiveElements => "Interactive Elements (6)",
             TaskbarThemeFolder::LiveThemes => "Live & Crystal (8)",
             TaskbarThemeFolder::MusicThemes => "Music Themes (6)",
-            TaskbarThemeFolder::All => "All Themes (70)",
+            TaskbarThemeFolder::All => "All Themes (90)",
         }
     }
 
     pub fn card_meta(self) -> (&'static str, &'static str, TaskbarTheme) {
         match self {
+            TaskbarThemeFolder::CleanMinimal => (
+                "Clean & Minimal",
+                "Animated OS26 Liquid Glass, Matter Tiles, Bubbles, One UI & DockLike",
+                TaskbarTheme::Os26LiquidGlassLight,
+            ),
             TaskbarThemeFolder::RealisticMaterials => (
                 "Realistic & Calm",
                 "Live Water, Zen Mist, Brushed Metal, Hi-Fi, Marble & Wood",
@@ -542,17 +551,17 @@ impl TaskbarThemeFolder {
             ),
             TaskbarThemeFolder::InteractiveDocks => (
                 "Interactive Docks",
-                "Split Islands, Full Taskbars, Orbs, Morph & HUDs",
+                "Split Islands, Orbs & HUDs",
                 TaskbarTheme::AuroraRibbonDock,
             ),
             TaskbarThemeFolder::OsDocks => (
                 "OS & Iconic Docks",
-                "Cupertino Dock, Island, Aero 7 & Retro 95",
+                "Cupertino, Aero 7 & Retro 95",
                 TaskbarTheme::CupertinoDock,
             ),
             TaskbarThemeFolder::KineticThemes => (
                 "Kinetic Interactive",
-                "Spring Wave, Liquid Mercury, Bubbles & 3D Grid",
+                "Spring Wave, Mercury & 3D Grid",
                 TaskbarTheme::KineticCupertinoWave,
             ),
             TaskbarThemeFolder::InteractiveElements => (
@@ -572,8 +581,8 @@ impl TaskbarThemeFolder {
             ),
             TaskbarThemeFolder::All => (
                 "All Taskbar Themes",
-                "Browse all Realistic, Docks, Kinetic, Elemental & Music",
-                TaskbarTheme::RealisticWaterDock,
+                "Browse all Clean, Realistic, Docks, Kinetic, Elemental & Music",
+                TaskbarTheme::Os26LiquidGlassLight,
             ),
         }
     }
@@ -581,6 +590,27 @@ impl TaskbarThemeFolder {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TaskbarTheme {
+    // Clean & Minimal (20 authentic Windhawk-inspired native Windows 11 taskbar themes)
+    Os26LiquidGlassLight,
+    Os26LiquidGlassDark,
+    MatterTilesLight,
+    MatterTilesDark,
+    OneUiLightChips,
+    OneUiDarkChips,
+    SquircleFrosted,
+    BubblesDark,
+    BubblesLight,
+    PillsDetached,
+    RosePineTiles,
+    CatppuccinTiles,
+    LiquidGlassClear,
+    DockLikeLight,
+    DockLikeDark,
+    BlobLight,
+    LuminosityFloat,
+    BorderlessGhost,
+    AerisGlassLight,
+    CleanSlateCards,
     // Realistic Materials, Water & Calm Themes (18 photorealistic Direct2D PBR docks)
     BrushedTitaniumDock,
     VacuumTubeHiFiDock,
@@ -661,7 +691,27 @@ pub enum TaskbarTheme {
 }
 
 impl TaskbarTheme {
-    pub const ALL: [TaskbarTheme; 70] = [
+    pub const ALL: [TaskbarTheme; 90] = [
+        TaskbarTheme::Os26LiquidGlassLight,
+        TaskbarTheme::Os26LiquidGlassDark,
+        TaskbarTheme::MatterTilesLight,
+        TaskbarTheme::MatterTilesDark,
+        TaskbarTheme::OneUiLightChips,
+        TaskbarTheme::OneUiDarkChips,
+        TaskbarTheme::SquircleFrosted,
+        TaskbarTheme::BubblesDark,
+        TaskbarTheme::BubblesLight,
+        TaskbarTheme::PillsDetached,
+        TaskbarTheme::RosePineTiles,
+        TaskbarTheme::CatppuccinTiles,
+        TaskbarTheme::LiquidGlassClear,
+        TaskbarTheme::DockLikeLight,
+        TaskbarTheme::DockLikeDark,
+        TaskbarTheme::BlobLight,
+        TaskbarTheme::LuminosityFloat,
+        TaskbarTheme::BorderlessGhost,
+        TaskbarTheme::AerisGlassLight,
+        TaskbarTheme::CleanSlateCards,
         TaskbarTheme::RealisticWaterDock,
         TaskbarTheme::RainWindowDock,
         TaskbarTheme::BrushedTitaniumDock,
@@ -734,6 +784,29 @@ impl TaskbarTheme {
         TaskbarTheme::VuPeakStudio,
     ];
 
+    pub const CLEAN_MINIMAL_FOLDER: [TaskbarTheme; 20] = [
+        TaskbarTheme::Os26LiquidGlassLight,
+        TaskbarTheme::Os26LiquidGlassDark,
+        TaskbarTheme::MatterTilesLight,
+        TaskbarTheme::MatterTilesDark,
+        TaskbarTheme::OneUiLightChips,
+        TaskbarTheme::OneUiDarkChips,
+        TaskbarTheme::SquircleFrosted,
+        TaskbarTheme::BubblesDark,
+        TaskbarTheme::BubblesLight,
+        TaskbarTheme::PillsDetached,
+        TaskbarTheme::RosePineTiles,
+        TaskbarTheme::CatppuccinTiles,
+        TaskbarTheme::LiquidGlassClear,
+        TaskbarTheme::DockLikeLight,
+        TaskbarTheme::DockLikeDark,
+        TaskbarTheme::BlobLight,
+        TaskbarTheme::LuminosityFloat,
+        TaskbarTheme::BorderlessGhost,
+        TaskbarTheme::AerisGlassLight,
+        TaskbarTheme::CleanSlateCards,
+    ];
+
     pub const REALISTIC_FOLDER: [TaskbarTheme; 18] = [
         TaskbarTheme::RealisticWaterDock,
         TaskbarTheme::RainWindowDock,
@@ -755,7 +828,27 @@ impl TaskbarTheme {
         TaskbarTheme::SilkLinenCalmDock,
     ];
 
-    pub const VIRTUAL_DOCK_THEMES: [TaskbarTheme; 38] = [
+    pub const VIRTUAL_DOCK_THEMES: [TaskbarTheme; 58] = [
+        TaskbarTheme::Os26LiquidGlassLight,
+        TaskbarTheme::Os26LiquidGlassDark,
+        TaskbarTheme::MatterTilesLight,
+        TaskbarTheme::MatterTilesDark,
+        TaskbarTheme::OneUiLightChips,
+        TaskbarTheme::OneUiDarkChips,
+        TaskbarTheme::SquircleFrosted,
+        TaskbarTheme::BubblesDark,
+        TaskbarTheme::BubblesLight,
+        TaskbarTheme::PillsDetached,
+        TaskbarTheme::RosePineTiles,
+        TaskbarTheme::CatppuccinTiles,
+        TaskbarTheme::LiquidGlassClear,
+        TaskbarTheme::DockLikeLight,
+        TaskbarTheme::DockLikeDark,
+        TaskbarTheme::BlobLight,
+        TaskbarTheme::LuminosityFloat,
+        TaskbarTheme::BorderlessGhost,
+        TaskbarTheme::AerisGlassLight,
+        TaskbarTheme::CleanSlateCards,
         TaskbarTheme::RealisticWaterDock,
         TaskbarTheme::RainWindowDock,
         TaskbarTheme::BrushedTitaniumDock,
@@ -868,6 +961,7 @@ impl TaskbarTheme {
 
     pub fn in_folder(folder: TaskbarThemeFolder) -> &'static [TaskbarTheme] {
         match folder {
+            TaskbarThemeFolder::CleanMinimal => &Self::CLEAN_MINIMAL_FOLDER,
             TaskbarThemeFolder::RealisticMaterials => &Self::REALISTIC_FOLDER,
             TaskbarThemeFolder::InteractiveDocks => &Self::INTERACTIVE_DOCKS_FOLDER,
             TaskbarThemeFolder::OsDocks => &Self::OS_DOCKS_FOLDER,
@@ -881,6 +975,26 @@ impl TaskbarTheme {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            TaskbarTheme::Os26LiquidGlassLight => "wh_os26_liquid_glass_light",
+            TaskbarTheme::Os26LiquidGlassDark => "wh_os26_liquid_glass_dark",
+            TaskbarTheme::MatterTilesLight => "wh_matter_tiles_light",
+            TaskbarTheme::MatterTilesDark => "wh_matter_tiles_dark",
+            TaskbarTheme::OneUiLightChips => "wh_one_ui_light_chips",
+            TaskbarTheme::OneUiDarkChips => "wh_one_ui_dark_chips",
+            TaskbarTheme::SquircleFrosted => "wh_squircle_frosted",
+            TaskbarTheme::BubblesDark => "wh_bubbles_dark",
+            TaskbarTheme::BubblesLight => "wh_bubbles_light",
+            TaskbarTheme::PillsDetached => "wh_pills_detached",
+            TaskbarTheme::RosePineTiles => "wh_rose_pine_tiles",
+            TaskbarTheme::CatppuccinTiles => "wh_catppuccin_tiles",
+            TaskbarTheme::LiquidGlassClear => "wh_liquid_glass_clear",
+            TaskbarTheme::DockLikeLight => "wh_docklike_light",
+            TaskbarTheme::DockLikeDark => "wh_docklike_dark",
+            TaskbarTheme::BlobLight => "wh_blob_light",
+            TaskbarTheme::LuminosityFloat => "wh_luminosity_float",
+            TaskbarTheme::BorderlessGhost => "wh_borderless_ghost",
+            TaskbarTheme::AerisGlassLight => "wh_aeris_glass_light",
+            TaskbarTheme::CleanSlateCards => "wh_clean_slate_cards",
             TaskbarTheme::BrushedTitaniumDock => "real_brushed_titanium",
             TaskbarTheme::VacuumTubeHiFiDock => "real_vacuum_tube_hifi",
             TaskbarTheme::SwissHorologyDock => "real_swiss_horology",
@@ -956,6 +1070,46 @@ impl TaskbarTheme {
 
     pub fn from_str(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
+            "wh_os26_liquid_glass_light" | "os26_liquid_glass_light" | "liquid_glass_light" => {
+                TaskbarTheme::Os26LiquidGlassLight
+            }
+            "wh_os26_liquid_glass_dark" | "os26_liquid_glass_dark" | "liquid_glass_dark" => {
+                TaskbarTheme::Os26LiquidGlassDark
+            }
+            "wh_matter_tiles_light" | "matter_light" | "matter_tiles_light" => {
+                TaskbarTheme::MatterTilesLight
+            }
+            "wh_matter_tiles_dark" | "matter_dark" | "matter" => TaskbarTheme::MatterTilesDark,
+            "wh_one_ui_light_chips" | "one_ui_light_chips" | "one_ui" => {
+                TaskbarTheme::OneUiLightChips
+            }
+            "wh_one_ui_dark_chips" | "one_ui_dark_chips" => TaskbarTheme::OneUiDarkChips,
+            "wh_squircle_frosted" | "squircle_frosted" | "squircle" => {
+                TaskbarTheme::SquircleFrosted
+            }
+            "wh_bubbles_dark" | "bubbles_dark" | "bubbles" => TaskbarTheme::BubblesDark,
+            "wh_bubbles_light" | "bubbles_light" => TaskbarTheme::BubblesLight,
+            "wh_pills_detached" | "pills_detached" | "pills" => TaskbarTheme::PillsDetached,
+            "wh_rose_pine_tiles" | "rose_pine_tiles" | "rose_pine" => TaskbarTheme::RosePineTiles,
+            "wh_catppuccin_tiles" | "catppuccin_tiles" | "catppuccin" => {
+                TaskbarTheme::CatppuccinTiles
+            }
+            "wh_liquid_glass_clear" | "liquid_glass_clear" | "liquid_glass_2" => {
+                TaskbarTheme::LiquidGlassClear
+            }
+            "wh_docklike_light" | "docklike_light" => TaskbarTheme::DockLikeLight,
+            "wh_docklike_dark" | "docklike_dark" | "docklike" => TaskbarTheme::DockLikeDark,
+            "wh_blob_light" | "blob_light" | "blob" => TaskbarTheme::BlobLight,
+            "wh_luminosity_float" | "luminosity_float" | "luminosity" => {
+                TaskbarTheme::LuminosityFloat
+            }
+            "wh_borderless_ghost" | "borderless_ghost" | "borderless" => {
+                TaskbarTheme::BorderlessGhost
+            }
+            "wh_aeris_glass_light" | "aeris_glass_light" | "aeris" => TaskbarTheme::AerisGlassLight,
+            "wh_clean_slate_cards" | "clean_slate_cards" | "clean_slate" => {
+                TaskbarTheme::CleanSlateCards
+            }
             "real_brushed_titanium" | "brushed_titanium" => TaskbarTheme::BrushedTitaniumDock,
             "real_vacuum_tube_hifi" | "vacuum_tube_hifi" => TaskbarTheme::VacuumTubeHiFiDock,
             "real_swiss_horology" | "swiss_horology" => TaskbarTheme::SwissHorologyDock,
@@ -1053,6 +1207,26 @@ impl TaskbarTheme {
 
     pub fn label(self) -> &'static str {
         match self {
+            TaskbarTheme::Os26LiquidGlassLight => "OS26 Liquid Glass Light",
+            TaskbarTheme::Os26LiquidGlassDark => "OS26 Liquid Glass Dark",
+            TaskbarTheme::MatterTilesLight => "Matter Tiles Light",
+            TaskbarTheme::MatterTilesDark => "Matter Tiles Dark",
+            TaskbarTheme::OneUiLightChips => "One UI Light Chips",
+            TaskbarTheme::OneUiDarkChips => "One UI Dark Chips",
+            TaskbarTheme::SquircleFrosted => "Squircle Frosted",
+            TaskbarTheme::BubblesDark => "Bubbles Dark",
+            TaskbarTheme::BubblesLight => "Bubbles Light",
+            TaskbarTheme::PillsDetached => "Pills Detached",
+            TaskbarTheme::RosePineTiles => "Rose Pine Tiles",
+            TaskbarTheme::CatppuccinTiles => "Catppuccin Tiles",
+            TaskbarTheme::LiquidGlassClear => "Liquid Glass Clear",
+            TaskbarTheme::DockLikeLight => "DockLike Light",
+            TaskbarTheme::DockLikeDark => "DockLike Dark",
+            TaskbarTheme::BlobLight => "Blob Light",
+            TaskbarTheme::LuminosityFloat => "Luminosity Float",
+            TaskbarTheme::BorderlessGhost => "Borderless Ghost",
+            TaskbarTheme::AerisGlassLight => "Aeris Glass Light",
+            TaskbarTheme::CleanSlateCards => "Clean Slate Cards",
             TaskbarTheme::BrushedTitaniumDock => "Titanium CNC Machined",
             TaskbarTheme::VacuumTubeHiFiDock => "Audiophile Vacuum Tube",
             TaskbarTheme::SwissHorologyDock => "Swiss Haute Horlogerie",
@@ -1128,6 +1302,26 @@ impl TaskbarTheme {
 
     pub fn badge(self) -> &'static str {
         match self {
+            TaskbarTheme::Os26LiquidGlassLight => "Light Glass",
+            TaskbarTheme::Os26LiquidGlassDark => "Liquid Glass",
+            TaskbarTheme::MatterTilesLight => "Light Tiles",
+            TaskbarTheme::MatterTilesDark => "Float Tiles",
+            TaskbarTheme::OneUiLightChips => "One UI 8.5",
+            TaskbarTheme::OneUiDarkChips => "Light Rail",
+            TaskbarTheme::SquircleFrosted => "Squircle",
+            TaskbarTheme::BubblesDark => "Circles",
+            TaskbarTheme::BubblesLight => "Light Circles",
+            TaskbarTheme::PillsDetached => "Pills",
+            TaskbarTheme::RosePineTiles => "Rose Pine",
+            TaskbarTheme::CatppuccinTiles => "Mocha Tiles",
+            TaskbarTheme::LiquidGlassClear => "Clear Glass",
+            TaskbarTheme::DockLikeLight => "macOS Light",
+            TaskbarTheme::DockLikeDark => "DockLike",
+            TaskbarTheme::BlobLight => "Blob Light",
+            TaskbarTheme::LuminosityFloat => "Luminosity",
+            TaskbarTheme::BorderlessGhost => "Zero Bar",
+            TaskbarTheme::AerisGlassLight => "Aeris Light",
+            TaskbarTheme::CleanSlateCards => "CleanSlate",
             TaskbarTheme::BrushedTitaniumDock => "Brushed Ti",
             TaskbarTheme::VacuumTubeHiFiDock => "Hi-Fi Tube",
             TaskbarTheme::SwissHorologyDock => "Horology",
@@ -1203,6 +1397,66 @@ impl TaskbarTheme {
 
     pub fn subtitle(self) -> &'static str {
         match self {
+            TaskbarTheme::Os26LiquidGlassLight => {
+                "Clear frost outline rail with luminous white liquid-glass icon keycaps"
+            }
+            TaskbarTheme::Os26LiquidGlassDark => {
+                "Razor-thin glass rail with frosted liquid-glass squircle keycaps & bevels"
+            }
+            TaskbarTheme::MatterTilesLight => {
+                "Zero bar — snow-white floating squircle tiles over wallpaper"
+            }
+            TaskbarTheme::MatterTilesDark => {
+                "Zero bar — dark matte squircle tiles floating over wallpaper"
+            }
+            TaskbarTheme::OneUiLightChips => {
+                "Sleek dark glass rail cradling bright white rounded icon chips"
+            }
+            TaskbarTheme::OneUiDarkChips => {
+                "Airy pearl-frost glass rail cradling crisp dark obsidian icon chips"
+            }
+            TaskbarTheme::SquircleFrosted => {
+                "Zero bar — independent smoky frosted squircle islands per app icon"
+            }
+            TaskbarTheme::BubblesDark => {
+                "Standalone round graphite bubbles with focus ring & tray pill"
+            }
+            TaskbarTheme::BubblesLight => {
+                "Standalone milky-white circular glass bubbles over wallpaper"
+            }
+            TaskbarTheme::PillsDetached => {
+                "Zero bar — detached dark-frosted bordered icon pills floating freely"
+            }
+            TaskbarTheme::RosePineTiles => {
+                "Zero bar — floating Rosé Pine tiles with rose-gold focus border"
+            }
+            TaskbarTheme::CatppuccinTiles => {
+                "Zero bar — Catppuccin Mocha tiles with pastel lavender border"
+            }
+            TaskbarTheme::LiquidGlassClear => {
+                "Ultra-clear stadium glass pill with bright refractive white edge sheen"
+            }
+            TaskbarTheme::DockLikeLight => {
+                "Clean alabaster-white macOS DockLike shelf with separate tray island"
+            }
+            TaskbarTheme::DockLikeDark => {
+                "Classic dark navy-slate DockLike shelf with subtle tray separation"
+            }
+            TaskbarTheme::BlobLight => {
+                "Soft ice-gray ribbon with pure-white elevated pill tabs for each app"
+            }
+            TaskbarTheme::LuminosityFloat => {
+                "Wide centered floating frosted pill softly tinted by your wallpaper"
+            }
+            TaskbarTheme::BorderlessGhost => {
+                "Clear floating icons over desktop with whisper-soft readability halo"
+            }
+            TaskbarTheme::AerisGlassLight => {
+                "Full-width crisp icy-white glass bar with flat square translucent blocks"
+            }
+            TaskbarTheme::CleanSlateCards => {
+                "Full-width deep glass bar with dark-frosted bordered app cards"
+            }
             TaskbarTheme::BrushedTitaniumDock => {
                 "Anisotropic CNC-milled titanium plank with Torx bolts & bevels"
             }
@@ -1353,12 +1607,228 @@ impl TaskbarTheme {
     }
 
     pub fn uses_virtual_dock(self) -> bool {
-        Self::INTERACTIVE_DOCKS_FOLDER.contains(&self)
+        Self::CLEAN_MINIMAL_FOLDER.contains(&self)
+            || Self::INTERACTIVE_DOCKS_FOLDER.contains(&self)
             || Self::REALISTIC_FOLDER.contains(&self)
+    }
+
+    pub fn is_clean_minimal(self) -> bool {
+        Self::CLEAN_MINIMAL_FOLDER.contains(&self)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_light_surface(self) -> bool {
+        matches!(
+            self,
+            TaskbarTheme::Os26LiquidGlassLight
+                | TaskbarTheme::MatterTilesLight
+                | TaskbarTheme::OneUiDarkChips
+                | TaskbarTheme::BubblesLight
+                | TaskbarTheme::DockLikeLight
+                | TaskbarTheme::BlobLight
+                | TaskbarTheme::AerisGlassLight
+        )
+    }
+
+    pub fn uses_icon_pads(self) -> bool {
+        matches!(
+            self,
+            TaskbarTheme::Os26LiquidGlassLight
+                | TaskbarTheme::Os26LiquidGlassDark
+                | TaskbarTheme::MatterTilesLight
+                | TaskbarTheme::MatterTilesDark
+                | TaskbarTheme::OneUiLightChips
+                | TaskbarTheme::OneUiDarkChips
+                | TaskbarTheme::SquircleFrosted
+                | TaskbarTheme::BubblesDark
+                | TaskbarTheme::BubblesLight
+                | TaskbarTheme::PillsDetached
+                | TaskbarTheme::RosePineTiles
+                | TaskbarTheme::CatppuccinTiles
+                | TaskbarTheme::BlobLight
+                | TaskbarTheme::AerisGlassLight
+                | TaskbarTheme::CleanSlateCards
+        )
+    }
+
+    /// True for zero-bar Windhawk tile/circle themes where app icons float as independent
+    /// individual tiles directly over the desktop wallpaper (no enclosing bar behind `cap_idx == 0`).
+    pub fn is_independent_tile_dock(self) -> bool {
+        matches!(
+            self,
+            TaskbarTheme::MatterTilesLight
+                | TaskbarTheme::MatterTilesDark
+                | TaskbarTheme::SquircleFrosted
+                | TaskbarTheme::BubblesDark
+                | TaskbarTheme::BubblesLight
+                | TaskbarTheme::PillsDetached
+                | TaskbarTheme::RosePineTiles
+                | TaskbarTheme::CatppuccinTiles
+        )
     }
 
     pub fn preview_preset(self) -> (PillMode, SurfaceMode, u8, bool, TaskbarVizStyle, bool) {
         match self {
+            TaskbarTheme::Os26LiquidGlassLight => (
+                PillMode::SplitPills,
+                SurfaceMode::Blur,
+                148,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::Os26LiquidGlassDark => (
+                PillMode::SplitPills,
+                SurfaceMode::Blur,
+                104,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::MatterTilesLight => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                226,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::MatterTilesDark => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                228,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::OneUiLightChips => (
+                PillMode::SplitPills,
+                SurfaceMode::Blur,
+                118,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::OneUiDarkChips => (
+                PillMode::SplitPills,
+                SurfaceMode::Blur,
+                162,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::SquircleFrosted => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                194,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::BubblesDark => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                226,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::BubblesLight => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                220,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::PillsDetached => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                204,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::RosePineTiles => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                232,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::CatppuccinTiles => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                234,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::LiquidGlassClear => (
+                PillMode::SplitPills,
+                SurfaceMode::Blur,
+                62,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::DockLikeLight => (
+                PillMode::SplitPills,
+                SurfaceMode::Blur,
+                182,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::DockLikeDark => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                224,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::BlobLight => (
+                PillMode::FullBar,
+                SurfaceMode::Blur,
+                188,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::LuminosityFloat => (
+                PillMode::UnifiedPill,
+                SurfaceMode::Blur,
+                124,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::BorderlessGhost => (
+                PillMode::SplitPills,
+                SurfaceMode::ClearTint,
+                0,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::AerisGlassLight => (
+                PillMode::FullBar,
+                SurfaceMode::Blur,
+                172,
+                false,
+                TaskbarVizStyle::Off,
+                false,
+            ),
+            TaskbarTheme::CleanSlateCards => (
+                PillMode::FullBar,
+                SurfaceMode::Blur,
+                138,
+                true,
+                TaskbarVizStyle::Off,
+                false,
+            ),
             TaskbarTheme::RealisticWaterDock
             | TaskbarTheme::RainWindowDock
             | TaskbarTheme::OceanTideDock
@@ -3345,6 +3815,12 @@ pub struct AppConfig {
     pub dock_sync_win_pins: bool,
     pub mac_dock_pinned: Vec<AppShortcut>,
 
+    // Phase 5b: Clean & Minimal macOS / Windhawk Status Menu Bar (Clean & Minimal themes only)
+    pub clean_top_bar_enabled: bool,
+    pub clean_top_bar_edge: CleanTopBarEdge,
+    pub clean_top_bar_style: CleanTopBarStyle,
+    pub clean_top_bar_desktop_only: bool,
+
     // Phase 6: Modular Per-Widget Hyper-Customization Engine
     pub w_shelf: DockShelfFrameConfig,
     pub w_apps: DockAppWidgetConfig,
@@ -3352,6 +3828,84 @@ pub struct AppConfig {
     pub w_tray: DockTrayWidgetConfig,
     pub w_hud: DockHudWidgetConfig,
     pub w_util: DockUtilityWidgetConfig,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CleanTopBarEdge {
+    Top,
+    Bottom,
+}
+
+impl CleanTopBarEdge {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CleanTopBarEdge::Top => "top",
+            CleanTopBarEdge::Bottom => "bottom",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "bottom" | "bot" | "down" => CleanTopBarEdge::Bottom,
+            _ => CleanTopBarEdge::Top,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn label(self) -> &'static str {
+        match self {
+            CleanTopBarEdge::Top => "Top",
+            CleanTopBarEdge::Bottom => "Bottom",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            CleanTopBarEdge::Top => CleanTopBarEdge::Bottom,
+            CleanTopBarEdge::Bottom => CleanTopBarEdge::Top,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CleanTopBarStyle {
+    Auto,
+    FullWidth,
+    Floating,
+}
+
+impl CleanTopBarStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CleanTopBarStyle::Auto => "auto",
+            CleanTopBarStyle::FullWidth => "full",
+            CleanTopBarStyle::Floating => "floating",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "full" | "fullwidth" | "macos" => CleanTopBarStyle::FullWidth,
+            "floating" | "pill" | "capsule" | "windhawk" => CleanTopBarStyle::Floating,
+            _ => CleanTopBarStyle::Auto,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CleanTopBarStyle::Auto => "Auto",
+            CleanTopBarStyle::FullWidth => "Full Bar",
+            CleanTopBarStyle::Floating => "Glass Pill",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            CleanTopBarStyle::Auto => CleanTopBarStyle::FullWidth,
+            CleanTopBarStyle::FullWidth => CleanTopBarStyle::Floating,
+            CleanTopBarStyle::Floating => CleanTopBarStyle::Auto,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -3564,10 +4118,17 @@ pub enum DockArtLayer {
     WarmLinenDusk,
     AbyssalTrench,
     GoldenHourHorizon,
+    // 3 Clean & Minimal Windhawk-inspired Glass & Frost Art Layers
+    LiquidGlassRefract,
+    CleanFrost,
+    LuminosityBloom,
 }
 
 impl DockArtLayer {
-    pub const ALL: [DockArtLayer; 37] = [
+    pub const ALL: [DockArtLayer; 40] = [
+        DockArtLayer::LiquidGlassRefract,
+        DockArtLayer::CleanFrost,
+        DockArtLayer::LuminosityBloom,
         DockArtLayer::CrystalWater,
         DockArtLayer::RainWindowGlass,
         DockArtLayer::BrushedTitanium,
@@ -3673,6 +4234,9 @@ impl DockArtLayer {
             DockArtLayer::WarmLinenDusk => "warm_linen",
             DockArtLayer::AbyssalTrench => "abyssal_trench",
             DockArtLayer::GoldenHourHorizon => "golden_hour_horizon",
+            DockArtLayer::LiquidGlassRefract => "liquid_glass_refract",
+            DockArtLayer::CleanFrost => "clean_frost",
+            DockArtLayer::LuminosityBloom => "luminosity_bloom",
         }
     }
 
@@ -3715,6 +4279,9 @@ impl DockArtLayer {
             DockArtLayer::WarmLinenDusk => "Warm Linen",
             DockArtLayer::AbyssalTrench => "Abyssal Trench",
             DockArtLayer::GoldenHourHorizon => "Golden Horizon",
+            DockArtLayer::LiquidGlassRefract => "Liquid Glass",
+            DockArtLayer::CleanFrost => "Clean Frost",
+            DockArtLayer::LuminosityBloom => "Luminosity Glow",
         }
     }
 
@@ -3757,6 +4324,9 @@ impl DockArtLayer {
             "warm_linen" | "linen" => Some(DockArtLayer::WarmLinenDusk),
             "abyssal_trench" => Some(DockArtLayer::AbyssalTrench),
             "golden_hour_horizon" | "golden_hour" => Some(DockArtLayer::GoldenHourHorizon),
+            "liquid_glass_refract" | "liquid_glass" => Some(DockArtLayer::LiquidGlassRefract),
+            "clean_frost" => Some(DockArtLayer::CleanFrost),
+            "luminosity_bloom" | "luminosity" => Some(DockArtLayer::LuminosityBloom),
             _ => None,
         }
     }
@@ -4797,6 +5367,11 @@ impl Default for AppConfig {
             dock_sync_win_pins: true,
             mac_dock_pinned: default_dock_pinned(),
 
+            clean_top_bar_enabled: true,
+            clean_top_bar_edge: CleanTopBarEdge::Top,
+            clean_top_bar_style: CleanTopBarStyle::Auto,
+            clean_top_bar_desktop_only: false,
+
             w_shelf: DockShelfFrameConfig::default(),
             w_apps: DockAppWidgetConfig::default(),
             w_clock: DockClockWidgetConfig::default(),
@@ -4823,6 +5398,67 @@ impl AppConfig {
     /// Active animation frame interval (ms) derived from `self.anim_fps`.
     pub fn anim_frame_ms(&self) -> u32 {
         Self::anim_frame_ms_for(self.anim_fps)
+    }
+
+    /// True when the macOS / Windhawk Status Menu Bar should render (Clean & Minimal themes only).
+    pub fn is_clean_top_bar_active(&self) -> bool {
+        self.mac_dock_enabled && self.tb_theme.is_clean_minimal() && self.clean_top_bar_enabled
+    }
+
+    /// Resolves whether the Clean & Minimal Top Bar uses Floating Glass Pill silhouette vs Full-Width macOS band.
+    pub fn resolved_clean_top_bar_floating(&self) -> bool {
+        match self.clean_top_bar_style {
+            CleanTopBarStyle::FullWidth => false,
+            CleanTopBarStyle::Floating => true,
+            CleanTopBarStyle::Auto => matches!(
+                self.tb_theme,
+                TaskbarTheme::LiquidGlassClear
+                    | TaskbarTheme::MatterTilesLight
+                    | TaskbarTheme::MatterTilesDark
+                    | TaskbarTheme::SquircleFrosted
+                    | TaskbarTheme::BubblesDark
+                    | TaskbarTheme::BubblesLight
+                    | TaskbarTheme::PillsDetached
+                    | TaskbarTheme::RosePineTiles
+                    | TaskbarTheme::CatppuccinTiles
+                    | TaskbarTheme::OneUiLightChips
+                    | TaskbarTheme::OneUiDarkChips
+            ),
+        }
+    }
+
+    /// Sets the Clean & Minimal Top Bar edge (`Top` or `Bottom`) and auto-swaps the app dock
+    /// to the opposite horizontal edge if they would otherwise collide on the same edge.
+    pub fn set_clean_top_bar_edge(&mut self, edge: CleanTopBarEdge) {
+        self.clean_top_bar_edge = edge;
+        if self.tb_theme.is_clean_minimal() && self.clean_top_bar_enabled {
+            match (edge, self.mac_dock_edge) {
+                (CleanTopBarEdge::Top, MacDockEdge::Top) => {
+                    self.mac_dock_edge = MacDockEdge::Bottom;
+                }
+                (CleanTopBarEdge::Bottom, MacDockEdge::Bottom) => {
+                    self.mac_dock_edge = MacDockEdge::Top;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Sets `mac_dock_edge` while keeping the Clean & Minimal Top Bar on the opposite horizontal
+    /// edge whenever both would otherwise share `Top` or `Bottom`.
+    pub fn set_mac_dock_edge_smart(&mut self, edge: MacDockEdge) {
+        self.mac_dock_edge = edge;
+        if self.is_clean_top_bar_active() {
+            match (edge, self.clean_top_bar_edge) {
+                (MacDockEdge::Top, CleanTopBarEdge::Top) => {
+                    self.clean_top_bar_edge = CleanTopBarEdge::Bottom;
+                }
+                (MacDockEdge::Bottom, CleanTopBarEdge::Bottom) => {
+                    self.clean_top_bar_edge = CleanTopBarEdge::Top;
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Updates `anim_fps` (clamped 15..=120) and keeps legacy `viz_eco_fps` synced (`<= 24`).
@@ -5148,25 +5784,39 @@ impl AppConfig {
         self.tb_show_rim = true;
         self.tb_show_fx = true;
         self.corner_radius = match theme {
-            TaskbarTheme::Retro95Classic | TaskbarTheme::FrutigerAero7 => 0,
+            TaskbarTheme::Retro95Classic
+            | TaskbarTheme::FrutigerAero7
+            | TaskbarTheme::AerisGlassLight
+            | TaskbarTheme::BlobLight
+            | TaskbarTheme::CleanSlateCards => 0,
             TaskbarTheme::EditorialPaperDock | TaskbarTheme::TerminalPhosphorDock => 4,
             TaskbarTheme::UnixPolybar
             | TaskbarTheme::CyberpunkHudDock
             | TaskbarTheme::NextSlatePlankDock
             | TaskbarTheme::KumikoWoodDock
             | TaskbarTheme::BauhausGeometricDock => 8,
-            TaskbarTheme::CyberArasakaDeck | TaskbarTheme::SolsticeAstrolabeDock => 10,
+            TaskbarTheme::CyberArasakaDeck
+            | TaskbarTheme::SolsticeAstrolabeDock
+            | TaskbarTheme::DockLikeLight
+            | TaskbarTheme::DockLikeDark => 10,
             TaskbarTheme::CyberNeonDock
             | TaskbarTheme::HoverNeonPlasma
             | TaskbarTheme::VaporwaveHorizonDock
-            | TaskbarTheme::ObsidianEmberDock => 12,
-            TaskbarTheme::KineticSynthTrampoline => 14,
+            | TaskbarTheme::ObsidianEmberDock
+            | TaskbarTheme::MatterTilesLight
+            | TaskbarTheme::MatterTilesDark
+            | TaskbarTheme::SquircleFrosted
+            | TaskbarTheme::RosePineTiles
+            | TaskbarTheme::CatppuccinTiles => 12,
+            TaskbarTheme::KineticSynthTrampoline | TaskbarTheme::PillsDetached => 14,
             TaskbarTheme::PureClearPulse => 16,
             TaskbarTheme::FrostedSplit
             | TaskbarTheme::BassPulseSplit
             | TaskbarTheme::FrutigerAquaDock
             | TaskbarTheme::PrismRefractionDock
-            | TaskbarTheme::StarfieldWarpDock => 18,
+            | TaskbarTheme::StarfieldWarpDock
+            | TaskbarTheme::LuminosityFloat => 18,
+            TaskbarTheme::BorderlessGhost => 20,
             TaskbarTheme::QuartzShellDock
             | TaskbarTheme::KatanaGlassDock
             | TaskbarTheme::AuroraRibbonDock
@@ -5177,7 +5827,14 @@ impl AppConfig {
             | TaskbarTheme::KineticCupertinoWave
             | TaskbarTheme::KineticHydroChamber
             | TaskbarTheme::LiquidChrome
-            | TaskbarTheme::HoverWaterRipples => 22,
+            | TaskbarTheme::HoverWaterRipples
+            | TaskbarTheme::Os26LiquidGlassLight
+            | TaskbarTheme::Os26LiquidGlassDark
+            | TaskbarTheme::OneUiLightChips
+            | TaskbarTheme::OneUiDarkChips
+            | TaskbarTheme::BubblesDark
+            | TaskbarTheme::BubblesLight
+            | TaskbarTheme::LiquidGlassClear => 24,
             TaskbarTheme::BrushedTitaniumDock
             | TaskbarTheme::VacuumTubeHiFiDock
             | TaskbarTheme::VintageCassetteDock
@@ -5203,7 +5860,9 @@ impl AppConfig {
         };
         self.tb_match_wallpaper = matches!(
             theme,
-            TaskbarTheme::WallpaperGlass | TaskbarTheme::AuroraBorealis
+            TaskbarTheme::WallpaperGlass
+                | TaskbarTheme::AuroraBorealis
+                | TaskbarTheme::LuminosityFloat
         );
         self.tb_viz_color_mode = if self.tb_match_wallpaper {
             VizColorMode::MatchWallpaper
@@ -6507,6 +7166,10 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "mac_dock_mag_pct" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_mag_pct = v.clamp(100, 185); },
                 "mac_dock_bounce" => cfg.mac_dock_bounce = parse_bool(val),
                 "mac_dock_dots" => cfg.mac_dock_dots = parse_bool(val),
+                "clean_top_bar_enabled" => cfg.clean_top_bar_enabled = parse_bool(val),
+                "clean_top_bar_edge" => cfg.clean_top_bar_edge = CleanTopBarEdge::from_str(val),
+                "clean_top_bar_style" => cfg.clean_top_bar_style = CleanTopBarStyle::from_str(val),
+                "clean_top_bar_desktop_only" => cfg.clean_top_bar_desktop_only = parse_bool(val),
                 "dock_sync_win_pins" => {
                     cfg.dock_sync_win_pins = parse_bool(val);
                     saw_dock_sync_flag = true;
@@ -7149,6 +7812,10 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("mac_dock_mag_pct={}\n", cfg.mac_dock_mag_pct));
     out.push_str(&format!("mac_dock_bounce={}\n", b(cfg.mac_dock_bounce)));
     out.push_str(&format!("mac_dock_dots={}\n", b(cfg.mac_dock_dots)));
+    out.push_str(&format!("clean_top_bar_enabled={}\n", b(cfg.clean_top_bar_enabled)));
+    out.push_str(&format!("clean_top_bar_edge={}\n", cfg.clean_top_bar_edge.as_str()));
+    out.push_str(&format!("clean_top_bar_style={}\n", cfg.clean_top_bar_style.as_str()));
+    out.push_str(&format!("clean_top_bar_desktop_only={}\n", b(cfg.clean_top_bar_desktop_only)));
     out.push_str(&format!("dock_sync_win_pins={}\n", b(cfg.dock_sync_win_pins)));
     let dcnt = cfg.mac_dock_pinned.len().min(16);
     out.push_str(&format!("dock_pin_count={}\n", dcnt));
@@ -7762,6 +8429,13 @@ pub fn ensure_windows_transparency_enabled() {
     }
 }
 
+/// Returns true when Windows 11 system UI (taskbar / system tray) is set to Light Mode
+/// (`SystemUsesLightTheme != 0`), where native tray text & glyphs are dark instead of white.
+pub fn windows_system_uses_light_theme() -> bool {
+    let sub = w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    read_hkcu_dword(sub, "SystemUsesLightTheme", 0) != 0
+}
+
 /// Watches Explorer's taskbar registry keys at 0% CPU and notifies `notify_hwnd` whenever
 /// taskbar size, screen position, icon alignment, or auto-hide preferences change.
 pub fn start_explorer_pref_watcher(notify_hwnd: windows::Win32::Foundation::HWND, notify_msg: u32) {
@@ -8201,6 +8875,100 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(bak_path.is_file(), "backup config.ini.bak must also be written");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_minimal_20_themes_roundtrip_virtual_dock_and_presets() {
+        assert_eq!(TaskbarTheme::CLEAN_MINIMAL_FOLDER.len(), 20);
+        assert_eq!(TaskbarTheme::VIRTUAL_DOCK_THEMES.len(), 58);
+        assert_eq!(TaskbarTheme::ALL.len(), 90);
+        assert_eq!(TaskbarThemeFolder::CURATED.len(), 8);
+        assert_eq!(TaskbarThemeFolder::CleanMinimal.label(), "Clean & Minimal (20)");
+        assert_eq!(TaskbarThemeFolder::All.label(), "All Themes (90)");
+
+        let mut seen_keys = std::collections::HashSet::new();
+        for &th in &TaskbarTheme::CLEAN_MINIMAL_FOLDER {
+            assert!(th.is_clean_minimal());
+            assert!(
+                th.uses_virtual_dock(),
+                "Clean & Minimal theme {:?} must use the animated Virtual Dock engine",
+                th
+            );
+            assert!(
+                TaskbarTheme::VIRTUAL_DOCK_THEMES.contains(&th),
+                "Clean & Minimal theme {:?} must be registered in VIRTUAL_DOCK_THEMES",
+                th
+            );
+            assert!(
+                crate::dock_themes::dock_palette(th).is_some(),
+                "Clean & Minimal theme {:?} must have a curated dock_palette",
+                th
+            );
+            let spec = crate::dock_themes::dock_spec(th);
+            assert_eq!(
+                spec.light_mode_paper,
+                th.is_light_surface(),
+                "Clean & Minimal theme {:?} light_mode_paper must match is_light_surface",
+                th
+            );
+            if th.is_independent_tile_dock() || th == TaskbarTheme::BorderlessGhost {
+                assert_eq!(
+                    spec.layout,
+                    DockLayoutKind::IndependentOrbs,
+                    "Zero-bar Clean & Minimal theme {:?} must use IndependentOrbs layout",
+                    th
+                );
+                assert_eq!(spec.shape, DockShelfShape::FloatingZero);
+            }
+            let key = th.as_str();
+            assert!(seen_keys.insert(key), "Duplicate theme key {}", key);
+            assert_eq!(TaskbarTheme::from_str(key), th);
+            assert!(!th.label().is_empty());
+            assert!(!th.badge().is_empty());
+            assert!(!th.subtitle().is_empty());
+
+            let mut cfg = AppConfig::default();
+            cfg.apply_taskbar_theme_preset(th);
+            assert_eq!(cfg.tb_theme, th);
+            assert!(cfg.mac_dock_enabled, "Clean & Minimal theme {:?} must activate mac_dock_enabled", th);
+            assert_eq!(
+                cfg.tb_viz_style,
+                TaskbarVizStyle::Off,
+                "Clean & Minimal theme {:?} must keep viz Off for 0% idle CPU",
+                th
+            );
+            if th == TaskbarTheme::LuminosityFloat {
+                assert!(cfg.tb_match_wallpaper);
+            }
+            let ini = serialize_config_ini(&cfg);
+            let (parsed, _, _, _) = parse_config_body(&ini, true);
+            assert_eq!(parsed.tb_theme, th);
+        }
+
+        // Verify Light themes, Icon-Pad themes, and Zero-Bar Independent Tile themes
+        assert!(TaskbarTheme::Os26LiquidGlassLight.is_light_surface());
+        assert!(TaskbarTheme::MatterTilesLight.is_light_surface());
+        assert!(TaskbarTheme::DockLikeLight.is_light_surface());
+        assert!(TaskbarTheme::BlobLight.is_light_surface());
+        assert!(TaskbarTheme::AerisGlassLight.is_light_surface());
+        assert!(!TaskbarTheme::Os26LiquidGlassDark.is_light_surface());
+        assert!(!TaskbarTheme::MatterTilesDark.is_light_surface());
+
+        assert!(TaskbarTheme::Os26LiquidGlassDark.uses_icon_pads());
+        assert!(TaskbarTheme::MatterTilesDark.uses_icon_pads());
+        assert!(TaskbarTheme::MatterTilesLight.uses_icon_pads());
+        assert!(TaskbarTheme::BubblesDark.uses_icon_pads());
+        assert!(TaskbarTheme::OneUiLightChips.uses_icon_pads());
+        assert!(TaskbarTheme::RosePineTiles.uses_icon_pads());
+        assert!(!TaskbarTheme::BorderlessGhost.uses_icon_pads());
+
+        assert!(TaskbarTheme::MatterTilesDark.is_independent_tile_dock());
+        assert!(TaskbarTheme::MatterTilesLight.is_independent_tile_dock());
+        assert!(TaskbarTheme::SquircleFrosted.is_independent_tile_dock());
+        assert!(TaskbarTheme::BubblesDark.is_independent_tile_dock());
+        assert!(TaskbarTheme::PillsDetached.is_independent_tile_dock());
+        assert!(TaskbarTheme::RosePineTiles.is_independent_tile_dock());
+        assert!(!TaskbarTheme::Os26LiquidGlassDark.is_independent_tile_dock());
     }
 }
 

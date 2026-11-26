@@ -5,6 +5,7 @@ mod dcomp_surface;
 mod desktop_widgets;
 mod diagnostics;
 mod dock_themes;
+mod liquid_backdrop;
 mod mac_dock;
 mod realistic_pbr;
 mod settings_ui;
@@ -1002,17 +1003,34 @@ unsafe extern "system" fn global_wnd_proc(
                     let sy = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
                     return state.mac_dock.handle_nchittest(hwnd, sx, sy);
                 }
+                0x0006 => {
+                    // WM_ACTIVATE: dismiss Top Bar Control Center / Clock Popover when clicking outside
+                    if (wparam.0 & 0xFFFF) == 0 {
+                        state.mac_dock.handle_window_deactivate(hwnd);
+                    }
+                    return LRESULT(0);
+                }
+                0x0100 => {
+                    if wparam.0 == 0x1B {
+                        state.mac_dock.hide_top_popover();
+                    }
+                    return LRESULT(0);
+                }
                 0x0021 => {
                     let m_msg = ((lparam.0 >> 16) & 0xFFFF) as u32;
-                    if m_msg == 0x0204 || m_msg == 0x0205 {
-                        return LRESULT(1); // MA_ACTIVATE on right-click for reliable TrackPopupMenu
+                    if m_msg == 0x0204
+                        || m_msg == 0x0205
+                        || hwnd == state.mac_dock.popover_hwnd()
+                    {
+                        return LRESULT(1); // MA_ACTIVATE for menus & Top Bar Sub-UI Popover
                     }
                     return LRESULT(3); // WM_MOUSEACTIVATE -> MA_NOACTIVATE
                 }
                 0x0020 => return state.mac_dock.handle_set_cursor(hwnd),
                 0x0014 => return LRESULT(1),
                 0x0200 => {
-                    state.mac_dock.handle_mouse_move(hwnd, &state.config);
+                    let act = state.mac_dock.handle_mouse_move(hwnd, &state.config);
+                    handle_dock_action(state, act);
                     update_dock_timer(state);
                     return LRESULT(0);
                 }
@@ -1031,7 +1049,7 @@ unsafe extern "system" fn global_wnd_proc(
                 0x0202 => {
                     let lx = (lparam.0 & 0xFFFF) as i16 as f32;
                     let ly = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-                    let act = state.mac_dock.handle_lbutton_up(hwnd, lx, ly, &state.config);
+                    let act = state.mac_dock.handle_lbutton_up(hwnd, lx, ly, &mut state.config);
                     handle_dock_action(state, act);
                     return LRESULT(0);
                 }
@@ -1086,6 +1104,12 @@ unsafe extern "system" fn global_wnd_proc(
                 0x02A3 => {
                     state.mac_dock.handle_thumb_mouse_leave(&state.config);
                     update_dock_timer(state);
+                    return LRESULT(0);
+                }
+                0x0201 => {
+                    let lx = (lparam.0 & 0xFFFF) as i16 as f32;
+                    let ly = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
+                    state.mac_dock.handle_thumb_lbutton_down(lx, ly);
                     return LRESULT(0);
                 }
                 0x0202 => {
@@ -2487,6 +2511,12 @@ fn handle_dock_action(state: &mut AppState, act: MacDockAction) {
         }
         MacDockAction::TrayToggleMute => {
             state.widgets.send_media_action(CcAction::ToggleMute);
+        }
+        MacDockAction::OpenWifiFlyout => {
+            state.widgets.send_media_action(CcAction::OpenWifiList);
+        }
+        MacDockAction::OpenBluetoothFlyout => {
+            state.widgets.send_media_action(CcAction::OpenBtList);
         }
     }
     update_dock_timer(state);

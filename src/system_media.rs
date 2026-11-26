@@ -975,7 +975,22 @@ fn execute_single_action(
                 let _ = set_wifi_radio_wlan(!cur);
             }
         }
-        CcAction::OpenWifiList => open_uri("ms-availablenetworks:"),
+        CcAction::OpenWifiList => {
+            thread::spawn(|| {
+                if !open_uri_ok("ms-availablenetworks:")
+                    && !invoke_quick_settings_tile(
+                        &[
+                            "Manage Wi-Fi connections",
+                            "Manage WLAN connections",
+                            "Manage Wi-Fi",
+                        ],
+                        true,
+                    )
+                {
+                    open_uri("ms-settings:network-wifi");
+                }
+            });
+        }
         CcAction::ToggleBt => {
             if !toggle_radio(RadioKind::Bluetooth) {
                 open_uri("ms-settings:bluetooth");
@@ -984,7 +999,12 @@ fn execute_single_action(
         CcAction::OpenBtList => {
             thread::spawn(|| {
                 if !invoke_quick_settings_tile(
-                    &["Manage Bluetooth devices", "Manage Bluetooth", "Bluetooth devices"],
+                    &[
+                        "Manage Bluetooth devices",
+                        "Show Bluetooth devices",
+                        "Manage Bluetooth",
+                        "Bluetooth devices",
+                    ],
                     true,
                 ) {
                     open_uri("ms-settings:bluetooth");
@@ -3075,20 +3095,47 @@ fn invoke_quick_settings_tile(candidates: &[&str], require_invoke_only: bool) ->
             let uia: IUIAutomation =
                 CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL).ok()?;
             let mut roots = find_qs_roots(&uia);
-            if roots.is_empty() {
-                open_uri("ms-controlcenter:");
-                for i in 0..40 {
-                    thread::sleep(Duration::from_millis(30));
-                    roots = find_qs_roots(&uia);
-                    if !roots.is_empty() {
-                        let (t, rf) =
-                            search_qs_target(&uia, &roots, candidates, require_invoke_only);
-                        if t.is_some() || rf.is_some() {
-                            break;
+            let mut has_target_already = false;
+            if !roots.is_empty() {
+                let (t0, rf0) = search_qs_target(&uia, &roots, candidates, require_invoke_only);
+                if t0.is_some() || rf0.is_some() {
+                    has_target_already = true;
+                } else {
+                    // If Quick Settings is currently open on another L2 subpage (e.g. Wi-Fi list),
+                    // click its Back button to return to the Quick Settings home grid first.
+                    let (back_btn, _) = search_qs_target(&uia, &roots, &["L2Page_BackButton"], true);
+                    if let Some(btn) = back_btn {
+                        if let Ok(unk) = btn.GetCurrentPattern(UIA_InvokePatternId) {
+                            if let Ok(inv) = unk.cast::<IUIAutomationInvokePattern>() {
+                                if inv.Invoke().is_ok() {
+                                    thread::sleep(Duration::from_millis(180));
+                                    roots = find_qs_roots(&uia);
+                                    has_target_already = !roots.is_empty();
+                                }
+                            }
                         }
                     }
-                    if i == 8 && roots.is_empty() {
-                        send_win_chord_ext(0x41); // Win+A fallback
+                }
+            }
+            if roots.is_empty() || !has_target_already {
+                let cc_vis = FindWindowW(w!("ControlCenterWindow"), PCWSTR::null())
+                    .map(|hw| !hw.0.is_null() && IsWindowVisible(hw).as_bool())
+                    .unwrap_or(false);
+                if !cc_vis {
+                    open_uri("ms-controlcenter:");
+                    for i in 0..42 {
+                        thread::sleep(Duration::from_millis(30));
+                        roots = find_qs_roots(&uia);
+                        if !roots.is_empty() {
+                            let (t, rf) =
+                                search_qs_target(&uia, &roots, candidates, require_invoke_only);
+                            if t.is_some() || rf.is_some() {
+                                break;
+                            }
+                        }
+                        if i == 8 && roots.is_empty() {
+                            send_win_chord_ext(0x41); // Win+A fallback
+                        }
                     }
                 }
             }

@@ -195,6 +195,7 @@ pub fn music_logical_size(cfg: &AppConfig) -> (f32, f32) {
         MusicStyle::CarbonSteelDeck => (416.0, 112.0),
         MusicStyle::GoldenHourAudio => (416.0, 112.0),
         MusicStyle::DynamicIslandCapsule => (444.0, 74.0),
+        s if s.horology_theme().is_some() => (424.0, 118.0),
         _ => (410.0, 92.0),
     }
 }
@@ -225,6 +226,7 @@ fn music_button_layout(style: MusicStyle) -> [(f32, f32, f32); 3] {
         MusicStyle::GlacierIceAudio => [(304.0, 74.0, 13.0), (344.0, 74.0, 16.0), (384.0, 74.0, 13.0)],
         MusicStyle::CarbonSteelDeck => [(304.0, 74.0, 13.0), (344.0, 74.0, 16.0), (384.0, 74.0, 13.0)],
         MusicStyle::GoldenHourAudio => [(304.0, 74.0, 13.0), (344.0, 74.0, 16.0), (384.0, 74.0, 13.0)],
+        s if s.horology_theme().is_some() => [(306.0, 82.0, 13.0), (346.0, 82.0, 16.5), (386.0, 82.0, 13.0)],
         _ => [(308.0, 46.0, 16.0), (348.0, 46.0, 20.0), (388.0, 46.0, 16.0)],
     }
 }
@@ -2832,6 +2834,464 @@ unsafe fn draw_music_custom_styles(
             draw_music_transport(rt, d2d, x, y, s, layout, sq_btn, pal, media, hover, br_cream.as_ref());
         }
 
+        horo_m if horo_m.horology_theme().is_some() => {
+            let ht = horo_m.horology_theme().unwrap();
+            let custom_acc = if cfg.music_use_custom_color || cfg.music_match_wallpaper {
+                Some(crate::theme::rgb_to_u32(pal.accent))
+            } else {
+                None
+            };
+            let custom_txt = if cfg.music_use_custom_color {
+                Some(cfg.music_text_rgb)
+            } else {
+                None
+            };
+            let custom_bg = tr_card.color_rgb.or_else(|| {
+                if cfg.music_use_custom_color || cfg.music_match_wallpaper {
+                    Some(crate::theme::rgb_to_u32(pal.glass_top))
+                } else {
+                    None
+                }
+            });
+            let mut hpal = cfg.music_horology.resolve(ht, custom_acc, custom_txt, custom_bg);
+            if let Some(bc) = tr_card.border_rgb {
+                hpal.bezel_rgb = bc;
+                hpal.bezel_hi_rgb = crate::horology_pbr::lighten_rgb(bc, 0.36);
+                hpal.bezel_lo_rgb = crate::horology_pbr::darken_rgb(bc, 0.45);
+            }
+            let main_r = D2D_RECT_F {
+                left: x + 2.0 * s,
+                top: y + 2.0 * s,
+                right: x + w - 2.0 * s,
+                bottom: y + h - 2.0 * s,
+            };
+            let r_card = ((cfg.music_corner_radius as f32).clamp(4.0, 32.0)) * s;
+            let op = (0.55 + (cfg.music_glass_alpha as f32 / 220.0)).clamp(0.55, 0.99);
+            let rim_a = (cfg.music_rim_alpha as f32 / 255.0).clamp(0.0, 1.0);
+            let inter = crate::realistic_pbr::pbr_input_from_viz(fx_viz, anim_t, is_card_hov);
+
+            // 1. Machined Horology Turntable Case (Card slot 5)
+            if cfg.music_show_plate && tr_card.visible && !skip_plate_and_fx {
+                let mut nb: Option<&mut [ClockElemBox]> = None;
+                let g = begin_elem_xf_slot(rt, 5, tr_card, (x, y, x + w, y + h), s, &mut nb);
+                crate::horology_pbr::draw_horology_case_plate(
+                    rt,
+                    d2d,
+                    main_r,
+                    r_card,
+                    s,
+                    &hpal,
+                    op,
+                    rim_a,
+                    true,
+                    inter.hover_x,
+                    inter.hover_y,
+                    inter.hover_mix,
+                );
+                if paint_fx {
+                    paint_widget_elemental_fx(
+                        rt,
+                        d2d,
+                        main_r.left,
+                        main_r.top,
+                        main_r.right,
+                        main_r.bottom,
+                        (x, y, w, h),
+                        r_card,
+                        s,
+                        cfg.music_hover_fx,
+                        88,
+                        pal,
+                        false,
+                        fx_viz,
+                    );
+                }
+                end_elem_xf_slot(rt, g);
+            }
+
+            // 2. Left Bespoke Horology Cover Platter (Cover slot 0 — unique bezel per archetype)
+            let cov_r = D2D_RECT_F {
+                left: x + 16.0 * s,
+                top: y + 17.0 * s,
+                right: x + 98.0 * s,
+                bottom: y + 99.0 * s,
+            };
+            let cov_cx = (cov_r.left + cov_r.right) * 0.5;
+            let cov_cy = (cov_r.top + cov_r.bottom) * 0.5;
+            let cov_rad = 41.0 * s;
+            let spin_deg = if media.is_playing { (anim_t * 48.0) % 360.0 } else { -90.0 };
+            if cfg.music_show_cover && tr0.visible {
+                match ht {
+                    crate::horology_pbr::HorologyTheme::RoyalOakSteel => {
+                        // Brushed steel circular bezel + 8 white-gold miniature bezel bolts
+                        if let Ok(bz) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.bezel_hi_rgb, 0.95), None) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 3.2 * s, radiusY: cov_rad + 3.2 * s }, &bz, 3.2 * s, None);
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                        if hpal.show_screws {
+                            for bi in 0..8 {
+                                let a = (bi as f32 * 45.0 + 22.5).to_radians();
+                                crate::horology_pbr::draw_horology_hex_screw(rt, d2d, cov_cx + (cov_rad + 3.0 * s) * a.cos(), cov_cy + (cov_rad + 3.0 * s) * a.sin(), 2.2 * s, a + 1.57, s, 0xEEF3FA);
+                            }
+                        }
+                    }
+                    crate::horology_pbr::HorologyTheme::TourbillonGold => {
+                        // Exposed rotating skeleton brass drive gear behind + live tourbillon on center
+                        crate::horology_pbr::draw_horology_gear_wheel(rt, cov_cx + 28.0 * s, cov_cy - 18.0 * s, 26.0 * s, 14, anim_t * 0.45, s, 0xD8A842, 0.48);
+                        if let Ok(bz) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xFFD678, 0.96), None) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 2.6 * s, radiusY: cov_rad + 2.6 * s }, &bz, 2.8 * s, None);
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                        crate::horology_pbr::draw_horology_tourbillon_cage(rt, cov_cx, cov_cy, 15.0 * s, s, &hpal, anim_t);
+                    }
+                    crate::horology_pbr::HorologyTheme::DaytonaCeramic => {
+                        // Thick jet-black ceramic tachymeter ring + crimson racing sweep
+                        if let Ok(cer) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x0B0C10, 0.98), None) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 3.5 * s, radiusY: cov_rad + 3.5 * s }, &cer, 5.5 * s, None);
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                        if let Ok(rb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xFF2828, 0.96), None) {
+                            let rb_b: &windows::Win32::Graphics::Direct2D::ID2D1Brush = &rb;
+                            draw_music_arc(rt, d2d, cov_cx, cov_cy, cov_rad + 3.5 * s, spin_deg, spin_deg + 145.0, 2.4 * s, rb_b, cap_round.as_ref());
+                        }
+                    }
+                    crate::horology_pbr::HorologyTheme::SubmarinerEmerald => {
+                        // Emerald serrated diver bezel + glowing 12-o'clock lume pearl
+                        if let Ok(em) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x0B7A4B, 0.98), None) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 3.5 * s, radiusY: cov_rad + 3.5 * s }, &em, 5.2 * s, None);
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                        if let Ok(lp) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x52FFA8, 0.98), None) {
+                            rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy - cov_rad - 3.5 * s }, radiusX: 2.8 * s, radiusY: 2.8 * s }, &lp);
+                        }
+                    }
+                    crate::horology_pbr::HorologyTheme::IwcPilotTitanium => {
+                        // Square bolted titanium avionics cover frame
+                        let sq_r = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: cov_r.left - 2.0 * s, top: cov_r.top - 2.0 * s, right: cov_r.right + 2.0 * s, bottom: cov_r.bottom + 2.0 * s }, radiusX: 6.0 * s, radiusY: 6.0 * s };
+                        if let Ok(ti) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x88929C, 0.90), None) {
+                            rt.DrawRoundedRectangle(&sq_r, &ti, 2.4 * s, None);
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, 6.0 * s, cover_bmp, pal, 1.5, s);
+                    }
+                    crate::horology_pbr::HorologyTheme::BreguetPorcelain => {
+                        // Thin silver-and-cobalt railway ring around cover
+                        if let Ok(cb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x1B4FD8, 0.88), None) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 2.5 * s, radiusY: cov_rad + 2.5 * s }, &cb, 1.6 * s, None);
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                    }
+                    crate::horology_pbr::HorologyTheme::ForgedCarbonMoto => {
+                        // Angular carbon bezel + blazing neon-orange arc
+                        if let Ok(ob) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xFF5E1A, 0.96), None) {
+                            let ob_b: &windows::Win32::Graphics::Direct2D::ID2D1Brush = &ob;
+                            draw_music_arc(rt, d2d, cov_cx, cov_cy, cov_rad + 3.2 * s, 135.0, 405.0, 2.6 * s, ob_b, cap_round.as_ref());
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, 12.0 * s, cover_bmp, pal, 1.5, s);
+                    }
+                    crate::horology_pbr::HorologyTheme::WalnutRegulator => {
+                        // Warm double antique brass vintage turntable bezel
+                        if let Ok(br) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xE8BE5E, 0.96), None) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 3.4 * s, radiusY: cov_rad + 3.4 * s }, &br, 3.0 * s, None);
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 0.5 * s, radiusY: cov_rad + 0.5 * s }, &br, 0.9 * s, None);
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                    }
+                    crate::horology_pbr::HorologyTheme::SapphireObsidian => {
+                        // Frameless prismatic cyan-to-violet optical halo
+                        if let Ok(cy_b) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x66EEFF, 0.94), None) {
+                            let cb_b: &windows::Win32::Graphics::Direct2D::ID2D1Brush = &cy_b;
+                            draw_music_arc(rt, d2d, cov_cx, cov_cy, cov_rad + 3.2 * s, spin_deg, spin_deg + 165.0, 2.2 * s, cb_b, cap_round.as_ref());
+                        }
+                        if let Ok(vi_b) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xA066FF, 0.80), None) {
+                            let vb_b: &windows::Win32::Graphics::Direct2D::ID2D1Brush = &vi_b;
+                            draw_music_arc(rt, d2d, cov_cx, cov_cy, cov_rad + 3.2 * s, spin_deg + 180.0, spin_deg + 335.0, 1.8 * s, vb_b, cap_round.as_ref());
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                    }
+                    crate::horology_pbr::HorologyTheme::PatekMoonphase => {
+                        // Rose-gold double dress rim + golden spin arc
+                        if let Ok(rg) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xF0AE82, 0.96), None) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cov_cx, Y: cov_cy }, radiusX: cov_rad + 2.8 * s, radiusY: cov_rad + 2.8 * s }, &rg, 2.6 * s, None);
+                            let rg_b: &windows::Win32::Graphics::Direct2D::ID2D1Brush = &rg;
+                            draw_music_arc(rt, d2d, cov_cx, cov_cy, cov_rad + 4.8 * s, spin_deg, spin_deg + 120.0, 1.4 * s, rg_b, cap_round.as_ref());
+                        }
+                        draw_music_cover_art(rt, d2d, cov_r, cov_rad, cover_bmp, pal, 1.5, s);
+                    }
+                }
+            }
+
+            // 3. Engraved Caliber Header, Title & Artist (slots 1 & 2)
+            let br_htext = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.text_rgb, 0.98), None).ok();
+            let br_hsub = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.subtext_rgb, 0.92), None).ok();
+            let br_hlume = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.96), None).ok();
+            let sh_m = if hpal.is_light_dial { None } else { br_sh.as_ref() };
+
+            let badge_txt = match ht {
+                crate::horology_pbr::HorologyTheme::RoyalOakSteel => "ROYAL OAK  •  CALIBRE 4401",
+                crate::horology_pbr::HorologyTheme::PatekMoonphase => "GENÈVE  •  MOONPHASE AUDIO",
+                crate::horology_pbr::HorologyTheme::TourbillonGold => "TOURBILLON  •  LIVE ESCAPEMENT",
+                crate::horology_pbr::HorologyTheme::DaytonaCeramic => "DAYTONA  •  PANDA CHRONO AUDIO",
+                crate::horology_pbr::HorologyTheme::SubmarinerEmerald => "300M / 1000FT  •  OYSTER AUDIO",
+                crate::horology_pbr::HorologyTheme::IwcPilotTitanium => "FLIGHT DECK  •  AVIONICS COMMS",
+                crate::horology_pbr::HorologyTheme::BreguetPorcelain => "GRAND FEU  •  MAISON AUDIO",
+                crate::horology_pbr::HorologyTheme::ForgedCarbonMoto => "FORGED CARBON  •  RPM TELEMETRY",
+                crate::horology_pbr::HorologyTheme::WalnutRegulator => "HERITAGE HI-FI  •  ANALOG VU",
+                crate::horology_pbr::HorologyTheme::SapphireObsidian => "SAPPHIRE CRYSTAL  •  PRISM DECK",
+            };
+            if let (Some(tf), Some(br)) = (&tf_badge, &br_hlume) {
+                draw_m_text(
+                    rt,
+                    tf,
+                    badge_txt,
+                    D2D_RECT_F { left: x + 112.0 * s, top: y + 12.0 * s, right: x + 404.0 * s, bottom: y + 25.0 * s },
+                    br,
+                    None,
+                    0.0,
+                );
+            }
+            if let (Some(tf), Some(br)) = (&tf_title, &br_htext) {
+                draw_m_text(
+                    rt,
+                    tf,
+                    &media.title,
+                    D2D_RECT_F { left: x + 112.0 * s, top: y + 26.0 * s, right: x + 404.0 * s, bottom: y + 48.0 * s },
+                    br,
+                    sh_m,
+                    0.9 * s,
+                );
+            }
+            if let (Some(tf), Some(br)) = (&tf_art, &br_hsub) {
+                draw_m_text(
+                    rt,
+                    tf,
+                    &media.artist,
+                    D2D_RECT_F { left: x + 112.0 * s, top: y + 46.0 * s, right: x + 286.0 * s, bottom: y + 62.0 * s },
+                    br,
+                    sh_m,
+                    0.6 * s,
+                );
+            }
+
+            // 4. Bespoke Theme-Specific Audio Visualizer & Meters (Prog/EQ slot 4)
+            if cfg.music_show_viz {
+                let vz = D2D_RECT_F {
+                    left: x + 112.0 * s,
+                    top: y + 63.0 * s,
+                    right: x + 282.0 * s,
+                    bottom: y + 107.0 * s,
+                };
+                with_viz_slot!(vz.left, vz.top, vz.right, vz.bottom, {
+                    let lv = if has_audio {
+                        ((eff_bands[0] + eff_bands[1] + eff_bands[2] + eff_bands[3]) * 0.25).clamp(0.05, 1.0)
+                    } else if media.is_playing {
+                        0.32 + (anim_t * 2.4).sin().abs() * 0.28
+                    } else {
+                        0.12
+                    };
+                    let rv = if has_audio {
+                        ((eff_bands[6] + eff_bands[7] + eff_bands[8] + eff_bands[9]) * 0.25).clamp(0.05, 1.0)
+                    } else if media.is_playing {
+                        0.28 + (anim_t * 2.1 + 1.1).sin().abs() * 0.30
+                    } else {
+                        0.10
+                    };
+                    let eq_col = tr4.color_rgb.unwrap_or(hpal.lume_rgb);
+                    let vu_cy = (vz.top + vz.bottom) * 0.5;
+                    match ht {
+                        crate::horology_pbr::HorologyTheme::WalnutRegulator => {
+                            // Iconic Vintage Hi-Fi Dual Rectangular Warm-Lit Parchment Analog VU Windows!
+                            for (vi, val) in [lv, rv].iter().enumerate() {
+                                let vx0 = vz.left + vi as f32 * 86.0 * s;
+                                let wr = D2D_RECT_F { left: vx0, top: vz.top + 4.0 * s, right: vx0 + 81.0 * s, bottom: vz.bottom - 3.0 * s };
+                                let wrr = D2D1_ROUNDED_RECT { rect: wr, radiusX: 4.0 * s, radiusY: 4.0 * s };
+                                if let Ok(pb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xF6EAD0, 0.97), None) {
+                                    rt.FillRoundedRectangle(&wrr, &pb);
+                                }
+                                if let Ok(bb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0xDFB158, 0.96), None) {
+                                    rt.DrawRoundedRectangle(&wrr, &bb, 1.8 * s, None);
+                                }
+                                // Scale arc ticks + pivoting espresso analog needle from bottom-center
+                                let ncx = (wr.left + wr.right) * 0.5;
+                                let ncy = wr.bottom + 5.0 * s;
+                                let nrad = 30.0 * s;
+                                for ti in 0..=8 {
+                                    let ang = (-142.0 + ti as f32 * 13.0).to_radians();
+                                    let tc = if ti >= 6 { 0xC82820 } else { 0x3A2416 };
+                                    if let Ok(tb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(tc, 0.88), None) {
+                                        rt.DrawLine(
+                                            Vector2 { X: ncx + (nrad - 3.5 * s) * ang.cos(), Y: ncy + (nrad - 3.5 * s) * ang.sin() },
+                                            Vector2 { X: ncx + nrad * ang.cos(), Y: ncy + nrad * ang.sin() },
+                                            &tb,
+                                            (1.0 * s).max(0.8),
+                                            None,
+                                        );
+                                    }
+                                }
+                                let nang = (-138.0 + val.clamp(0.0, 1.0) * 96.0).to_radians();
+                                if let Ok(nb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x1E1008, 0.96), None) {
+                                    rt.DrawLine(
+                                        Vector2 { X: ncx, Y: wr.bottom - 1.5 * s },
+                                        Vector2 { X: ncx + (nrad - 2.0 * s) * nang.cos(), Y: ncy + (nrad - 2.0 * s) * nang.sin() },
+                                        &nb,
+                                        1.5 * s,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        crate::horology_pbr::HorologyTheme::ForgedCarbonMoto => {
+                            // Hypercar Twin Segmented Glowing Neon-Orange RPM Arcs + Redline Boost Bar
+                            crate::horology_pbr::draw_horology_rpm_arc(rt, vz.left + 26.0 * s, vu_cy + 3.0 * s, 20.0 * s, 150.0, 240.0, 18, lv, s, eq_col);
+                            crate::horology_pbr::draw_horology_rpm_arc(rt, vz.left + 76.0 * s, vu_cy + 3.0 * s, 20.0 * s, 150.0, 240.0, 18, rv, s, eq_col);
+                            if let Ok(ob) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(eq_col, 0.95), None) {
+                                for i in 0..8 {
+                                    let val = if has_audio { eff_bands[(i * 12 / 8).min(11)].clamp(0.08, 1.0) } else if media.is_playing { 0.25 + ((anim_t * 3.1 + i as f32 * 0.7).sin().abs() * 0.55) } else { 0.16 };
+                                    let bx = vz.left + 104.0 * s + i as f32 * 8.2 * s;
+                                    let bh = (32.0 * s * val).max(3.0 * s);
+                                    rt.FillRectangle(&D2D_RECT_F { left: bx, top: vz.bottom - 4.0 * s - bh, right: bx + 5.2 * s, bottom: vz.bottom - 4.0 * s }, &ob);
+                                }
+                            }
+                        }
+                        crate::horology_pbr::HorologyTheme::IwcPilotTitanium => {
+                            // Cockpit Avionics Dual Horizontal Segmented dB Telemetry Bars + Amber Carets
+                            for (ci, val) in [lv, rv].iter().enumerate() {
+                                let by = vz.top + 6.0 * s + ci as f32 * 18.0 * s;
+                                let bar_r = D2D_RECT_F { left: vz.left, top: by, right: vz.right, bottom: by + 13.0 * s };
+                                crate::horology_pbr::draw_horology_aperture(rt, bar_r, 3.0 * s, s, &hpal, false);
+                                let segs = 16usize;
+                                let lit = ((val * segs as f32).ceil() as usize).clamp(1, segs);
+                                let step = (bar_r.right - bar_r.left - 8.0 * s) / segs as f32;
+                                for si in 0..segs {
+                                    let col = if si < lit {
+                                        if si >= 13 { 0xFF6A1A } else { eq_col }
+                                    } else {
+                                        0x222930
+                                    };
+                                    if let Ok(sb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(col, if si < lit { 0.96 } else { 0.55 }), None) {
+                                        let sx = bar_r.left + 4.0 * s + si as f32 * step;
+                                        rt.FillRectangle(&D2D_RECT_F { left: sx, top: by + 3.0 * s, right: sx + step * 0.72, bottom: by + 10.0 * s }, &sb);
+                                    }
+                                }
+                            }
+                        }
+                        crate::horology_pbr::HorologyTheme::SapphireObsidian => {
+                            // Frameless Floating 16-Bar Holographic Cyan-to-Violet Crystal Spectrum (no box!)
+                            let bars = 16usize;
+                            let step = ((vz.right - vz.left) / bars as f32).max(5.0);
+                            for i in 0..bars {
+                                let val = if has_audio { eff_bands[(i * 12 / bars).min(11)].clamp(0.10, 1.0) } else if media.is_playing { 0.18 + ((anim_t * 3.0 + i as f32 * 0.52).sin().abs() * 0.65) } else { 0.14 };
+                                let col = if i % 3 == 0 { 0xA86BFF } else { eq_col };
+                                if let Ok(sb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(col, 0.90), None) {
+                                    let bh = (34.0 * s * val).max(3.0 * s);
+                                    let bx = vz.left + i as f32 * step + 1.0 * s;
+                                    let cy_b = (vz.top + vz.bottom) * 0.5;
+                                    rt.FillRoundedRectangle(
+                                        &D2D1_ROUNDED_RECT {
+                                            rect: D2D_RECT_F { left: bx, top: cy_b - bh * 0.5, right: bx + step * 0.58, bottom: cy_b + bh * 0.5 },
+                                            radiusX: 2.0 * s,
+                                            radiusY: 2.0 * s,
+                                        },
+                                        &sb,
+                                    );
+                                }
+                            }
+                        }
+                        crate::horology_pbr::HorologyTheme::BreguetPorcelain => {
+                            // Grand Feu Open Porcelain Twin Blued-Steel Meters + Fine Cobalt Filigree Wave
+                            crate::horology_pbr::draw_horology_subdial(rt, d2d, vz.left + 22.0 * s, vu_cy, 19.0 * s, s, &hpal, lv, Some(0.80), tr4.color_rgb);
+                            crate::horology_pbr::draw_horology_subdial(rt, d2d, vz.left + 68.0 * s, vu_cy, 19.0 * s, s, &hpal, rv, Some(0.80), tr4.color2_rgb.or(tr4.color_rgb));
+                            // Open cobalt acoustic wave directly on porcelain (no dark box)
+                            if let Ok(cb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(0x1B4FD8, 0.85), None) {
+                                let wx0 = vz.left + 94.0 * s;
+                                let wx1 = vz.right;
+                                let mut prev = None;
+                                for i in 0..=18 {
+                                    let f = i as f32 / 18.0;
+                                    let amp = (0.35 + (lv + rv) * 0.45) * 12.0 * s * (f * std::f32::consts::PI).sin();
+                                    let pt = Vector2 { X: wx0 + (wx1 - wx0) * f, Y: vu_cy + (anim_t * 4.0 + f * 12.0).sin() * amp };
+                                    if let Some(p0) = prev {
+                                        rt.DrawLine(p0, pt, &cb, 1.5 * s, None);
+                                    }
+                                    prev = Some(pt);
+                                }
+                            }
+                        }
+                        _ => {
+                            // Twin Ballistic Analog Horology VU Sub-Dials + Recessed Spectrum (automatically Panda white on Daytona, Diver dot on Submariner, Gear on Tourbillon, Rose Gold on Patek, Octagonal on Royal Oak!)
+                            let vu_r = 18.5 * s;
+                            crate::horology_pbr::draw_horology_subdial(rt, d2d, vz.left + 21.0 * s, vu_cy, vu_r, s, &hpal, lv, Some(0.78), tr4.color_rgb);
+                            crate::horology_pbr::draw_horology_subdial(rt, d2d, vz.left + 64.0 * s, vu_cy, vu_r, s, &hpal, rv, Some(0.78), tr4.color2_rgb.or(tr4.color_rgb));
+                            let eq_r = D2D_RECT_F {
+                                left: vz.left + 90.0 * s,
+                                top: vz.top + 6.0 * s,
+                                right: vz.right,
+                                bottom: vz.bottom - 5.0 * s,
+                            };
+                            crate::horology_pbr::draw_horology_aperture(rt, eq_r, 5.0 * s, s, &hpal, ht == crate::horology_pbr::HorologyTheme::SubmarinerEmerald);
+                            if let Ok(eb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(eq_col, 0.92), None) {
+                                let inner_h = (eq_r.bottom - eq_r.top - 6.0 * s).max(4.0);
+                                let step = ((eq_r.right - eq_r.left - 8.0 * s) / 8.0).max(4.0);
+                                for i in 0..8 {
+                                    let val = if has_audio {
+                                        eff_bands[(i * 12 / 8).min(11)].clamp(0.08, 1.0)
+                                    } else if media.is_playing {
+                                        0.20 + ((anim_t * 2.8 + i as f32 * 0.7).sin().abs() * 0.45)
+                                    } else {
+                                        0.14
+                                    };
+                                    let bh = (inner_h * val).max(2.5 * s);
+                                    let bx = eq_r.left + 4.0 * s + i as f32 * step;
+                                    rt.FillRoundedRectangle(
+                                        &D2D1_ROUNDED_RECT {
+                                            rect: D2D_RECT_F {
+                                                left: bx,
+                                                top: eq_r.bottom - 3.0 * s - bh,
+                                                right: bx + (step * 0.62).max(2.0),
+                                                bottom: eq_r.bottom - 3.0 * s,
+                                            },
+                                            radiusX: 1.4 * s,
+                                            radiusY: 1.4 * s,
+                                        },
+                                        &eb,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // 5. Machined Horology Crown Transport Pushers (Controls slot 3 — exact music_button_layout sync)
+            let ctrl_pal = ThemePalette::for_horology(ht);
+            draw_music_transport(
+                rt,
+                d2d,
+                x,
+                y,
+                s,
+                layout,
+                false,
+                &ctrl_pal,
+                media,
+                hover,
+                br_htext.as_ref().or(br_cream.as_ref()),
+            );
+
+            // 6. Curved Sapphire AR Glare across the case
+            if cfg.music_show_plate && tr_card.visible && !skip_plate_and_fx {
+                crate::horology_pbr::draw_sapphire_ar_glare(
+                    rt,
+                    d2d,
+                    main_r,
+                    r_card,
+                    s,
+                    &hpal,
+                    inter.hover_x,
+                    inter.hover_mix,
+                );
+            }
+        }
+
         _ => {}
     }
 
@@ -2889,6 +3349,7 @@ unsafe fn music_fg_key(
     for tr in &cfg.music_elem_transforms {
         h.mix_tr(tr);
     }
+    h.mix_horology(&cfg.music_horology);
     h.mix_str(&media.title);
     h.mix_str(&media.artist);
     h.mix_bool(media.is_playing);
@@ -3908,6 +4369,44 @@ pub unsafe fn draw_control_center_widget_with_boxes(
         pal.rim = crate::theme::u32_to_rgb(b_rgb);
     }
 
+    let horo_cc = crate::config::cc_style_horology(cfg.cc_tile_style);
+    let horo_cc_pal = horo_cc.map(|ht| {
+        let ca = if cfg.cc_use_custom_color || cfg.cc_match_wallpaper {
+            Some(crate::theme::rgb_to_u32(pal.accent))
+        } else {
+            None
+        };
+        let ct = if cfg.cc_use_custom_color {
+            Some(cfg.cc_text_rgb)
+        } else {
+            None
+        };
+        let cb = tr_card.color_rgb.or_else(|| {
+            if cfg.cc_use_custom_color || cfg.cc_match_wallpaper {
+                Some(crate::theme::rgb_to_u32(pal.glass_top))
+            } else {
+                None
+            }
+        });
+        let mut hp = cfg.cc_horology.resolve(ht, ca, ct, cb);
+        if let Some(bc) = tr_card.border_rgb {
+            hp.bezel_rgb = bc;
+            hp.bezel_hi_rgb = crate::horology_pbr::lighten_rgb(bc, 0.36);
+            hp.bezel_lo_rgb = crate::horology_pbr::darken_rgb(bc, 0.45);
+        }
+        hp
+    });
+    if let Some(ref hp) = horo_cc_pal {
+        pal = ThemePalette::for_horology(hp.theme);
+        pal.accent = crate::horology_pbr::unpack_rgb(hp.lume_rgb);
+        pal.accent_light = crate::horology_pbr::unpack_rgb(hp.hands_rgb);
+        pal.rim = crate::horology_pbr::unpack_rgb(hp.bezel_rgb);
+        pal.text_primary = crate::horology_pbr::unpack_rgb(hp.text_rgb);
+        pal.text_muted = crate::horology_pbr::unpack_rgb(hp.subtext_rgb);
+        pal.glass_top = crate::horology_pbr::unpack_rgb(hp.dial_hi_rgb);
+        pal.glass_bot = crate::horology_pbr::unpack_rgb(hp.dial_lo_rgb);
+    }
+
     let cc_rect = (x, y, x + w, y + h);
     {
         let mut slice_opt = out_boxes.as_deref_mut().map(|b| &mut b[..]);
@@ -3917,16 +4416,43 @@ pub unsafe fn draw_control_center_widget_with_boxes(
     let g_card = begin_elem_xf_slot(rt, 5, tr_card, cc_rect, s, &mut no_cc_boxes);
 
     if cfg.cc_show_plate {
-        let g_top = (cfg.cc_glass_alpha as f32 / 255.0).clamp(0.0, 0.88);
-        let g_bot = (g_top * 0.66).clamp(0.0, 0.78);
-        let (top_c, bot_c, _, ang) = resolve_card_plate_colors(&tr_card, &pal, g_top, g_bot, 1.0);
-        let (gp0, gp1) = grad_endpoints_for_rect(cc_rect, ang);
-        let bg_stops = [
-            D2D1_GRADIENT_STOP { position: 0.0, color: top_c },
-            D2D1_GRADIENT_STOP { position: 1.0, color: bot_c },
-        ];
-        if let Some(bg) = create_linear_grad(rt, gp0, gp1, &bg_stops) {
-            rt.FillRoundedRectangle(&card_rr, &bg);
+        if let Some(ref hp) = horo_cc_pal {
+            let is_cc_hov = matches!(
+                hover,
+                WidgetHitZone::CcBar
+                    | WidgetHitZone::CcTile(_, _)
+                    | WidgetHitZone::CcBrightSlider
+                    | WidgetHitZone::CcVolSlider
+            );
+            let inter = crate::realistic_pbr::pbr_input_from_viz(fx_viz, 0.0, is_cc_hov);
+            let op = (0.64 + cfg.cc_glass_alpha as f32 / 240.0).clamp(0.60, 0.99);
+            let ra = (cfg.cc_rim_alpha as f32 / 255.0).clamp(0.25, 1.0);
+            crate::horology_pbr::draw_horology_case_plate(
+                rt,
+                d2d,
+                card_rr.rect,
+                cc_rad,
+                s,
+                hp,
+                op,
+                ra,
+                true,
+                inter.hover_x,
+                inter.hover_y,
+                inter.hover_mix,
+            );
+        } else {
+            let g_top = (cfg.cc_glass_alpha as f32 / 255.0).clamp(0.0, 0.88);
+            let g_bot = (g_top * 0.66).clamp(0.0, 0.78);
+            let (top_c, bot_c, _, ang) = resolve_card_plate_colors(&tr_card, &pal, g_top, g_bot, 1.0);
+            let (gp0, gp1) = grad_endpoints_for_rect(cc_rect, ang);
+            let bg_stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: top_c },
+                D2D1_GRADIENT_STOP { position: 1.0, color: bot_c },
+            ];
+            if let Some(bg) = create_linear_grad(rt, gp0, gp1, &bg_stops) {
+                rt.FillRoundedRectangle(&card_rr, &bg);
+            }
         }
 
         paint_widget_elemental_fx(
@@ -3947,7 +4473,7 @@ pub unsafe fn draw_control_center_widget_with_boxes(
         );
     }
 
-    if cfg.cc_show_plate {
+    if cfg.cc_show_plate && horo_cc_pal.is_none() {
         let r_base = if matches!(hover, WidgetHitZone::CcBar | WidgetHitZone::CcTile(_, _) | WidgetHitZone::CcBrightSlider | WidgetHitZone::CcVolSlider) {
             ((cfg.cc_rim_alpha as f32 / 255.0) + 0.18).clamp(0.25, 0.96)
         } else {
@@ -4160,12 +4686,30 @@ pub unsafe fn draw_control_center_widget_with_boxes(
                 radiusX: tile_rad,
                 radiusY: tile_rad,
             };
-            if let Ok(bb) = rt.CreateSolidColorBrush(&bg_c, None) {
-                rt.FillRoundedRectangle(&rr, &bb);
-            }
-            if let Ok(sb) = rt.CreateSolidColorBrush(&stroke_c, None) {
-                rt.DrawRoundedRectangle(&rr, &sb, 1.0 * s, None);
-            }
+            let (fg_c, acc_c, div_c) = if let Some(ref hp) = horo_cc_pal {
+                crate::horology_pbr::draw_horology_pusher(
+                    rt,
+                    rr.rect,
+                    tile_rad,
+                    s,
+                    hp,
+                    *is_on,
+                    hovered,
+                    true,
+                );
+                let fgc = crate::horology_pbr::rgb_u32(hp.text_rgb, 0.98);
+                let acc = crate::horology_pbr::rgb_u32(if *is_on { hp.lume_rgb } else { hp.hands_rgb }, 0.96);
+                let dvc = crate::horology_pbr::rgb_u32(hp.bezel_rgb, 0.36);
+                (fgc, acc, dvc)
+            } else {
+                if let Ok(bb) = rt.CreateSolidColorBrush(&bg_c, None) {
+                    rt.FillRoundedRectangle(&rr, &bb);
+                }
+                if let Ok(sb) = rt.CreateSolidColorBrush(&stroke_c, None) {
+                    rt.DrawRoundedRectangle(&rr, &sb, 1.0 * s, None);
+                }
+                (fg_c, acc_c, div_c)
+            };
 
             let br_fg = rt.CreateSolidColorBrush(&fg_c, None).ok();
             let br_acc = rt.CreateSolidColorBrush(&acc_c, None).ok();
@@ -4356,7 +4900,23 @@ pub unsafe fn draw_control_center_widget_with_boxes(
             .unwrap_or_else(|| cc.bright_pct as f32 / 100.0)
             .clamp(0.0, 1.0);
         let bright_label_pct = (bpct * 100.0).round() as u8;
-        draw_cc_slider(rt, x + 54.0 * s, y + 230.0 * s, 274.0 * s, s, bpct, hover == WidgetHitZone::CcBrightSlider, &brt_pal, &tr_brt);
+        if let Some(ref hp) = horo_cc_pal {
+            crate::horology_pbr::draw_horology_slider(
+                rt,
+                D2D_RECT_F {
+                    left: x + 54.0 * s,
+                    top: y + 225.0 * s,
+                    right: x + 328.0 * s,
+                    bottom: y + 241.0 * s,
+                },
+                s,
+                hp,
+                bpct,
+                hover == WidgetHitZone::CcBrightSlider,
+            );
+        } else {
+            draw_cc_slider(rt, x + 54.0 * s, y + 230.0 * s, 274.0 * s, s, bpct, hover == WidgetHitZone::CcBrightSlider, &brt_pal, &tr_brt);
+        }
         if let (Some(tf), Some(sb)) = (&tf_val_brt, br_brt_ov.as_ref().or(br_sand.as_ref())) {
             draw_shadowed_text(rt, &format!("{}%", bright_label_pct), tf, D2D_RECT_F { left: x + 328.0 * s, top: y + 220.0 * s, right: x + 370.0 * s, bottom: y + 244.0 * s }, sb, br_sh.as_ref(), 0.8 * s, false);
         }
@@ -4416,12 +4976,44 @@ pub unsafe fn draw_control_center_widget_with_boxes(
             draw_round_arc(rt, d2d, Vector2 { X: x + 37.0 * s, Y: y + 263.5 * s }, Vector2 { X: x + 37.0 * s, Y: ty_clamp_vol(y + 270.5 * s) }, 5.0 * s, gld, 1.6 * s, round_cap.as_ref());
         }
 
-        draw_cc_slider(rt, x + 54.0 * s, y + 264.0 * s, 274.0 * s, s, vpct, hover == WidgetHitZone::CcVolSlider, &vol_pal, &tr_vol);
+        if let Some(ref hp) = horo_cc_pal {
+            crate::horology_pbr::draw_horology_slider(
+                rt,
+                D2D_RECT_F {
+                    left: x + 54.0 * s,
+                    top: y + 259.0 * s,
+                    right: x + 328.0 * s,
+                    bottom: y + 275.0 * s,
+                },
+                s,
+                hp,
+                vpct,
+                hover == WidgetHitZone::CcVolSlider,
+            );
+        } else {
+            draw_cc_slider(rt, x + 54.0 * s, y + 264.0 * s, 274.0 * s, s, vpct, hover == WidgetHitZone::CcVolSlider, &vol_pal, &tr_vol);
+        }
         if let (Some(tf), Some(sb)) = (&tf_val_vol, br_vol_ov.as_ref().or(br_sand.as_ref())) {
             let txt = if vol_muted_eff { "Mute".to_string() } else { format!("{}%", vol_label_pct) };
             draw_shadowed_text(rt, &txt, tf, D2D_RECT_F { left: x + 328.0 * s, top: y + 254.0 * s, right: x + 370.0 * s, bottom: y + 278.0 * s }, sb, br_sh.as_ref(), 0.8 * s, false);
         }
         end_elem_xf_slot(rt, g_vol);
+    }
+
+    if cfg.cc_show_plate {
+        if let Some(ref hp) = horo_cc_pal {
+            let inter = crate::realistic_pbr::pbr_input_from_viz(fx_viz, 0.0, false);
+            crate::horology_pbr::draw_sapphire_ar_glare(
+                rt,
+                d2d,
+                card_rr.rect,
+                cc_rad,
+                s,
+                hp,
+                inter.hover_x,
+                inter.hover_mix,
+            );
+        }
     }
 }
 

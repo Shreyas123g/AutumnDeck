@@ -55,7 +55,7 @@ try {
     }
 
     $readme = @"
-AutumnDeck v2.0.8 (Portable Edition)
+AutumnDeck v2.0.9 (Portable Edition)
 ====================================
 
 Requirements:
@@ -65,7 +65,7 @@ Requirements:
 Quick Start:
 1. Extract all files in this folder together (keep AutumnDeck.exe and AutumnXamlTap.dll
    in the same directory).
-2. Right-click AutumnDeck-2.0.8-Portable.zip -> Properties -> check 'Unblock' before extracting.
+2. Right-click AutumnDeck-2.0.9-Portable.zip -> Properties -> check 'Unblock' before extracting.
 3. Double-click AutumnDeck.exe.
    - Required permissions on AutumnXamlTap.dll are verified and repaired automatically.
    - Right-click the tray icon or run AutumnDeck.exe again to open AutumnDeck Studio.
@@ -78,14 +78,14 @@ Helpful Commands:
 "@
     Set-Content -Path (Join-Path $stageDir "README.txt") -Value $readme -Encoding UTF8
 
-    $zipPath = Join-Path $distDir "AutumnDeck-2.0.8-Portable.zip"
+    $zipPath = Join-Path $distDir "AutumnDeck-2.0.9-Portable.zip"
     if (Test-Path $zipPath) {
         Remove-Item $zipPath -Force
     }
     Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
     Remove-Item $stageDir -Recurse -Force
 
-    $setupExe = Join-Path $distDir "AutumnDeck-Setup-2.0.8.exe"
+    $setupExe = Join-Path $distDir "AutumnDeck-Setup-2.0.9.exe"
     Write-Host ""
     Write-Host "PACKAGE_OK"
     Write-Host "  Installer: $setupExe ($((Get-Item $setupExe).Length) bytes)"

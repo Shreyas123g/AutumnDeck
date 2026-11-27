@@ -52,10 +52,11 @@
   - Dynamic Island Capsule Music Player & Turntable with Live Visualizer
   - Celestial Sun-Dial Weather Dashboard (7-day Open-Meteo + auto IP geolocation)
   - Telemetry Ring-Pill Vitals HUD
-  - Control Center, Notes & To-Do, Pomodoro, Quick Apps
+  - Control Center, Notes & To-Do, Pomodoro, Quick Apps & Extended Utility Suite (19 widgets total)
+  - **10 Photorealistic Haute Horlogerie Themes** across all 19 widgets with distinct physical silhouettes, machined bezels, dial textures, and per-part material overrides
   - Full per-element Move, Scale, Rotate, Font Picker, and Live Chameleon wallpaper color matching
 - **Live Wallpaper Engine:** Hardware-accelerated DXGI Flip-Model SwapChain for `.mp4`/`.mkv`/`.webm` video loops and high-res `.png`/`.jpg`/`.webp` static wallpapers with instant fullscreen/game auto-pause.
-- **30 Curated Suites & Portable Backup:** Instant Suite Gallery switching plus 1-click **Export / Import Setup (`.autumn`)** under App Settings (`⚙`).
+- **72 Curated Suites & Portable Backup:** 8 curated Suite Gallery folders (including **18 Photorealistic Horology** flagship setups) with 1-click switching plus **Export / Import Setup (`.autumn`)** under App Settings (`⚙`).
 
 ---
 
@@ -81,8 +82,8 @@
 > Official digitally signed store edition is also available via **[Option 1: Microsoft Store](https://apps.microsoft.com/detail/9P6NTH74WSMD)**.
 
 1. Download from **[GitHub Releases](https://github.com/Shreyas123g/AutumnDeck/releases)**:
-   - **Portable Edition:** `AutumnDeck-2.0.8-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
-   - **Installer:** `AutumnDeck-Setup-2.0.8.exe`
+   - **Portable Edition:** `AutumnDeck-2.0.9-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
+   - **Installer:** `AutumnDeck-Setup-2.0.9.exe`
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 

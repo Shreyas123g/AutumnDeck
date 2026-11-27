@@ -56,18 +56,25 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::config::{
-    apply_win_explorer_pref, apply_win_explorer_pref_checked, default_apps, default_dock_pinned,
+    apply_win_explorer_pref, apply_win_explorer_pref_checked, apps_style_badge, apps_style_horology,
+    apps_style_label, apps_style_subtitle, apps_styles_in_folder, cc_style_badge, cc_style_horology,
+    cc_style_label, cc_style_subtitle, cc_styles_in_folder, default_apps, default_dock_pinned,
     discover_video_wallpapers, discover_wallpapers_fast_local, is_startup_enabled,
     is_static_image_wallpaper_path, open_app_data_folder, open_kofi_support_page,
-    read_win_taskbar_prefs, KOFI_SUPPORT_URL,
-    set_startup_enabled, AppConfig, AppShortcut, CanvasStylePreset,
-    ClockAlign, ClockElemId, ClockElemTransform, ClockStyle, ClockThemeFolder, DockArtLayer,
-    DockClockEngine, DockClockWheelAction, DockIndicatorStyle, DockLayoutKind, DockShelfShape,
-    DockSlotCardStyle, HudTelemetryContent, HudWingMode, MacDockEdge, MacDockHideMode, MusicStyle,
-    MusicThemeFolder, PillMode, StartBadgeStyle, SurfaceMode, TaskbarMode, TaskbarTheme,
-    TaskbarThemeFolder, TaskbarVizStyle, TaskbarWidgetTab, TrayAudioMeterStyle,
-    TrayBatteryMeterStyle, TrayNetMeterStyle, VideoWallpaperPreset, VizColorMode,
-    WidgetCanvasTarget, WinTaskbarPrefs,
+    read_win_taskbar_prefs, set_startup_enabled, vitals_style_badge, vitals_style_horology,
+    vitals_style_label, vitals_style_subtitle, vitals_styles_in_folder, AppConfig, AppShortcut,
+    AppsThemeFolder, CanvasStylePreset, CcThemeFolder, ClockAlign, ClockElemId, ClockElemTransform,
+    ClockStyle, ClockThemeFolder, DockArtLayer, DockClockEngine, DockClockWheelAction,
+    DockIndicatorStyle, DockLayoutKind, DockShelfShape, DockSlotCardStyle, HudTelemetryContent,
+    HudWingMode, MacDockEdge, MacDockHideMode, MusicStyle, MusicThemeFolder, PillMode,
+    StartBadgeStyle, SurfaceMode, TaskbarMode, TaskbarTheme, TaskbarThemeFolder, TaskbarVizStyle,
+    TaskbarWidgetTab, TrayAudioMeterStyle, TrayBatteryMeterStyle, TrayNetMeterStyle,
+    VideoWallpaperPreset, VitalsThemeFolder, VizColorMode, WidgetCanvasTarget, WinTaskbarPrefs,
+    KOFI_SUPPORT_URL,
+};
+use crate::horology_pbr::{
+    HorologyBezelFinish, HorologyDialFinish, HorologyPartConfig, HorologyTheme,
+    HOROLOGY_ACCENT_SWATCHES, HOROLOGY_BEZEL_SWATCHES, HOROLOGY_DIAL_SWATCHES,
 };
 use crate::taskbar_styler::{draw_taskbar_preview_card_with_viz, VizSnapshot};
 use crate::suites::{
@@ -338,12 +345,18 @@ pub enum WidgetPage {
     CustomizeDateTime,
     EditWidgetCanvas(WidgetCanvasTarget),
     PickClockFont,
+    AppsFolders,
+    AppsThemes,
     CustomizeApps,
     PickInstalledApp,
+    VitalsFolders,
+    VitalsThemes,
     CustomizeVitals,
     MusicFolders,
     MusicThemes,
     CustomizeMusic,
+    CcFolders,
+    CcThemes,
     CustomizeControlCenter,
     ExtFolders(ExtWidgetId),
     ExtThemes(ExtWidgetId),
@@ -368,6 +381,7 @@ enum DtSubTab {
     Layout,
     Fonts,
     Colors,
+    Materials,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -496,6 +510,7 @@ enum SliderKind {
     ExtRim,
     ExtRimWidth,
     ExtFontScale,
+    HoroGlare,
     WallpaperVolume,
     MacDockIconSize,
     MacDockMagPct,
@@ -747,6 +762,9 @@ fn dt_style_supports_align(style: ClockStyle) -> bool {
 }
 
 fn dt_plate_label(style: ClockStyle) -> &'static str {
+    if style.horology_theme().is_some() {
+        return "Horology Watch Case";
+    }
     match style {
         ClockStyle::ChronoDial
         | ClockStyle::OrbitalEclipse
@@ -765,77 +783,93 @@ fn dt_plate_label(style: ClockStyle) -> &'static str {
 fn dt_layout_toggles(cfg: &AppConfig) -> Vec<(&'static str, bool, HitZone)> {
     let mut out = Vec::with_capacity(7);
 
-    let clock_lbl = match cfg.dt_style {
-        ClockStyle::FlipMech => "Show Split-Flap Time Tiles",
-        ClockStyle::ChronoDial
-        | ClockStyle::SwissChronometer
-        | ClockStyle::BraunIndustrial
-        | ClockStyle::CarbonSteelClock => "Show Time & Watch Hands",
-        ClockStyle::NixieTube => "Show Glowing Nixie Digits",
-        _ => "Show Time Digits & Readout",
+    let clock_lbl = if cfg.dt_style.horology_theme().is_some() {
+        "Show Cyclops Time Aperture"
+    } else {
+        match cfg.dt_style {
+            ClockStyle::FlipMech => "Show Split-Flap Time Tiles",
+            ClockStyle::ChronoDial
+            | ClockStyle::SwissChronometer
+            | ClockStyle::BraunIndustrial
+            | ClockStyle::CarbonSteelClock => "Show Time & Watch Hands",
+            ClockStyle::NixieTube => "Show Glowing Nixie Digits",
+            _ => "Show Time Digits & Readout",
+        }
     };
     out.push((clock_lbl, cfg.dt_show_clock, HitZone::ToggleDtClock));
 
-    let spine_lbl = match cfg.dt_style {
-        ClockStyle::FlipMech => "Show Flap Hinge & Pins",
-        ClockStyle::ChronoDial
-        | ClockStyle::OrbitalEclipse
-        | ClockStyle::SwissChronometer
-        | ClockStyle::BraunIndustrial
-        | ClockStyle::CarbonSteelClock => "Show Bezel & Dial Ticks",
-        ClockStyle::GlassRibbon
-        | ClockStyle::WaterCausticsClock
-        | ClockStyle::LeatherFieldClock => "Show Accent Frame & Seam",
-        ClockStyle::Minimal => "Top Accent Rule",
-        ClockStyle::SplitStack | ClockStyle::Island => "Accent Bar Divider",
-        ClockStyle::SunDialHorizon
-        | ClockStyle::ZenMistClock
-        | ClockStyle::RainWindowClock
-        | ClockStyle::AbyssalTrenchClock
-        | ClockStyle::GlacierIceClock
-        | ClockStyle::GoldenHourClock
-        | ClockStyle::AlpineMistClock => "Horizon Accent Rule",
-        ClockStyle::WalnutDeskClock
-        | ClockStyle::NixieTube
-        | ClockStyle::RetroCasio
-        | ClockStyle::MatrixBinary => "Accent Divider Line",
-        _ => "Left Accent Spine",
+    let spine_lbl = if cfg.dt_style.horology_theme().is_some() {
+        "Show Caliber Divider & Jewel"
+    } else {
+        match cfg.dt_style {
+            ClockStyle::FlipMech => "Show Flap Hinge & Pins",
+            ClockStyle::ChronoDial
+            | ClockStyle::OrbitalEclipse
+            | ClockStyle::SwissChronometer
+            | ClockStyle::BraunIndustrial
+            | ClockStyle::CarbonSteelClock => "Show Bezel & Dial Ticks",
+            ClockStyle::GlassRibbon
+            | ClockStyle::WaterCausticsClock
+            | ClockStyle::LeatherFieldClock => "Show Accent Frame & Seam",
+            ClockStyle::Minimal => "Top Accent Rule",
+            ClockStyle::SplitStack | ClockStyle::Island => "Accent Bar Divider",
+            ClockStyle::SunDialHorizon
+            | ClockStyle::ZenMistClock
+            | ClockStyle::RainWindowClock
+            | ClockStyle::AbyssalTrenchClock
+            | ClockStyle::GlacierIceClock
+            | ClockStyle::GoldenHourClock
+            | ClockStyle::AlpineMistClock => "Horizon Accent Rule",
+            ClockStyle::WalnutDeskClock
+            | ClockStyle::NixieTube
+            | ClockStyle::RetroCasio
+            | ClockStyle::MatrixBinary => "Accent Divider Line",
+            _ => "Left Accent Spine",
+        }
     };
     out.push((spine_lbl, cfg.dt_show_spine, HitZone::ToggleDtSpine));
 
-    let orb_lbl = match cfg.dt_style {
-        ClockStyle::FlipMech => "Show Lower Seconds / Day Flap",
-        ClockStyle::JapaneseZen => "Show Vermilion Hanko Seal",
-        ClockStyle::ArtDecoGilded => "Show Gilded Corner Ornaments",
-        ClockStyle::TypoWatermark => "Show Background Day Watermark",
-        ClockStyle::NixieTube => "Show Secondary Seconds Tube",
-        ClockStyle::RetroCasio => "Show LCD Mode & Alarm Badges",
-        ClockStyle::MatrixBinary => "Show Binary Bit Grid",
-        ClockStyle::ChronoDial
-        | ClockStyle::SwissChronometer
-        | ClockStyle::BraunIndustrial
-        | ClockStyle::CarbonSteelClock => "Analog Sweep Dial",
-        ClockStyle::OrbitalEclipse
-        | ClockStyle::SunDialHorizon
-        | ClockStyle::WaterCausticsClock
-        | ClockStyle::ZenMistClock
-        | ClockStyle::LeatherFieldClock
-        | ClockStyle::WalnutDeskClock
-        | ClockStyle::RainWindowClock
-        | ClockStyle::AbyssalTrenchClock
-        | ClockStyle::GlacierIceClock
-        | ClockStyle::GoldenHourClock
-        | ClockStyle::AlpineMistClock => "Orbital Accent Ring",
-        _ => "Seconds Sun-Orb Progress",
+    let orb_lbl = if cfg.dt_style.horology_theme().is_some() {
+        "Mechanical Watch Dial"
+    } else {
+        match cfg.dt_style {
+            ClockStyle::FlipMech => "Show Lower Seconds / Day Flap",
+            ClockStyle::JapaneseZen => "Show Vermilion Hanko Seal",
+            ClockStyle::ArtDecoGilded => "Show Gilded Corner Ornaments",
+            ClockStyle::TypoWatermark => "Show Background Day Watermark",
+            ClockStyle::NixieTube => "Show Secondary Seconds Tube",
+            ClockStyle::RetroCasio => "Show LCD Mode & Alarm Badges",
+            ClockStyle::MatrixBinary => "Show Binary Bit Grid",
+            ClockStyle::ChronoDial
+            | ClockStyle::SwissChronometer
+            | ClockStyle::BraunIndustrial
+            | ClockStyle::CarbonSteelClock => "Analog Sweep Dial",
+            ClockStyle::OrbitalEclipse
+            | ClockStyle::SunDialHorizon
+            | ClockStyle::WaterCausticsClock
+            | ClockStyle::ZenMistClock
+            | ClockStyle::LeatherFieldClock
+            | ClockStyle::WalnutDeskClock
+            | ClockStyle::RainWindowClock
+            | ClockStyle::AbyssalTrenchClock
+            | ClockStyle::GlacierIceClock
+            | ClockStyle::GoldenHourClock
+            | ClockStyle::AlpineMistClock => "Orbital Accent Ring",
+            _ => "Seconds Sun-Orb Progress",
+        }
     };
     out.push((orb_lbl, cfg.dt_show_orb, HitZone::ToggleDtOrb));
 
-    let sec_lbl = match cfg.dt_style {
-        ClockStyle::ChronoDial
-        | ClockStyle::SwissChronometer
-        | ClockStyle::BraunIndustrial
-        | ClockStyle::CarbonSteelClock => "Show Seconds Sweep Hand",
-        _ => "Show Live Seconds",
+    let sec_lbl = if cfg.dt_style.horology_theme().is_some() {
+        "Show Seconds Sweep Hand"
+    } else {
+        match cfg.dt_style {
+            ClockStyle::ChronoDial
+            | ClockStyle::SwissChronometer
+            | ClockStyle::BraunIndustrial
+            | ClockStyle::CarbonSteelClock => "Show Seconds Sweep Hand",
+            _ => "Show Live Seconds",
+        }
     };
     out.push((sec_lbl, cfg.dt_show_seconds, HitZone::ToggleDtSeconds));
 
@@ -1105,7 +1139,19 @@ enum HitZone {
     ScrollFontUp,
     ScrollFontDown,
     PickFontCard(usize),
+    OpenAppsFolders,
+    OpenAppsFolder(AppsThemeFolder),
+    OpenAppsThemes,
+    ScrollAppsThemesPrev,
+    ScrollAppsThemesNext,
+    SelectAppsTheme(u8),
     OpenCustomizeApps,
+    OpenVitalsFolders,
+    OpenVitalsFolder(VitalsThemeFolder),
+    OpenVitalsThemes,
+    ScrollVitalsThemesPrev,
+    ScrollVitalsThemesNext,
+    SelectVitalsTheme(u8),
     OpenCustomizeVitals,
     OpenMusicFolders,
     OpenMusicFolder(MusicThemeFolder),
@@ -1113,7 +1159,23 @@ enum HitZone {
     ScrollMusicThemesNext,
     SelectMusicTheme(MusicStyle),
     OpenCustomizeMusic,
+    OpenCcFolders,
+    OpenCcFolder(CcThemeFolder),
+    OpenCcThemes,
+    ScrollCcThemesPrev,
+    ScrollCcThemesNext,
+    SelectCcTheme(u8),
     OpenCustomizeCc,
+    SetHoroBezelFinish(WidgetCanvasTarget, Option<HorologyBezelFinish>),
+    SetHoroBezelRgb(WidgetCanvasTarget, Option<u32>),
+    SetHoroDialFinish(WidgetCanvasTarget, Option<HorologyDialFinish>),
+    SetHoroDialRgb(WidgetCanvasTarget, Option<u32>),
+    SetHoroHandsRgb(WidgetCanvasTarget, Option<u32>),
+    SetHoroLumeRgb(WidgetCanvasTarget, Option<u32>),
+    ToggleHoroScrews(WidgetCanvasTarget),
+    ToggleHoroNeedleShadows(WidgetCanvasTarget),
+    ResetHoroParts(WidgetCanvasTarget),
+    JumpHoroThemes(WidgetCanvasTarget),
 
     // Desktop Widgets Customization
     BtnBackGallery,
@@ -1135,7 +1197,6 @@ enum HitZone {
     ToggleAppsTheme,
     ToggleAppsIndividual,
     AppsColsBtn(u8),
-    AppsShapeBtn(u8),
     ToggleAppsPlate,
     ToggleAppsTiles,
     ToggleAppsLabels,
@@ -1150,7 +1211,6 @@ enum HitZone {
     PickInstalledAppCard(usize),
     BtnClearSelectedApps,
     BtnCommitSelectedApps,
-    VitalsStyleBtn(u8),
     ToggleVitalsPlate,
     ToggleVitalsCpu,
     ToggleVitalsRam,
@@ -1166,7 +1226,6 @@ enum HitZone {
     ToggleMusicArtist,
     ToggleMusicControls,
     ToggleMusicBadge,
-    CcTileStyleBtn(u8),
     ToggleCcPlate,
     ToggleCcTiles,
     ToggleCcLabels,
@@ -1503,8 +1562,14 @@ pub struct SettingsController {
     pub widget_page: WidgetPage,
     clock_folder: ClockThemeFolder,
     clock_theme_page: usize,
+    apps_folder: AppsThemeFolder,
+    apps_theme_page: usize,
+    vitals_folder: VitalsThemeFolder,
+    vitals_theme_page: usize,
     music_folder: MusicThemeFolder,
     music_theme_page: usize,
+    cc_folder: CcThemeFolder,
+    cc_theme_page: usize,
     pub draft_cfg: AppConfig,
     draft_initialized: bool,
     editing_app_name: Option<usize>,
@@ -1761,8 +1826,14 @@ impl SettingsController {
             widget_page: WidgetPage::Gallery,
             clock_folder: ClockThemeFolder::All,
             clock_theme_page: 0,
+            apps_folder: AppsThemeFolder::Horology,
+            apps_theme_page: 0,
+            vitals_folder: VitalsThemeFolder::Horology,
+            vitals_theme_page: 0,
             music_folder: MusicThemeFolder::All,
             music_theme_page: 0,
+            cc_folder: CcThemeFolder::Horology,
+            cc_theme_page: 0,
             draft_cfg: AppConfig::default(),
             draft_initialized: false,
             editing_app_name: None,
@@ -1848,6 +1919,9 @@ impl SettingsController {
                 WidgetPage::CustomizeApps => 23,
                 WidgetPage::PickInstalledApp => 24,
                 WidgetPage::PickClockFont => 25,
+                WidgetPage::AppsThemes => 26,
+                WidgetPage::VitalsThemes => 27,
+                WidgetPage::CcThemes => 28,
                 WidgetPage::ExtThemes(id) => 100 + (id.idx() as u32),
                 _ => 29,
             },
@@ -1938,6 +2012,45 @@ impl SettingsController {
                 return true;
             } else if step > 0 && self.music_theme_page > 0 {
                 self.music_theme_page -= 1;
+                return true;
+            }
+        } else if self.active_tab == StudioTab::DesktopWidgets
+            && self.widget_page == WidgetPage::AppsThemes
+        {
+            let step = self.consume_wheel_step(delta, 180);
+            let list = apps_styles_in_folder(self.apps_folder);
+            let max_page = list.len().saturating_sub(1) / 6;
+            if step < 0 && self.apps_theme_page < max_page {
+                self.apps_theme_page += 1;
+                return true;
+            } else if step > 0 && self.apps_theme_page > 0 {
+                self.apps_theme_page -= 1;
+                return true;
+            }
+        } else if self.active_tab == StudioTab::DesktopWidgets
+            && self.widget_page == WidgetPage::VitalsThemes
+        {
+            let step = self.consume_wheel_step(delta, 180);
+            let list = vitals_styles_in_folder(self.vitals_folder);
+            let max_page = list.len().saturating_sub(1) / 6;
+            if step < 0 && self.vitals_theme_page < max_page {
+                self.vitals_theme_page += 1;
+                return true;
+            } else if step > 0 && self.vitals_theme_page > 0 {
+                self.vitals_theme_page -= 1;
+                return true;
+            }
+        } else if self.active_tab == StudioTab::DesktopWidgets
+            && self.widget_page == WidgetPage::CcThemes
+        {
+            let step = self.consume_wheel_step(delta, 180);
+            let list = cc_styles_in_folder(self.cc_folder);
+            let max_page = list.len().saturating_sub(1) / 6;
+            if step < 0 && self.cc_theme_page < max_page {
+                self.cc_theme_page += 1;
+                return true;
+            } else if step > 0 && self.cc_theme_page > 0 {
+                self.cc_theme_page -= 1;
                 return true;
             }
         } else if self.active_tab == StudioTab::DesktopWidgets
@@ -2306,8 +2419,14 @@ impl SettingsController {
             | WidgetPage::ExtThemes(_)
             | WidgetPage::DateTimeFolders
             | WidgetPage::DateTimeThemes
+            | WidgetPage::AppsFolders
+            | WidgetPage::AppsThemes
+            | WidgetPage::VitalsFolders
+            | WidgetPage::VitalsThemes
             | WidgetPage::MusicFolders
-            | WidgetPage::MusicThemes => true,
+            | WidgetPage::MusicThemes
+            | WidgetPage::CcFolders
+            | WidgetPage::CcThemes => true,
             WidgetPage::CustomizeDateTime => {
                 self.draft_cfg.dt_hover_fx.is_interactive()
                     || self.draft_cfg.dt_style == ClockStyle::FlipMech
@@ -2317,9 +2436,24 @@ impl SettingsController {
                 self.draft_cfg.music_hover_fx.is_interactive()
                     || self.draft_cfg.music_style.is_realistic_interactive()
             }
-            WidgetPage::CustomizeApps => self.draft_cfg.apps_hover_fx.is_interactive(),
-            WidgetPage::CustomizeVitals => self.draft_cfg.vitals_hover_fx.is_interactive(),
-            WidgetPage::CustomizeControlCenter => self.draft_cfg.cc_hover_fx.is_interactive(),
+            WidgetPage::CustomizeApps => {
+                self.draft_cfg.apps_hover_fx.is_interactive()
+                    || apps_style_horology(self.draft_cfg.apps_tile_shape)
+                        .map(|h| h.has_idle_motion())
+                        .unwrap_or(false)
+            }
+            WidgetPage::CustomizeVitals => {
+                self.draft_cfg.vitals_hover_fx.is_interactive()
+                    || vitals_style_horology(self.draft_cfg.vitals_style)
+                        .map(|h| h.has_idle_motion())
+                        .unwrap_or(false)
+            }
+            WidgetPage::CustomizeControlCenter => {
+                self.draft_cfg.cc_hover_fx.is_interactive()
+                    || cc_style_horology(self.draft_cfg.cc_tile_style)
+                        .map(|h| h.has_idle_motion())
+                        .unwrap_or(false)
+            }
             WidgetPage::CustomizeExt(id) => {
                 let ec = &self.draft_cfg.ext_widgets[id.idx()];
                 ec.hover_fx.is_interactive() || ec.theme.is_realistic_interactive()
@@ -2437,8 +2571,8 @@ impl SettingsController {
                 ] {
                     if let Some(idx) = ExtWidgetTheme::ALL.iter().position(|&t| t == th) {
                         let rbox = match th {
-                            ExtWidgetTheme::CrystalWater => (26.0, 136.0, 346.0, 208.0),
-                            _ => (388.0, 136.0, 346.0, 208.0),
+                            ExtWidgetTheme::CrystalWater => (26.0, 280.0, 346.0, 138.0),
+                            _ => (388.0, 280.0, 346.0, 138.0),
                         };
                         step_in_rect(
                             &mut esims[idx],
@@ -2519,6 +2653,24 @@ impl SettingsController {
                     .widget_preview_sims
                     .get_or_insert_with(|| Box::new(std::array::from_fn(|_| VizSnapshot::default())));
                 step_in_rect(&mut wsims[3], self.draft_cfg.music_hover_fx, true, (26.0, 136.0, 708.0, 430.0));
+            }
+            WidgetPage::AppsFolders | WidgetPage::AppsThemes => {
+                let wsims = self
+                    .widget_preview_sims
+                    .get_or_insert_with(|| Box::new(std::array::from_fn(|_| VizSnapshot::default())));
+                step_in_rect(&mut wsims[1], self.draft_cfg.apps_hover_fx, true, (26.0, 136.0, 708.0, 430.0));
+            }
+            WidgetPage::VitalsFolders | WidgetPage::VitalsThemes => {
+                let wsims = self
+                    .widget_preview_sims
+                    .get_or_insert_with(|| Box::new(std::array::from_fn(|_| VizSnapshot::default())));
+                step_in_rect(&mut wsims[2], self.draft_cfg.vitals_hover_fx, true, (26.0, 136.0, 708.0, 430.0));
+            }
+            WidgetPage::CcFolders | WidgetPage::CcThemes => {
+                let wsims = self
+                    .widget_preview_sims
+                    .get_or_insert_with(|| Box::new(std::array::from_fn(|_| VizSnapshot::default())));
+                step_in_rect(&mut wsims[4], self.draft_cfg.cc_hover_fx, true, (26.0, 136.0, 708.0, 430.0));
             }
             WidgetPage::CustomizeDateTime => {
                 let wsims = self
@@ -3122,6 +3274,7 @@ impl SettingsController {
         self.preview_media = MediaSnapshot::default();
         if let Some(ref rt) = self.dc_rt {
             crate::realistic_pbr::evict_rt(rt);
+            crate::horology_pbr::evict_rt(rt);
         }
         self.dc_rt = None;
         self.backbuf.release();
@@ -3779,6 +3932,7 @@ impl SettingsController {
                             | SliderKind::ExtRim
                             | SliderKind::ExtRimWidth
                             | SliderKind::ExtFontScale
+                            | SliderKind::HoroGlare
                     ) {
                         if let Some(tgt) = self.current_widget_canvas_target() {
                             self.sync_canvas_target_to_live(cfg, tgt);
@@ -4183,14 +4337,21 @@ impl SettingsController {
             WidgetPage::DateTimeFolders
             | WidgetPage::DateTimeThemes
             | WidgetPage::CustomizeDateTime => Some(WidgetCanvasTarget::DateTime),
-            WidgetPage::CustomizeApps | WidgetPage::PickInstalledApp => {
+            WidgetPage::AppsFolders
+            | WidgetPage::AppsThemes
+            | WidgetPage::CustomizeApps
+            | WidgetPage::PickInstalledApp => {
                 Some(WidgetCanvasTarget::Apps)
             }
-            WidgetPage::CustomizeVitals => Some(WidgetCanvasTarget::Vitals),
+            WidgetPage::VitalsFolders
+            | WidgetPage::VitalsThemes
+            | WidgetPage::CustomizeVitals => Some(WidgetCanvasTarget::Vitals),
             WidgetPage::MusicFolders
             | WidgetPage::MusicThemes
             | WidgetPage::CustomizeMusic => Some(WidgetCanvasTarget::Music),
-            WidgetPage::CustomizeControlCenter => Some(WidgetCanvasTarget::ControlCenter),
+            WidgetPage::CcFolders
+            | WidgetPage::CcThemes
+            | WidgetPage::CustomizeControlCenter => Some(WidgetCanvasTarget::ControlCenter),
             WidgetPage::ExtFolders(id)
             | WidgetPage::ExtThemes(id)
             | WidgetPage::CustomizeExt(id) => Some(WidgetCanvasTarget::Ext(id)),
@@ -4211,6 +4372,7 @@ impl SettingsController {
 
     fn sync_canvas_target_to_live(&self, cfg: &mut AppConfig, target: WidgetCanvasTarget) {
         let src = &self.draft_cfg;
+        cfg.widgets_enabled = src.widgets_enabled;
         match target {
             WidgetCanvasTarget::DateTime => {
                 cfg.show_datetime = src.show_datetime;
@@ -4245,6 +4407,7 @@ impl SettingsController {
                 cfg.dt_elem_fonts = src.dt_elem_fonts.clone();
                 cfg.dt_match_wallpaper = src.dt_match_wallpaper;
                 cfg.dt_hover_fx = src.dt_hover_fx;
+                cfg.dt_horology = src.dt_horology;
             }
             WidgetCanvasTarget::Apps => {
                 cfg.show_apps = src.show_apps;
@@ -4273,6 +4436,7 @@ impl SettingsController {
                 cfg.apps_bg_rgb = src.apps_bg_rgb;
                 cfg.apps_elem_transforms = src.apps_elem_transforms;
                 cfg.apps_elem_fonts = src.apps_elem_fonts.clone();
+                cfg.apps_horology = src.apps_horology;
                 cfg.apps = src.apps.clone();
             }
             WidgetCanvasTarget::Vitals => {
@@ -4302,6 +4466,7 @@ impl SettingsController {
                 cfg.vitals_bg_rgb = src.vitals_bg_rgb;
                 cfg.vitals_elem_transforms = src.vitals_elem_transforms;
                 cfg.vitals_elem_fonts = src.vitals_elem_fonts.clone();
+                cfg.vitals_horology = src.vitals_horology;
             }
             WidgetCanvasTarget::Music => {
                 cfg.show_music = src.show_music;
@@ -4330,6 +4495,7 @@ impl SettingsController {
                 cfg.music_bg_rgb = src.music_bg_rgb;
                 cfg.music_elem_transforms = src.music_elem_transforms;
                 cfg.music_elem_fonts = src.music_elem_fonts.clone();
+                cfg.music_horology = src.music_horology;
             }
             WidgetCanvasTarget::ControlCenter => {
                 cfg.show_cc = src.show_cc;
@@ -4358,6 +4524,7 @@ impl SettingsController {
                 cfg.cc_bg_rgb = src.cc_bg_rgb;
                 cfg.cc_elem_transforms = src.cc_elem_transforms;
                 cfg.cc_elem_fonts = src.cc_elem_fonts.clone();
+                cfg.cc_horology = src.cc_horology;
             }
             WidgetCanvasTarget::Ext(id) => {
                 cfg.ext_widgets[id.idx()] = src.ext_widgets[id.idx()].clone();
@@ -4616,7 +4783,7 @@ impl SettingsController {
             SliderKind::MacDockIconSize | SliderKind::MacDockMagPct => (232.0, 640.0),
             SliderKind::TbVizOpacity => (154.0, 314.0),
             SliderKind::TbVizHue => (154.0, 628.0),
-            SliderKind::DtScale => (136.0, 318.0),
+            SliderKind::DtScale | SliderKind::HoroGlare => (136.0, 318.0),
             SliderKind::DtGlass | SliderKind::DtRadius => (154.0, 322.0),
             SliderKind::DtRim => (492.0, 662.0),
             SliderKind::DtSpacing => (180.0, 480.0),
@@ -4979,6 +5146,11 @@ impl SettingsController {
                     }
                 }
             }
+            SliderKind::HoroGlare => {
+                if let Some(tgt) = self.current_widget_canvas_target() {
+                    self.draft_cfg.horology_parts_mut(tgt).glare_pct = (t * 100.0).round() as u8;
+                }
+            }
             SliderKind::WallpaperVolume => {
                 self.draft_cfg.wallpaper_volume_pct = (t * 100.0).round() as u8;
             }
@@ -5017,7 +5189,17 @@ impl SettingsController {
                 | HitZone::ClearSearchFont
                 | HitZone::ScrollFontUp
                 | HitZone::ScrollFontDown
+                | HitZone::OpenAppsFolders
+                | HitZone::OpenAppsFolder(_)
+                | HitZone::OpenAppsThemes
+                | HitZone::ScrollAppsThemesPrev
+                | HitZone::ScrollAppsThemesNext
                 | HitZone::OpenCustomizeApps
+                | HitZone::OpenVitalsFolders
+                | HitZone::OpenVitalsFolder(_)
+                | HitZone::OpenVitalsThemes
+                | HitZone::ScrollVitalsThemesPrev
+                | HitZone::ScrollVitalsThemesNext
                 | HitZone::OpenCustomizeVitals
                 | HitZone::OpenMusicFolders
                 | HitZone::OpenMusicThemes
@@ -5025,7 +5207,13 @@ impl SettingsController {
                 | HitZone::ScrollMusicThemesPrev
                 | HitZone::ScrollMusicThemesNext
                 | HitZone::OpenCustomizeMusic
+                | HitZone::OpenCcFolders
+                | HitZone::OpenCcFolder(_)
+                | HitZone::OpenCcThemes
+                | HitZone::ScrollCcThemesPrev
+                | HitZone::ScrollCcThemesNext
                 | HitZone::OpenCustomizeCc
+                | HitZone::JumpHoroThemes(_)
                 | HitZone::SelectGalleryCat(_)
                 | HitZone::GalleryPrevPage
                 | HitZone::GalleryNextPage
@@ -5751,30 +5939,50 @@ impl SettingsController {
             HitZone::ToggleDateTimeQuick => {
                 self.draft_cfg.show_datetime = !self.draft_cfg.show_datetime;
                 cfg.show_datetime = self.draft_cfg.show_datetime;
+                if self.draft_cfg.show_datetime {
+                    self.draft_cfg.widgets_enabled = true;
+                    cfg.widgets_enabled = true;
+                }
                 self.applied_flash = true;
                 SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::ToggleAppsQuick => {
                 self.draft_cfg.show_apps = !self.draft_cfg.show_apps;
                 cfg.show_apps = self.draft_cfg.show_apps;
+                if self.draft_cfg.show_apps {
+                    self.draft_cfg.widgets_enabled = true;
+                    cfg.widgets_enabled = true;
+                }
                 self.applied_flash = true;
                 SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::ToggleVitalsQuick => {
                 self.draft_cfg.show_vitals = !self.draft_cfg.show_vitals;
                 cfg.show_vitals = self.draft_cfg.show_vitals;
+                if self.draft_cfg.show_vitals {
+                    self.draft_cfg.widgets_enabled = true;
+                    cfg.widgets_enabled = true;
+                }
                 self.applied_flash = true;
                 SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::ToggleMusicQuick => {
                 self.draft_cfg.show_music = !self.draft_cfg.show_music;
                 cfg.show_music = self.draft_cfg.show_music;
+                if self.draft_cfg.show_music {
+                    self.draft_cfg.widgets_enabled = true;
+                    cfg.widgets_enabled = true;
+                }
                 self.applied_flash = true;
                 SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::ToggleCcQuick => {
                 self.draft_cfg.show_cc = !self.draft_cfg.show_cc;
                 cfg.show_cc = self.draft_cfg.show_cc;
+                if self.draft_cfg.show_cc {
+                    self.draft_cfg.widgets_enabled = true;
+                    cfg.widgets_enabled = true;
+                }
                 self.applied_flash = true;
                 SettingsCommand::WidgetsConfigUpdated
             }
@@ -6012,8 +6220,10 @@ impl SettingsController {
                     if let Some(saved) = self.clock_style_profiles.get(&(style as u8)).copied() {
                         saved.apply_to(&mut self.draft_cfg);
                     }
-                    self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::DateTime);
                 }
+                self.draft_cfg.widgets_enabled = true;
+                self.draft_cfg.show_datetime = true;
+                self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::DateTime);
                 self.applied_flash = true;
                 self.canvas_drag = None;
                 if was_active {
@@ -6350,11 +6560,125 @@ impl SettingsController {
                 }
                 SettingsCommand::None
             }
+            HitZone::OpenAppsFolders => {
+                let _ = ensure_wallpaper_palette_for_config(&self.draft_cfg, false);
+                self.widget_page = WidgetPage::AppsFolders;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::OpenAppsFolder(folder) => {
+                self.apps_folder = folder;
+                self.apps_theme_page = apps_styles_in_folder(folder)
+                    .iter()
+                    .position(|&s| s == self.draft_cfg.apps_tile_shape)
+                    .map(|idx| idx / 6)
+                    .unwrap_or(0);
+                self.widget_page = WidgetPage::AppsThemes;
+                SettingsCommand::None
+            }
+            HitZone::OpenAppsThemes => {
+                let list = apps_styles_in_folder(self.apps_folder);
+                let max_p = list.len().saturating_sub(1) / 6;
+                if self.apps_theme_page > max_p {
+                    self.apps_theme_page = 0;
+                }
+                self.widget_page = WidgetPage::AppsThemes;
+                SettingsCommand::None
+            }
+            HitZone::ScrollAppsThemesPrev => {
+                if self.apps_theme_page > 0 {
+                    self.apps_theme_page -= 1;
+                }
+                SettingsCommand::None
+            }
+            HitZone::ScrollAppsThemesNext => {
+                let list = apps_styles_in_folder(self.apps_folder);
+                let max_page = list.len().saturating_sub(1) / 6;
+                if self.apps_theme_page < max_page {
+                    self.apps_theme_page += 1;
+                }
+                SettingsCommand::None
+            }
+            HitZone::SelectAppsTheme(sh) => {
+                let sh = sh.min(13);
+                let was_active = self.draft_cfg.apps_tile_shape == sh;
+                if !was_active {
+                    self.draft_cfg.apps_tile_shape = sh;
+                    self.draft_cfg.apps_show_plate = true;
+                    self.draft_cfg.apps_use_custom_color = false;
+                }
+                self.draft_cfg.widgets_enabled = true;
+                self.draft_cfg.show_apps = true;
+                self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Apps);
+                self.applied_flash = true;
+                if was_active {
+                    self.dt_sub_tab = DtSubTab::Layout;
+                    self.widget_page = WidgetPage::CustomizeApps;
+                }
+                SettingsCommand::WidgetsConfigUpdated
+            }
             HitZone::OpenCustomizeApps => {
                 self.dt_sub_tab = DtSubTab::Layout;
                 self.widget_page = WidgetPage::CustomizeApps;
                 self.applied_flash = false;
                 SettingsCommand::None
+            }
+            HitZone::OpenVitalsFolders => {
+                let _ = ensure_wallpaper_palette_for_config(&self.draft_cfg, false);
+                self.widget_page = WidgetPage::VitalsFolders;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::OpenVitalsFolder(folder) => {
+                self.vitals_folder = folder;
+                self.vitals_theme_page = vitals_styles_in_folder(folder)
+                    .iter()
+                    .position(|&s| s == self.draft_cfg.vitals_style)
+                    .map(|idx| idx / 6)
+                    .unwrap_or(0);
+                self.widget_page = WidgetPage::VitalsThemes;
+                SettingsCommand::None
+            }
+            HitZone::OpenVitalsThemes => {
+                let list = vitals_styles_in_folder(self.vitals_folder);
+                let max_p = list.len().saturating_sub(1) / 6;
+                if self.vitals_theme_page > max_p {
+                    self.vitals_theme_page = 0;
+                }
+                self.widget_page = WidgetPage::VitalsThemes;
+                SettingsCommand::None
+            }
+            HitZone::ScrollVitalsThemesPrev => {
+                if self.vitals_theme_page > 0 {
+                    self.vitals_theme_page -= 1;
+                }
+                SettingsCommand::None
+            }
+            HitZone::ScrollVitalsThemesNext => {
+                let list = vitals_styles_in_folder(self.vitals_folder);
+                let max_page = list.len().saturating_sub(1) / 6;
+                if self.vitals_theme_page < max_page {
+                    self.vitals_theme_page += 1;
+                }
+                SettingsCommand::None
+            }
+            HitZone::SelectVitalsTheme(st) => {
+                let st = st.min(14);
+                let was_active = self.draft_cfg.vitals_style == st;
+                if !was_active {
+                    self.draft_cfg.vitals_style = st;
+                    self.draft_cfg.vitals_show_plate = true;
+                    self.draft_cfg.vitals_use_custom_color = false;
+                }
+                self.draft_cfg.widgets_enabled = true;
+                self.draft_cfg.show_vitals = true;
+                self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Vitals);
+                self.applied_flash = true;
+                if was_active {
+                    self.dt_sub_tab = DtSubTab::Layout;
+                    self.widget_page = WidgetPage::CustomizeVitals;
+                }
+                SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::OpenCustomizeVitals => {
                 self.dt_sub_tab = DtSubTab::Layout;
@@ -6422,8 +6746,10 @@ impl SettingsController {
                     if let Some(saved) = self.music_style_profiles.get(&(style as u8)).copied() {
                         saved.apply_to(&mut self.draft_cfg);
                     }
-                    self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Music);
                 }
+                self.draft_cfg.widgets_enabled = true;
+                self.draft_cfg.show_music = true;
+                self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::Music);
                 self.applied_flash = true;
                 if was_active {
                     self.dt_sub_tab = DtSubTab::Layout;
@@ -6437,10 +6763,149 @@ impl SettingsController {
                 self.applied_flash = false;
                 SettingsCommand::None
             }
+            HitZone::OpenCcFolders => {
+                let _ = ensure_wallpaper_palette_for_config(&self.draft_cfg, false);
+                self.widget_page = WidgetPage::CcFolders;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::OpenCcFolder(folder) => {
+                self.cc_folder = folder;
+                self.cc_theme_page = cc_styles_in_folder(folder)
+                    .iter()
+                    .position(|&s| s == self.draft_cfg.cc_tile_style)
+                    .map(|idx| idx / 6)
+                    .unwrap_or(0);
+                self.widget_page = WidgetPage::CcThemes;
+                SettingsCommand::None
+            }
+            HitZone::OpenCcThemes => {
+                let list = cc_styles_in_folder(self.cc_folder);
+                let max_p = list.len().saturating_sub(1) / 6;
+                if self.cc_theme_page > max_p {
+                    self.cc_theme_page = 0;
+                }
+                self.widget_page = WidgetPage::CcThemes;
+                SettingsCommand::None
+            }
+            HitZone::ScrollCcThemesPrev => {
+                if self.cc_theme_page > 0 {
+                    self.cc_theme_page -= 1;
+                }
+                SettingsCommand::None
+            }
+            HitZone::ScrollCcThemesNext => {
+                let list = cc_styles_in_folder(self.cc_folder);
+                let max_page = list.len().saturating_sub(1) / 6;
+                if self.cc_theme_page < max_page {
+                    self.cc_theme_page += 1;
+                }
+                SettingsCommand::None
+            }
+            HitZone::SelectCcTheme(st) => {
+                let st = st.min(13);
+                let was_active = self.draft_cfg.cc_tile_style == st;
+                if !was_active {
+                    self.draft_cfg.cc_tile_style = st;
+                    self.draft_cfg.cc_show_plate = true;
+                    self.draft_cfg.cc_use_custom_color = false;
+                }
+                self.draft_cfg.widgets_enabled = true;
+                self.draft_cfg.show_cc = true;
+                self.sync_canvas_target_to_live(cfg, WidgetCanvasTarget::ControlCenter);
+                self.applied_flash = true;
+                if was_active {
+                    self.dt_sub_tab = DtSubTab::Layout;
+                    self.widget_page = WidgetPage::CustomizeControlCenter;
+                }
+                SettingsCommand::WidgetsConfigUpdated
+            }
             HitZone::OpenCustomizeCc => {
                 self.dt_sub_tab = DtSubTab::Layout;
                 self.widget_page = WidgetPage::CustomizeControlCenter;
                 self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::SetHoroBezelFinish(target, fin) => {
+                self.draft_cfg.horology_parts_mut(target).bezel_finish = fin;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::SetHoroBezelRgb(target, rgb) => {
+                self.draft_cfg.horology_parts_mut(target).bezel_rgb = rgb;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::SetHoroDialFinish(target, fin) => {
+                self.draft_cfg.horology_parts_mut(target).dial_finish = fin;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::SetHoroDialRgb(target, rgb) => {
+                self.draft_cfg.horology_parts_mut(target).dial_rgb = rgb;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::SetHoroHandsRgb(target, rgb) => {
+                self.draft_cfg.horology_parts_mut(target).hands_rgb = rgb;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::SetHoroLumeRgb(target, rgb) => {
+                self.draft_cfg.horology_parts_mut(target).lume_rgb = rgb;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::ToggleHoroScrews(target) => {
+                let p = self.draft_cfg.horology_parts_mut(target);
+                p.show_screws = !p.show_screws;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::ToggleHoroNeedleShadows(target) => {
+                let p = self.draft_cfg.horology_parts_mut(target);
+                p.show_needle_shadows = !p.show_needle_shadows;
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::ResetHoroParts(target) => {
+                *self.draft_cfg.horology_parts_mut(target) = HorologyPartConfig::default();
+                self.applied_flash = false;
+                SettingsCommand::None
+            }
+            HitZone::JumpHoroThemes(target) => {
+                match target {
+                    WidgetCanvasTarget::DateTime => {
+                        self.clock_folder = ClockThemeFolder::Horology;
+                        self.clock_theme_page = 0;
+                        self.widget_page = WidgetPage::DateTimeThemes;
+                    }
+                    WidgetCanvasTarget::Apps => {
+                        self.apps_folder = AppsThemeFolder::Horology;
+                        self.apps_theme_page = 0;
+                        self.widget_page = WidgetPage::AppsThemes;
+                    }
+                    WidgetCanvasTarget::Vitals => {
+                        self.vitals_folder = VitalsThemeFolder::Horology;
+                        self.vitals_theme_page = 0;
+                        self.widget_page = WidgetPage::VitalsThemes;
+                    }
+                    WidgetCanvasTarget::Music => {
+                        self.music_folder = MusicThemeFolder::Horology;
+                        self.music_theme_page = 0;
+                        self.widget_page = WidgetPage::MusicThemes;
+                    }
+                    WidgetCanvasTarget::ControlCenter => {
+                        self.cc_folder = CcThemeFolder::Horology;
+                        self.cc_theme_page = 0;
+                        self.widget_page = WidgetPage::CcThemes;
+                    }
+                    WidgetCanvasTarget::Ext(id) => {
+                        self.ext_folder = ExtThemeFolder::Horology;
+                        self.ext_theme_page = 0;
+                        self.widget_page = WidgetPage::ExtThemes(id);
+                    }
+                }
                 SettingsCommand::None
             }
             HitZone::SelectGalleryCat(cat) => {
@@ -6466,6 +6931,10 @@ impl SettingsController {
                 let en = !self.draft_cfg.ext_widgets[id.idx()].enabled;
                 self.draft_cfg.ext_widgets[id.idx()].enabled = en;
                 cfg.ext_widgets[id.idx()].enabled = en;
+                if en {
+                    self.draft_cfg.widgets_enabled = true;
+                    cfg.widgets_enabled = true;
+                }
                 self.applied_flash = true;
                 SettingsCommand::WidgetsConfigUpdated
             }
@@ -6551,7 +7020,11 @@ impl SettingsController {
             HitZone::SelectExtTheme(id, theme) => {
                 let was_active = self.draft_cfg.ext_widgets[id.idx()].theme == theme;
                 self.draft_cfg.ext_widgets[id.idx()].apply_theme_preset(theme);
+                self.draft_cfg.ext_widgets[id.idx()].enabled = true;
+                self.draft_cfg.widgets_enabled = true;
                 cfg.ext_widgets[id.idx()].apply_theme_preset(theme);
+                cfg.ext_widgets[id.idx()].enabled = true;
+                cfg.widgets_enabled = true;
                 self.applied_flash = true;
                 if was_active {
                     self.ext_sub_tab = ExtSubTab::Layout;
@@ -6787,8 +7260,14 @@ impl SettingsController {
                     },
                     WidgetPage::CustomizeDateTime => WidgetPage::DateTimeThemes,
                     WidgetPage::DateTimeThemes => WidgetPage::DateTimeFolders,
+                    WidgetPage::CustomizeApps => WidgetPage::AppsThemes,
+                    WidgetPage::AppsThemes => WidgetPage::AppsFolders,
+                    WidgetPage::CustomizeVitals => WidgetPage::VitalsThemes,
+                    WidgetPage::VitalsThemes => WidgetPage::VitalsFolders,
                     WidgetPage::CustomizeMusic => WidgetPage::MusicThemes,
                     WidgetPage::MusicThemes => WidgetPage::MusicFolders,
+                    WidgetPage::CustomizeControlCenter => WidgetPage::CcThemes,
+                    WidgetPage::CcThemes => WidgetPage::CcFolders,
                     WidgetPage::CustomizeExt(id) => WidgetPage::ExtThemes(id),
                     WidgetPage::ExtThemes(id) => WidgetPage::ExtFolders(id),
                     _ => WidgetPage::Gallery,
@@ -6814,7 +7293,9 @@ impl SettingsController {
                         slot.dx = 0;
                         slot.dy = 0;
                     }
-                    WidgetPage::CustomizeApps => {
+                    WidgetPage::CustomizeApps
+                    | WidgetPage::AppsFolders
+                    | WidgetPage::AppsThemes => {
                         self.draft_cfg.apps_x = def.apps_x;
                         self.draft_cfg.apps_y = def.apps_y;
                         for app in &mut self.draft_cfg.apps {
@@ -6822,7 +7303,9 @@ impl SettingsController {
                             app.offset_y = 0;
                         }
                     }
-                    WidgetPage::CustomizeVitals => {
+                    WidgetPage::CustomizeVitals
+                    | WidgetPage::VitalsFolders
+                    | WidgetPage::VitalsThemes => {
                         self.draft_cfg.vitals_x = def.vitals_x;
                         self.draft_cfg.vitals_y = def.vitals_y;
                     }
@@ -6832,7 +7315,9 @@ impl SettingsController {
                         self.draft_cfg.music_x = def.music_x;
                         self.draft_cfg.music_y = def.music_y;
                     }
-                    WidgetPage::CustomizeControlCenter => {
+                    WidgetPage::CustomizeControlCenter
+                    | WidgetPage::CcFolders
+                    | WidgetPage::CcThemes => {
                         self.draft_cfg.cc_x = def.cc_x;
                         self.draft_cfg.cc_y = def.cc_y;
                     }
@@ -6895,9 +7380,12 @@ impl SettingsController {
                         self.draft_cfg.dt_elem_fonts = def.dt_elem_fonts;
                         self.draft_cfg.dt_match_wallpaper = def.dt_match_wallpaper;
                         self.draft_cfg.dt_hover_fx = def.dt_hover_fx;
+                        self.draft_cfg.dt_horology = def.dt_horology;
                         self.clock_style_profiles.remove(&(self.draft_cfg.dt_style as u8));
                     }
-                    WidgetPage::CustomizeApps => {
+                    WidgetPage::CustomizeApps
+                    | WidgetPage::AppsFolders
+                    | WidgetPage::AppsThemes => {
                         self.draft_cfg.apps_x = def.apps_x;
                         self.draft_cfg.apps_y = def.apps_y;
                         self.draft_cfg.apps_scale_pct = def.apps_scale_pct;
@@ -6923,12 +7411,15 @@ impl SettingsController {
                         self.draft_cfg.apps_bg_rgb = def.apps_bg_rgb;
                         self.draft_cfg.apps_elem_transforms = def.apps_elem_transforms;
                         self.draft_cfg.apps_elem_fonts = def.apps_elem_fonts;
+                        self.draft_cfg.apps_horology = def.apps_horology;
                         self.draft_cfg.apps = default_apps();
                         self.apps_scroll = 0;
                         self.editing_app_name = None;
                         self.preview_icons.invalidate();
                     }
-                    WidgetPage::CustomizeVitals => {
+                    WidgetPage::CustomizeVitals
+                    | WidgetPage::VitalsFolders
+                    | WidgetPage::VitalsThemes => {
                         self.draft_cfg.vitals_x = def.vitals_x;
                         self.draft_cfg.vitals_y = def.vitals_y;
                         self.draft_cfg.vitals_scale_pct = def.vitals_scale_pct;
@@ -6954,6 +7445,7 @@ impl SettingsController {
                         self.draft_cfg.vitals_bg_rgb = def.vitals_bg_rgb;
                         self.draft_cfg.vitals_elem_transforms = def.vitals_elem_transforms;
                         self.draft_cfg.vitals_elem_fonts = def.vitals_elem_fonts;
+                        self.draft_cfg.vitals_horology = def.vitals_horology;
                     }
                     WidgetPage::CustomizeMusic
                     | WidgetPage::MusicFolders
@@ -6983,9 +7475,12 @@ impl SettingsController {
                         self.draft_cfg.music_bg_rgb = def.music_bg_rgb;
                         self.draft_cfg.music_elem_transforms = def.music_elem_transforms;
                         self.draft_cfg.music_elem_fonts = def.music_elem_fonts;
+                        self.draft_cfg.music_horology = def.music_horology;
                         self.music_style_profiles.remove(&(self.draft_cfg.music_style as u8));
                     }
-                    WidgetPage::CustomizeControlCenter => {
+                    WidgetPage::CustomizeControlCenter
+                    | WidgetPage::CcFolders
+                    | WidgetPage::CcThemes => {
                         self.draft_cfg.cc_x = def.cc_x;
                         self.draft_cfg.cc_y = def.cc_y;
                         self.draft_cfg.cc_scale_pct = def.cc_scale_pct;
@@ -7011,6 +7506,7 @@ impl SettingsController {
                         self.draft_cfg.cc_bg_rgb = def.cc_bg_rgb;
                         self.draft_cfg.cc_elem_transforms = def.cc_elem_transforms;
                         self.draft_cfg.cc_elem_fonts = def.cc_elem_fonts;
+                        self.draft_cfg.cc_horology = def.cc_horology;
                     }
                     WidgetPage::ExtFolders(id)
                     | WidgetPage::ExtThemes(id)
@@ -7031,7 +7527,13 @@ impl SettingsController {
                 merged.ext_widgets = self.draft_cfg.ext_widgets.clone();
                 merged.notes_title = self.draft_cfg.notes_title.clone();
                 merged.notes_items = self.draft_cfg.notes_items.clone();
-                merged.widgets_enabled = self.draft_cfg.widgets_enabled;
+                let any_widget_on = self.draft_cfg.show_datetime
+                    || self.draft_cfg.show_apps
+                    || self.draft_cfg.show_vitals
+                    || self.draft_cfg.show_music
+                    || self.draft_cfg.show_cc
+                    || self.draft_cfg.ext_widgets.iter().any(|w| w.enabled);
+                merged.widgets_enabled = self.draft_cfg.widgets_enabled || any_widget_on;
                 merged.widgets_locked = self.draft_cfg.widgets_locked;
                 merged.set_clock_24h(self.draft_cfg.widgets_24h);
                 merged.widgets_hover_react = self.draft_cfg.widgets_hover_react;
@@ -7081,6 +7583,7 @@ impl SettingsController {
                 merged.dt_elem_fonts = self.draft_cfg.dt_elem_fonts.clone();
                 merged.dt_match_wallpaper = self.draft_cfg.dt_match_wallpaper;
                 merged.dt_hover_fx = self.draft_cfg.dt_hover_fx;
+                merged.dt_horology = self.draft_cfg.dt_horology;
 
                 merged.apps_scale_pct = self.draft_cfg.apps_scale_pct;
                 merged.apps_glass_alpha = self.draft_cfg.apps_glass_alpha;
@@ -7105,6 +7608,7 @@ impl SettingsController {
                 merged.apps_bg_rgb = self.draft_cfg.apps_bg_rgb;
                 merged.apps_elem_transforms = self.draft_cfg.apps_elem_transforms;
                 merged.apps_elem_fonts = self.draft_cfg.apps_elem_fonts.clone();
+                merged.apps_horology = self.draft_cfg.apps_horology;
                 merged.apps = self.draft_cfg.apps.clone();
 
                 merged.vitals_scale_pct = self.draft_cfg.vitals_scale_pct;
@@ -7130,6 +7634,7 @@ impl SettingsController {
                 merged.vitals_bg_rgb = self.draft_cfg.vitals_bg_rgb;
                 merged.vitals_elem_transforms = self.draft_cfg.vitals_elem_transforms;
                 merged.vitals_elem_fonts = self.draft_cfg.vitals_elem_fonts.clone();
+                merged.vitals_horology = self.draft_cfg.vitals_horology;
 
                 merged.music_scale_pct = self.draft_cfg.music_scale_pct;
                 merged.music_glass_alpha = self.draft_cfg.music_glass_alpha;
@@ -7154,6 +7659,7 @@ impl SettingsController {
                 merged.music_bg_rgb = self.draft_cfg.music_bg_rgb;
                 merged.music_elem_transforms = self.draft_cfg.music_elem_transforms;
                 merged.music_elem_fonts = self.draft_cfg.music_elem_fonts.clone();
+                merged.music_horology = self.draft_cfg.music_horology;
 
                 merged.cc_scale_pct = self.draft_cfg.cc_scale_pct;
                 merged.cc_glass_alpha = self.draft_cfg.cc_glass_alpha;
@@ -7178,6 +7684,7 @@ impl SettingsController {
                 merged.cc_bg_rgb = self.draft_cfg.cc_bg_rgb;
                 merged.cc_elem_transforms = self.draft_cfg.cc_elem_transforms;
                 merged.cc_elem_fonts = self.draft_cfg.cc_elem_fonts.clone();
+                merged.cc_horology = self.draft_cfg.cc_horology;
 
                 if merged.any_match_wallpaper() {
                     let _ = ensure_wallpaper_palette_for_config(&merged, false);
@@ -7232,11 +7739,6 @@ impl SettingsController {
             }
             HitZone::AppsColsBtn(cols) => {
                 self.draft_cfg.apps_cols = cols.clamp(1, 12);
-                self.applied_flash = false;
-                SettingsCommand::None
-            }
-            HitZone::AppsShapeBtn(sh) => {
-                self.draft_cfg.apps_tile_shape = sh.min(3);
                 self.applied_flash = false;
                 SettingsCommand::None
             }
@@ -7392,11 +7894,6 @@ impl SettingsController {
                 }
                 SettingsCommand::None
             }
-            HitZone::VitalsStyleBtn(st) => {
-                self.draft_cfg.vitals_style = st.min(4);
-                self.applied_flash = false;
-                SettingsCommand::None
-            }
             HitZone::ToggleVitalsPlate => {
                 self.draft_cfg.vitals_show_plate = !self.draft_cfg.vitals_show_plate;
                 self.applied_flash = false;
@@ -7464,11 +7961,6 @@ impl SettingsController {
             }
             HitZone::ToggleMusicBadge => {
                 self.draft_cfg.music_show_badge = !self.draft_cfg.music_show_badge;
-                self.applied_flash = false;
-                SettingsCommand::None
-            }
-            HitZone::CcTileStyleBtn(st) => {
-                self.draft_cfg.cc_tile_style = st.min(3);
                 self.applied_flash = false;
                 SettingsCommand::None
             }
@@ -7628,6 +8120,117 @@ impl SettingsController {
         }
     }
 
+    fn hit_test_dt_sub_tabs(x: f32, y: f32) -> Option<HitZone> {
+        if in_rect(x, y, 26.0, 306.0, 197.0, 338.0) {
+            return Some(HitZone::DtSubTabBtn(DtSubTab::Layout));
+        }
+        if in_rect(x, y, 205.0, 306.0, 376.0, 338.0) {
+            return Some(HitZone::DtSubTabBtn(DtSubTab::Fonts));
+        }
+        if in_rect(x, y, 384.0, 306.0, 555.0, 338.0) {
+            return Some(HitZone::DtSubTabBtn(DtSubTab::Colors));
+        }
+        if in_rect(x, y, 563.0, 306.0, 734.0, 338.0) {
+            return Some(HitZone::DtSubTabBtn(DtSubTab::Materials));
+        }
+        None
+    }
+
+    fn hit_test_horology_materials_subtab(
+        &self,
+        x: f32,
+        y: f32,
+        target: WidgetCanvasTarget,
+    ) -> HitZone {
+        if self.draft_cfg.active_horology_theme(target).is_none() {
+            if in_rect(x, y, 210.0, 476.0, 550.0, 516.0) {
+                return HitZone::JumpHoroThemes(target);
+            }
+            return HitZone::None;
+        }
+        // Row 1 (350..380): Bezel Finish (Auto + 9 finishes)
+        if y >= 350.0 && y <= 380.0 {
+            for i in 0..=HorologyBezelFinish::ALL.len() {
+                let px0 = 94.0 + (i as f32) * 62.6;
+                if in_rect(x, y, px0, 350.0, px0 + 59.0, 380.0) {
+                    let opt = if i == 0 {
+                        None
+                    } else {
+                        Some(HorologyBezelFinish::ALL[i - 1])
+                    };
+                    return HitZone::SetHoroBezelFinish(target, opt);
+                }
+            }
+        }
+        // Row 2 (384..414): Dial Finish (Auto + 8 finishes)
+        if y >= 384.0 && y <= 414.0 {
+            for i in 0..=HorologyDialFinish::ALL.len() {
+                let px0 = 94.0 + (i as f32) * 69.5;
+                if in_rect(x, y, px0, 384.0, px0 + 66.0, 414.0) {
+                    let opt = if i == 0 {
+                        None
+                    } else {
+                        Some(HorologyDialFinish::ALL[i - 1])
+                    };
+                    return HitZone::SetHoroDialFinish(target, opt);
+                }
+            }
+        }
+        // Row 3 (420..450): Bezel Color (left) & Dial Color (right)
+        if in_rect(x, y, 106.0, 422.0, 144.0, 448.0) {
+            return HitZone::SetHoroBezelRgb(target, None);
+        }
+        for (i, &rgb) in HOROLOGY_BEZEL_SWATCHES.iter().enumerate() {
+            let cx = 160.0 + (i as f32) * 28.0;
+            if in_rect(x, y, cx - 12.0, 421.0, cx + 12.0, 449.0) {
+                return HitZone::SetHoroBezelRgb(target, Some(rgb));
+            }
+        }
+        if in_rect(x, y, 448.0, 422.0, 486.0, 448.0) {
+            return HitZone::SetHoroDialRgb(target, None);
+        }
+        for (i, &rgb) in HOROLOGY_DIAL_SWATCHES.iter().enumerate() {
+            let cx = 502.0 + (i as f32) * 28.0;
+            if in_rect(x, y, cx - 12.0, 421.0, cx + 12.0, 449.0) {
+                return HitZone::SetHoroDialRgb(target, Some(rgb));
+            }
+        }
+        // Row 4 (456..486): Hands Color (left) & Lume Color (right)
+        if in_rect(x, y, 106.0, 458.0, 144.0, 484.0) {
+            return HitZone::SetHoroHandsRgb(target, None);
+        }
+        for (i, &rgb) in HOROLOGY_ACCENT_SWATCHES.iter().enumerate() {
+            let cx = 160.0 + (i as f32) * 28.0;
+            if in_rect(x, y, cx - 12.0, 457.0, cx + 12.0, 485.0) {
+                return HitZone::SetHoroHandsRgb(target, Some(rgb));
+            }
+        }
+        if in_rect(x, y, 448.0, 458.0, 486.0, 484.0) {
+            return HitZone::SetHoroLumeRgb(target, None);
+        }
+        for (i, &rgb) in HOROLOGY_ACCENT_SWATCHES.iter().enumerate() {
+            let cx = 502.0 + (i as f32) * 28.0;
+            if in_rect(x, y, cx - 12.0, 457.0, cx + 12.0, 485.0) {
+                return HitZone::SetHoroLumeRgb(target, Some(rgb));
+            }
+        }
+        // Row 5 (494..528): AR Glare slider (left) + Bezel Screws toggle (right)
+        if in_rect(x, y, 40.0, 494.0, 374.0, 528.0) {
+            return HitZone::Slider(SliderKind::HoroGlare);
+        }
+        if in_rect(x, y, 386.0, 494.0, 720.0, 528.0) {
+            return HitZone::ToggleHoroScrews(target);
+        }
+        // Row 6 (534..566): Cast Needle Shadows toggle (left) + Reset Materials button (right)
+        if in_rect(x, y, 40.0, 534.0, 490.0, 566.0) {
+            return HitZone::ToggleHoroNeedleShadows(target);
+        }
+        if in_rect(x, y, 502.0, 534.0, 720.0, 566.0) {
+            return HitZone::ResetHoroParts(target);
+        }
+        HitZone::None
+    }
+
     fn hit_test(&self, x: f32, y: f32) -> HitZone {
         if in_rect(x, y, 662.0, 14.0, 694.0, 44.0) {
             return HitZone::BtnMinimize;
@@ -7697,7 +8300,7 @@ impl SettingsController {
         if in_rect(x, y, 624.0, 14.0, 656.0, 44.0) {
             return HitZone::TabSettings;
         }
-        if self.active_tab == StudioTab::DesktopWidgets && self.widget_page == WidgetPage::Gallery {
+        if self.active_tab == StudioTab::DesktopWidgets {
             if in_rect(x, y, 380.0, 15.0, 494.0, 45.0) {
                 return HitZone::ToggleWidgetsLock;
             }
@@ -8116,19 +8719,19 @@ impl SettingsController {
                         if in_rect(x, y, 26.0, 124.0, 374.0, 290.0) {
                             return HitZone::OpenCustomizeDateTime;
                         }
-                        // Card 2: Quick Control Center
+                        // Card 2: Quick Control Center -> opens Console Theme Folders
                         if in_rect(x, y, 664.0, 242.0, 728.0, 284.0) {
                             return HitZone::ToggleCcQuick;
                         }
                         if in_rect(x, y, 386.0, 124.0, 734.0, 290.0) {
-                            return HitZone::OpenCustomizeCc;
+                            return HitZone::OpenCcFolders;
                         }
-                        // Card 3: App Launchers Dock
+                        // Card 3: App Launchers Dock -> opens Dock Theme Folders
                         if in_rect(x, y, 304.0, 386.0, 368.0, 426.0) {
                             return HitZone::ToggleAppsQuick;
                         }
                         if in_rect(x, y, 26.0, 298.0, 374.0, 430.0) {
-                            return HitZone::OpenCustomizeApps;
+                            return HitZone::OpenAppsFolders;
                         }
                         // Card 4: NowPlaying Music Bar -> opens Music Theme Folders
                         if in_rect(x, y, 664.0, 386.0, 728.0, 426.0) {
@@ -8137,12 +8740,12 @@ impl SettingsController {
                         if in_rect(x, y, 386.0, 298.0, 734.0, 430.0) {
                             return HitZone::OpenMusicFolders;
                         }
-                        // Card 5: System Vitals & Power
+                        // Card 5: System Vitals & Power -> opens Vitals Theme Folders
                         if in_rect(x, y, 666.0, 446.0, 730.0, 484.0) {
                             return HitZone::ToggleVitalsQuick;
                         }
                         if in_rect(x, y, 26.0, 440.0, 734.0, 570.0) {
-                            return HitZone::OpenCustomizeVitals;
+                            return HitZone::OpenVitalsFolders;
                         }
                     } else {
                         for (i, id) in ext_slice.into_iter().enumerate() {
@@ -8191,6 +8794,9 @@ impl SettingsController {
                     if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
                         return HitZone::ToggleDateTimeQuick;
                     }
+                    if in_rect(x, y, 26.0, 136.0, 734.0, 270.0) {
+                        return HitZone::OpenClockFolder(ClockThemeFolder::Horology);
+                    }
                     let folders = [
                         ClockThemeFolder::Realistic,
                         ClockThemeFolder::SignatureSerif,
@@ -8201,8 +8807,8 @@ impl SettingsController {
                         let col = i % 2;
                         let row = i / 2;
                         let fx0 = if col == 0 { 26.0 } else { 388.0 };
-                        let fy0 = 136.0 + (row as f32) * 222.0;
-                        if in_rect(x, y, fx0, fy0, fx0 + 346.0, fy0 + 208.0) {
+                        let fy0 = 280.0 + (row as f32) * 148.0;
+                        if in_rect(x, y, fx0, fy0, fx0 + 346.0, fy0 + 138.0) {
                             return HitZone::OpenClockFolder(folder);
                         }
                     }
@@ -8279,6 +8885,9 @@ impl SettingsController {
                     if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
                         return HitZone::ToggleMusicQuick;
                     }
+                    if in_rect(x, y, 26.0, 136.0, 734.0, 270.0) {
+                        return HitZone::OpenMusicFolder(MusicThemeFolder::Horology);
+                    }
                     let folders = [
                         MusicThemeFolder::Realistic,
                         MusicThemeFolder::GlassVinyl,
@@ -8289,8 +8898,8 @@ impl SettingsController {
                         let col = i % 2;
                         let row = i / 2;
                         let fx0 = if col == 0 { 26.0 } else { 388.0 };
-                        let fy0 = 136.0 + (row as f32) * 222.0;
-                        if in_rect(x, y, fx0, fy0, fx0 + 346.0, fy0 + 208.0) {
+                        let fy0 = 280.0 + (row as f32) * 148.0;
+                        if in_rect(x, y, fx0, fy0, fx0 + 346.0, fy0 + 138.0) {
                             return HitZone::OpenMusicFolder(folder);
                         }
                     }
@@ -8351,6 +8960,237 @@ impl SettingsController {
                     }
                 }
 
+                WidgetPage::AppsFolders => {
+                    if in_rect(x, y, 26.0, 94.0, 116.0, 124.0) {
+                        return HitZone::BtnBackGallery;
+                    }
+                    if in_rect(x, y, 278.0, 94.0, 366.0, 124.0) {
+                        return HitZone::OpenAppsFolder(AppsThemeFolder::All);
+                    }
+                    if in_rect(x, y, 372.0, 94.0, 524.0, 124.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Apps);
+                    }
+                    if in_rect(x, y, 532.0, 94.0, 636.0, 124.0) {
+                        return HitZone::OpenCustomizeApps;
+                    }
+                    if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
+                        return HitZone::ToggleAppsQuick;
+                    }
+                    if in_rect(x, y, 26.0, 136.0, 734.0, 356.0) {
+                        return HitZone::OpenAppsFolder(AppsThemeFolder::Horology);
+                    }
+                    if in_rect(x, y, 26.0, 368.0, 734.0, 568.0) {
+                        return HitZone::OpenAppsFolder(AppsThemeFolder::Classic);
+                    }
+                    if in_rect(x, y, 26.0, 584.0, 184.0, 622.0) {
+                        return HitZone::BtnResampleWallpaper;
+                    }
+                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
+                        return HitZone::OpenCustomizeApps;
+                    }
+                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
+                        return HitZone::BtnApplyWidgets;
+                    }
+                }
+
+                WidgetPage::AppsThemes => {
+                    if in_rect(x, y, 26.0, 94.0, 126.0, 124.0) {
+                        return HitZone::OpenAppsFolders;
+                    }
+                    let list = apps_styles_in_folder(self.apps_folder);
+                    if list.len() > 6 {
+                        if in_rect(x, y, 278.0, 96.0, 304.0, 122.0) {
+                            return HitZone::ScrollAppsThemesPrev;
+                        }
+                        if in_rect(x, y, 340.0, 96.0, 366.0, 122.0) {
+                            return HitZone::ScrollAppsThemesNext;
+                        }
+                    }
+                    if in_rect(x, y, 372.0, 94.0, 524.0, 124.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Apps);
+                    }
+                    if in_rect(x, y, 532.0, 94.0, 636.0, 124.0) {
+                        return HitZone::OpenCustomizeApps;
+                    }
+                    if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
+                        return HitZone::ToggleAppsQuick;
+                    }
+                    let max_page = list.len().saturating_sub(1) / 6;
+                    let page = self.apps_theme_page.min(max_page);
+                    for (i, &sh) in list.iter().skip(page * 6).take(6).enumerate() {
+                        let col = i % 2;
+                        let row = i / 2;
+                        let x0 = if col == 0 { 26.0 } else { 386.0 };
+                        let y0 = 136.0 + (row as f32) * 144.0;
+                        if in_rect(x, y, x0, y0, x0 + 348.0, y0 + 134.0) {
+                            return HitZone::SelectAppsTheme(sh);
+                        }
+                    }
+                    if in_rect(x, y, 26.0, 584.0, 184.0, 622.0) {
+                        return HitZone::BtnResampleWallpaper;
+                    }
+                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
+                        return HitZone::OpenCustomizeApps;
+                    }
+                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
+                        return HitZone::BtnApplyWidgets;
+                    }
+                }
+
+                WidgetPage::VitalsFolders => {
+                    if in_rect(x, y, 26.0, 94.0, 116.0, 124.0) {
+                        return HitZone::BtnBackGallery;
+                    }
+                    if in_rect(x, y, 278.0, 94.0, 366.0, 124.0) {
+                        return HitZone::OpenVitalsFolder(VitalsThemeFolder::All);
+                    }
+                    if in_rect(x, y, 372.0, 94.0, 524.0, 124.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Vitals);
+                    }
+                    if in_rect(x, y, 532.0, 94.0, 636.0, 124.0) {
+                        return HitZone::OpenCustomizeVitals;
+                    }
+                    if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
+                        return HitZone::ToggleVitalsQuick;
+                    }
+                    if in_rect(x, y, 26.0, 136.0, 734.0, 356.0) {
+                        return HitZone::OpenVitalsFolder(VitalsThemeFolder::Horology);
+                    }
+                    if in_rect(x, y, 26.0, 368.0, 734.0, 568.0) {
+                        return HitZone::OpenVitalsFolder(VitalsThemeFolder::Classic);
+                    }
+                    if in_rect(x, y, 26.0, 584.0, 184.0, 622.0) {
+                        return HitZone::BtnResampleWallpaper;
+                    }
+                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
+                        return HitZone::OpenCustomizeVitals;
+                    }
+                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
+                        return HitZone::BtnApplyWidgets;
+                    }
+                }
+
+                WidgetPage::VitalsThemes => {
+                    if in_rect(x, y, 26.0, 94.0, 126.0, 124.0) {
+                        return HitZone::OpenVitalsFolders;
+                    }
+                    let list = vitals_styles_in_folder(self.vitals_folder);
+                    if list.len() > 6 {
+                        if in_rect(x, y, 278.0, 96.0, 304.0, 122.0) {
+                            return HitZone::ScrollVitalsThemesPrev;
+                        }
+                        if in_rect(x, y, 340.0, 96.0, 366.0, 122.0) {
+                            return HitZone::ScrollVitalsThemesNext;
+                        }
+                    }
+                    if in_rect(x, y, 372.0, 94.0, 524.0, 124.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Vitals);
+                    }
+                    if in_rect(x, y, 532.0, 94.0, 636.0, 124.0) {
+                        return HitZone::OpenCustomizeVitals;
+                    }
+                    if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
+                        return HitZone::ToggleVitalsQuick;
+                    }
+                    let max_page = list.len().saturating_sub(1) / 6;
+                    let page = self.vitals_theme_page.min(max_page);
+                    for (i, &st) in list.iter().skip(page * 6).take(6).enumerate() {
+                        let col = i % 2;
+                        let row = i / 2;
+                        let x0 = if col == 0 { 26.0 } else { 386.0 };
+                        let y0 = 136.0 + (row as f32) * 144.0;
+                        if in_rect(x, y, x0, y0, x0 + 348.0, y0 + 134.0) {
+                            return HitZone::SelectVitalsTheme(st);
+                        }
+                    }
+                    if in_rect(x, y, 26.0, 584.0, 184.0, 622.0) {
+                        return HitZone::BtnResampleWallpaper;
+                    }
+                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
+                        return HitZone::OpenCustomizeVitals;
+                    }
+                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
+                        return HitZone::BtnApplyWidgets;
+                    }
+                }
+
+                WidgetPage::CcFolders => {
+                    if in_rect(x, y, 26.0, 94.0, 116.0, 124.0) {
+                        return HitZone::BtnBackGallery;
+                    }
+                    if in_rect(x, y, 278.0, 94.0, 366.0, 124.0) {
+                        return HitZone::OpenCcFolder(CcThemeFolder::All);
+                    }
+                    if in_rect(x, y, 372.0, 94.0, 524.0, 124.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::ControlCenter);
+                    }
+                    if in_rect(x, y, 532.0, 94.0, 636.0, 124.0) {
+                        return HitZone::OpenCustomizeCc;
+                    }
+                    if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
+                        return HitZone::ToggleCcQuick;
+                    }
+                    if in_rect(x, y, 26.0, 136.0, 734.0, 356.0) {
+                        return HitZone::OpenCcFolder(CcThemeFolder::Horology);
+                    }
+                    if in_rect(x, y, 26.0, 368.0, 734.0, 568.0) {
+                        return HitZone::OpenCcFolder(CcThemeFolder::Classic);
+                    }
+                    if in_rect(x, y, 26.0, 584.0, 184.0, 622.0) {
+                        return HitZone::BtnResampleWallpaper;
+                    }
+                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
+                        return HitZone::OpenCustomizeCc;
+                    }
+                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
+                        return HitZone::BtnApplyWidgets;
+                    }
+                }
+
+                WidgetPage::CcThemes => {
+                    if in_rect(x, y, 26.0, 94.0, 126.0, 124.0) {
+                        return HitZone::OpenCcFolders;
+                    }
+                    let list = cc_styles_in_folder(self.cc_folder);
+                    if list.len() > 6 {
+                        if in_rect(x, y, 278.0, 96.0, 304.0, 122.0) {
+                            return HitZone::ScrollCcThemesPrev;
+                        }
+                        if in_rect(x, y, 340.0, 96.0, 366.0, 122.0) {
+                            return HitZone::ScrollCcThemesNext;
+                        }
+                    }
+                    if in_rect(x, y, 372.0, 94.0, 524.0, 124.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::ControlCenter);
+                    }
+                    if in_rect(x, y, 532.0, 94.0, 636.0, 124.0) {
+                        return HitZone::OpenCustomizeCc;
+                    }
+                    if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
+                        return HitZone::ToggleCcQuick;
+                    }
+                    let max_page = list.len().saturating_sub(1) / 6;
+                    let page = self.cc_theme_page.min(max_page);
+                    for (i, &st) in list.iter().skip(page * 6).take(6).enumerate() {
+                        let col = i % 2;
+                        let row = i / 2;
+                        let x0 = if col == 0 { 26.0 } else { 386.0 };
+                        let y0 = 136.0 + (row as f32) * 144.0;
+                        if in_rect(x, y, x0, y0, x0 + 348.0, y0 + 134.0) {
+                            return HitZone::SelectCcTheme(st);
+                        }
+                    }
+                    if in_rect(x, y, 26.0, 584.0, 184.0, 622.0) {
+                        return HitZone::BtnResampleWallpaper;
+                    }
+                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
+                        return HitZone::OpenCustomizeCc;
+                    }
+                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
+                        return HitZone::BtnApplyWidgets;
+                    }
+                }
+
                 WidgetPage::CustomizeDateTime => {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackGallery;
@@ -8364,15 +9204,9 @@ impl SettingsController {
                     if in_rect(x, y, 684.0, 144.0, 728.0, 184.0) {
                         return HitZone::OpenWidgetCanvasEditor(WidgetCanvasTarget::DateTime);
                     }
-                    // 3 Sub-tabs (306..338)
-                    if in_rect(x, y, 26.0, 306.0, 254.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Layout);
-                    }
-                    if in_rect(x, y, 264.0, 306.0, 492.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Fonts);
-                    }
-                    if in_rect(x, y, 502.0, 306.0, 734.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Colors);
+                    // 4 Sub-tabs (306..338)
+                    if let Some(hz) = Self::hit_test_dt_sub_tabs(x, y) {
+                        return hz;
                     }
 
                     match self.dt_sub_tab {
@@ -8476,6 +9310,12 @@ impl SettingsController {
                             }
                             if in_rect(x, y, 154.0, 524.0, 656.0, 562.0) {
                                 return HitZone::Slider(SliderKind::DtHue);
+                            }
+                        }
+                        DtSubTab::Materials => {
+                            let hz = self.hit_test_horology_materials_subtab(x, y, WidgetCanvasTarget::DateTime);
+                            if hz != HitZone::None {
+                                return hz;
                             }
                         }
                     }
@@ -8733,15 +9573,9 @@ impl SettingsController {
                     if in_rect(x, y, 560.0, 262.0, 734.0, 298.0) {
                         return HitZone::ToggleAppsPlate;
                     }
-                    // 3 Sub-tabs (306..338)
-                    if in_rect(x, y, 26.0, 306.0, 254.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Layout);
-                    }
-                    if in_rect(x, y, 264.0, 306.0, 492.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Fonts);
-                    }
-                    if in_rect(x, y, 502.0, 306.0, 734.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Colors);
+                    // 4 Sub-tabs (306..338)
+                    if let Some(hz) = Self::hit_test_dt_sub_tabs(x, y) {
+                        return hz;
                     }
 
                     match self.dt_sub_tab {
@@ -8797,11 +9631,11 @@ impl SettingsController {
                             }
                         }
                         DtSubTab::Fonts => {
-                            for sh in 0..4u8 {
-                                let sx0 = 136.0 + (sh as f32) * 146.0;
-                                if in_rect(x, y, sx0, 352.0, sx0 + 140.0, 384.0) {
-                                    return HitZone::AppsShapeBtn(sh);
-                                }
+                            if in_rect(x, y, 40.0, 352.0, 320.0, 384.0) {
+                                return HitZone::OpenAppsThemes;
+                            }
+                            if in_rect(x, y, 330.0, 352.0, 500.0, 384.0) {
+                                return HitZone::OpenAppsFolders;
                             }
                             if in_rect(x, y, 40.0, 392.0, 720.0, 466.0) {
                                 return HitZone::OpenFontPicker(FontTargetSlot::AppsLabel);
@@ -8860,6 +9694,12 @@ impl SettingsController {
                                 return HitZone::Slider(SliderKind::DtHue);
                             }
                         }
+                        DtSubTab::Materials => {
+                            let hz = self.hit_test_horology_materials_subtab(x, y, WidgetCanvasTarget::Apps);
+                            if hz != HitZone::None {
+                                return hz;
+                            }
+                        }
                     }
 
                     if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
@@ -8886,24 +9726,18 @@ impl SettingsController {
                     if in_rect(x, y, 684.0, 144.0, 728.0, 184.0) {
                         return HitZone::OpenWidgetCanvasEditor(WidgetCanvasTarget::Vitals);
                     }
-                    // 3 Sub-tabs (306..338)
-                    if in_rect(x, y, 26.0, 306.0, 254.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Layout);
-                    }
-                    if in_rect(x, y, 264.0, 306.0, 492.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Fonts);
-                    }
-                    if in_rect(x, y, 502.0, 306.0, 734.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Colors);
+                    // 4 Sub-tabs (306..338)
+                    if let Some(hz) = Self::hit_test_dt_sub_tabs(x, y) {
+                        return hz;
                     }
 
                     match self.dt_sub_tab {
                         DtSubTab::Layout => {
-                            for st in 0..5u8 {
-                                let sx0 = 112.0 + (st as f32) * 122.0;
-                                if in_rect(x, y, sx0, 354.0, sx0 + 116.0, 386.0) {
-                                    return HitZone::VitalsStyleBtn(st);
-                                }
+                            if in_rect(x, y, 40.0, 354.0, 290.0, 386.0) {
+                                return HitZone::OpenVitalsThemes;
+                            }
+                            if in_rect(x, y, 300.0, 354.0, 470.0, 386.0) {
+                                return HitZone::OpenVitalsFolders;
                             }
                             if in_rect(x, y, 40.0, 390.0, 374.0, 424.0) {
                                 return HitZone::Slider(SliderKind::DtScale);
@@ -8975,6 +9809,12 @@ impl SettingsController {
                                 return HitZone::Slider(SliderKind::DtHue);
                             }
                         }
+                        DtSubTab::Materials => {
+                            let hz = self.hit_test_horology_materials_subtab(x, y, WidgetCanvasTarget::Vitals);
+                            if hz != HitZone::None {
+                                return hz;
+                            }
+                        }
                     }
 
                     if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
@@ -9001,15 +9841,9 @@ impl SettingsController {
                     if in_rect(x, y, 684.0, 144.0, 728.0, 184.0) {
                         return HitZone::OpenWidgetCanvasEditor(WidgetCanvasTarget::Music);
                     }
-                    // 3 Sub-tabs (306..338)
-                    if in_rect(x, y, 26.0, 306.0, 254.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Layout);
-                    }
-                    if in_rect(x, y, 264.0, 306.0, 492.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Fonts);
-                    }
-                    if in_rect(x, y, 502.0, 306.0, 734.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Colors);
+                    // 4 Sub-tabs (306..338)
+                    if let Some(hz) = Self::hit_test_dt_sub_tabs(x, y) {
+                        return hz;
                     }
 
                     match self.dt_sub_tab {
@@ -9095,6 +9929,12 @@ impl SettingsController {
                                 return HitZone::Slider(SliderKind::DtHue);
                             }
                         }
+                        DtSubTab::Materials => {
+                            let hz = self.hit_test_horology_materials_subtab(x, y, WidgetCanvasTarget::Music);
+                            if hz != HitZone::None {
+                                return hz;
+                            }
+                        }
                     }
 
                     if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
@@ -9121,24 +9961,18 @@ impl SettingsController {
                     if in_rect(x, y, 684.0, 144.0, 728.0, 184.0) {
                         return HitZone::OpenWidgetCanvasEditor(WidgetCanvasTarget::ControlCenter);
                     }
-                    // 3 Sub-tabs (306..338)
-                    if in_rect(x, y, 26.0, 306.0, 254.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Layout);
-                    }
-                    if in_rect(x, y, 264.0, 306.0, 492.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Fonts);
-                    }
-                    if in_rect(x, y, 502.0, 306.0, 734.0, 338.0) {
-                        return HitZone::DtSubTabBtn(DtSubTab::Colors);
+                    // 4 Sub-tabs (306..338)
+                    if let Some(hz) = Self::hit_test_dt_sub_tabs(x, y) {
+                        return hz;
                     }
 
                     match self.dt_sub_tab {
                         DtSubTab::Layout => {
-                            for st in 0..4u8 {
-                                let sx0 = 128.0 + (st as f32) * 148.0;
-                                if in_rect(x, y, sx0, 354.0, sx0 + 142.0, 386.0) {
-                                    return HitZone::CcTileStyleBtn(st);
-                                }
+                            if in_rect(x, y, 40.0, 354.0, 290.0, 386.0) {
+                                return HitZone::OpenCcThemes;
+                            }
+                            if in_rect(x, y, 300.0, 354.0, 470.0, 386.0) {
+                                return HitZone::OpenCcFolders;
                             }
                             if in_rect(x, y, 40.0, 390.0, 374.0, 424.0) {
                                 return HitZone::Slider(SliderKind::DtScale);
@@ -9218,6 +10052,12 @@ impl SettingsController {
                             }
                             if in_rect(x, y, 154.0, 524.0, 656.0, 562.0) {
                                 return HitZone::Slider(SliderKind::DtHue);
+                            }
+                        }
+                        DtSubTab::Materials => {
+                            let hz = self.hit_test_horology_materials_subtab(x, y, WidgetCanvasTarget::ControlCenter);
+                            if hz != HitZone::None {
+                                return hz;
                             }
                         }
                     }
@@ -9308,16 +10148,19 @@ impl SettingsController {
                     if in_rect(x, y, 644.0, 94.0, 734.0, 124.0) {
                         return HitZone::ToggleExtQuick(id);
                     }
-                    if in_rect(x, y, 26.0, 136.0, 372.0, 344.0) {
+                    if in_rect(x, y, 26.0, 136.0, 734.0, 270.0) {
+                        return HitZone::OpenExtFolder(id, ExtThemeFolder::Horology);
+                    }
+                    if in_rect(x, y, 26.0, 280.0, 372.0, 418.0) {
                         return HitZone::OpenExtFolder(id, ExtThemeFolder::RealisticMaterials);
                     }
-                    if in_rect(x, y, 388.0, 136.0, 734.0, 344.0) {
+                    if in_rect(x, y, 388.0, 280.0, 734.0, 418.0) {
                         return HitZone::OpenExtFolder(id, ExtThemeFolder::InteractiveElements);
                     }
-                    if in_rect(x, y, 26.0, 356.0, 372.0, 564.0) {
+                    if in_rect(x, y, 26.0, 428.0, 372.0, 566.0) {
                         return HitZone::OpenExtFolder(id, ExtThemeFolder::GlassMinimal);
                     }
-                    if in_rect(x, y, 388.0, 356.0, 734.0, 564.0) {
+                    if in_rect(x, y, 388.0, 428.0, 734.0, 566.0) {
                         return HitZone::OpenExtFolder(id, ExtThemeFolder::CyberEditorial);
                     }
                     if in_rect(x, y, 26.0, 584.0, 184.0, 622.0) {
@@ -9392,11 +10235,27 @@ impl SettingsController {
                     }
                     // Sub-Tabs (302..334)
                     if id == ExtWidgetId::Notes || id == ExtWidgetId::WorldClock {
-                        let fourth_tab = if id == ExtWidgetId::Notes {
+                        let fifth_tab = if id == ExtWidgetId::Notes {
                             ExtSubTab::NotesText
                         } else {
                             ExtSubTab::WorldClockCities
                         };
+                        if in_rect(x, y, 26.0, 302.0, 162.0, 334.0) {
+                            return HitZone::ExtSubTabBtn(ExtSubTab::Layout);
+                        }
+                        if in_rect(x, y, 169.0, 302.0, 305.0, 334.0) {
+                            return HitZone::ExtSubTabBtn(ExtSubTab::Features);
+                        }
+                        if in_rect(x, y, 312.0, 302.0, 448.0, 334.0) {
+                            return HitZone::ExtSubTabBtn(ExtSubTab::Appearance);
+                        }
+                        if in_rect(x, y, 455.0, 302.0, 591.0, 334.0) {
+                            return HitZone::ExtSubTabBtn(ExtSubTab::Materials);
+                        }
+                        if in_rect(x, y, 598.0, 302.0, 734.0, 334.0) {
+                            return HitZone::ExtSubTabBtn(fifth_tab);
+                        }
+                    } else {
                         if in_rect(x, y, 26.0, 302.0, 196.0, 334.0) {
                             return HitZone::ExtSubTabBtn(ExtSubTab::Layout);
                         }
@@ -9407,17 +10266,7 @@ impl SettingsController {
                             return HitZone::ExtSubTabBtn(ExtSubTab::Appearance);
                         }
                         if in_rect(x, y, 560.0, 302.0, 734.0, 334.0) {
-                            return HitZone::ExtSubTabBtn(fourth_tab);
-                        }
-                    } else {
-                        if in_rect(x, y, 26.0, 302.0, 254.0, 334.0) {
-                            return HitZone::ExtSubTabBtn(ExtSubTab::Layout);
-                        }
-                        if in_rect(x, y, 266.0, 302.0, 494.0, 334.0) {
-                            return HitZone::ExtSubTabBtn(ExtSubTab::Features);
-                        }
-                        if in_rect(x, y, 506.0, 302.0, 734.0, 334.0) {
-                            return HitZone::ExtSubTabBtn(ExtSubTab::Appearance);
+                            return HitZone::ExtSubTabBtn(ExtSubTab::Materials);
                         }
                     }
 
@@ -9620,6 +10469,12 @@ impl SettingsController {
                                 return HitZone::Slider(SliderKind::DtHue);
                             }
                         }
+                        ExtSubTab::Materials => {
+                            let hz = self.hit_test_horology_materials_subtab(x, y, WidgetCanvasTarget::Ext(id));
+                            if hz != HitZone::None {
+                                return hz;
+                            }
+                        }
                     }
 
                     if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
@@ -9787,6 +10642,7 @@ impl SettingsController {
             if !self.render_d2d(cfg) {
                 if let Some(ref rt) = self.dc_rt {
                     crate::realistic_pbr::evict_rt(rt);
+                    crate::horology_pbr::evict_rt(rt);
                 }
                 self.dc_rt = None;
                 self.res = None;
@@ -9866,6 +10722,8 @@ impl SettingsController {
                 && matches!(
                     self.widget_page,
                     WidgetPage::Gallery
+                        | WidgetPage::AppsFolders
+                        | WidgetPage::AppsThemes
                         | WidgetPage::CustomizeApps
                         | WidgetPage::EditWidgetCanvas(WidgetCanvasTarget::Apps)
                 );
@@ -9962,9 +10820,8 @@ impl SettingsController {
             rt.FillRoundedRectangle(&badge_rr, &r.amber_dim);
             draw_txt(rt, "STUDIO", &r.tf_badge, badge_rr.rect, &r.sun_gold);
 
-            let is_widgets_gallery = !self.onboarding_active
-                && self.active_tab == StudioTab::DesktopWidgets
-                && self.widget_page == WidgetPage::Gallery;
+            let is_widgets_gallery =
+                !self.onboarding_active && self.active_tab == StudioTab::DesktopWidgets;
             let is_wallpaper_tab =
                 !self.onboarding_active && self.active_tab == StudioTab::Wallpaper;
             let (st_x0, st_x1) = if self.onboarding_active {
@@ -12905,7 +13762,10 @@ impl SettingsController {
                     // =============================================================
                     // ROW 1 RIGHT: QUICK CONTROL CENTER (386..734, 124..290)
                     // =============================================================
-                    let c2_hov = matches!(self.hovered, HitZone::OpenCustomizeCc | HitZone::ToggleCcQuick);
+                    let c2_hov = matches!(
+                        self.hovered,
+                        HitZone::OpenCcFolders | HitZone::OpenCustomizeCc | HitZone::ToggleCcQuick
+                    );
                     let c2_rr = rrect(386.0, 124.0, 734.0, 290.0, 14.0, u);
                     rt.FillRoundedRectangle(&c2_rr, if c2_hov { &r.card_hover } else { &r.card_bg });
                     rt.DrawRoundedRectangle(
@@ -12935,13 +13795,17 @@ impl SettingsController {
                     );
                     rt.PopAxisAlignedClip();
                     draw_txt(rt, "Quick Control Center", &r.tf_title, rect_f(400.0, 240.0, 658.0, 260.0, u), &r.cream);
-                    draw_txt(rt, "Wi-Fi, BT & Sliders • Customize →", &r.tf_sub, rect_f(400.0, 261.0, 658.0, 282.0, u), &r.sun_gold);
+                    let cc_sub = format!("{} • Console Folders →", cc_style_label(self.draft_cfg.cc_tile_style));
+                    draw_txt(rt, &cc_sub, &r.tf_sub, rect_f(400.0, 261.0, 658.0, 282.0, u), &r.sun_gold);
                     draw_switch_r(rt, r, 674.0, 250.0, u, self.draft_cfg.show_cc);
 
                     // =============================================================
                     // ROW 2 LEFT: APP LAUNCHERS DOCK (26..374, 298..430)
                     // =============================================================
-                    let c3_hov = matches!(self.hovered, HitZone::OpenCustomizeApps | HitZone::ToggleAppsQuick);
+                    let c3_hov = matches!(
+                        self.hovered,
+                        HitZone::OpenAppsFolders | HitZone::OpenCustomizeApps | HitZone::ToggleAppsQuick
+                    );
                     let c3_rr = rrect(26.0, 298.0, 374.0, 430.0, 14.0, u);
                     rt.FillRoundedRectangle(&c3_rr, if c3_hov { &r.card_hover } else { &r.card_bg });
                     rt.DrawRoundedRectangle(
@@ -12994,7 +13858,7 @@ impl SettingsController {
                     }
                     rt.PopAxisAlignedClip();
                     draw_txt(rt, "App Launchers Dock", &r.tf_title, rect_f(40.0, 384.0, 298.0, 404.0, u), &r.cream);
-                    let apps_sub = format!("{} apps • Click to add & edit →", self.draft_cfg.apps.len());
+                    let apps_sub = format!("{} apps • {} • Folders →", self.draft_cfg.apps.len(), apps_style_label(self.draft_cfg.apps_tile_shape));
                     draw_txt(rt, &apps_sub, &r.tf_sub, rect_f(40.0, 405.0, 298.0, 425.0, u), &r.sun_gold);
                     draw_switch_r(rt, r, 314.0, 393.0, u, self.draft_cfg.show_apps);
 
@@ -13048,7 +13912,10 @@ impl SettingsController {
                     // =============================================================
                     // ROW 3 FULL WIDTH: SYSTEM VITALS & POWER (26..734, 440..570)
                     // =============================================================
-                    let c5_hov = matches!(self.hovered, HitZone::OpenCustomizeVitals | HitZone::ToggleVitalsQuick);
+                    let c5_hov = matches!(
+                        self.hovered,
+                        HitZone::OpenVitalsFolders | HitZone::OpenCustomizeVitals | HitZone::ToggleVitalsQuick
+                    );
                     let c5_rr = rrect(26.0, 440.0, 734.0, 570.0, 14.0, u);
                     rt.FillRoundedRectangle(&c5_rr, if c5_hov { &r.card_hover } else { &r.card_bg });
                     rt.DrawRoundedRectangle(
@@ -13085,24 +13952,26 @@ impl SettingsController {
 
                     draw_txt(rt, "System Vitals & Power", &r.tf_title, rect_f(458.0, 450.0, 666.0, 476.0, u), &r.cream);
                     draw_switch_r(rt, r, 676.0, 452.0, u, self.draft_cfg.show_vitals);
+                    let vit_sub = format!("{} • CPU, GPU, RAM, Temp & Power", vitals_style_label(self.draft_cfg.vitals_style));
                     draw_txt(
                         rt,
-                        "Kernel CPU %, System RAM %, Power & Sleep/Shutdown buttons.",
+                        &vit_sub,
                         &r.tf_sub,
                         rect_f(458.0, 478.0, 720.0, 514.0, u),
                         &r.muted_txt,
                     );
+                    let cta5_hov = matches!(self.hovered, HitZone::OpenVitalsFolders | HitZone::OpenCustomizeVitals);
                     let cta5 = rrect(458.0, 520.0, 658.0, 552.0, 8.0, u);
                     rt.FillRoundedRectangle(
                         &cta5,
-                        if self.hovered == HitZone::OpenCustomizeVitals { &r.sun_gold } else { &r.amber_dim },
+                        if cta5_hov { &r.sun_gold } else { &r.amber_dim },
                     );
                     draw_txt(
                         rt,
-                        "Customize Widget →",
+                        "Vitals Folders →",
                         &r.tf_btn,
                         cta5.rect,
-                        if self.hovered == HitZone::OpenCustomizeVitals { &r.dark_ink } else { &r.sun_gold },
+                        if cta5_hov { &r.dark_ink } else { &r.sun_gold },
                     );
                 } else {
                     // 2x2 Grid of Extended Desktop Widgets (4 per page)
@@ -13270,6 +14139,58 @@ impl SettingsController {
                 rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
                 draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_datetime);
 
+                // Featured Hero Banner: Photorealistic Horology (10)
+                {
+                    let folder = ClockThemeFolder::Horology;
+                    let folder_items = ClockStyle::in_folder(folder);
+                    let count_lbl = format!("{} Themes", folder_items.len());
+                    let has_active = folder_items.contains(&self.draft_cfg.dt_style);
+                    let hov = self.hovered == HitZone::OpenClockFolder(folder);
+                    let horo_pal = ThemePalette::for_horology(crate::horology_pbr::HorologyTheme::RoyalOakSteel);
+                    let pv = self.draw_folder_card_shell_with_pal(
+                        rt,
+                        r,
+                        u,
+                        &self.draft_cfg,
+                        self.draft_cfg.dt_match_wallpaper,
+                        Some(&horo_pal),
+                        26.0,
+                        136.0,
+                        734.0,
+                        270.0,
+                        220.0,
+                        folder.label(),
+                        &count_lbl,
+                        "Royal Oak steel, Patek moonphase, live Tourbillon, Ceramic, Porcelain & Carbon",
+                        has_active,
+                        hov,
+                    );
+                    rt.PushAxisAlignedClip(&pv.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    for (j, style) in [
+                        ClockStyle::HoroRoyalOak,
+                        ClockStyle::HoroPatekMoon,
+                        ClockStyle::HoroBreguetPorcelain,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let mut sample_cfg = AppConfig::default();
+                        sample_cfg.widgets_24h = self.draft_cfg.widgets_24h;
+                        sample_cfg.apply_clock_style_preset(style);
+                        if style == self.draft_cfg.dt_style {
+                            sample_cfg.dt_horology = self.draft_cfg.dt_horology;
+                        }
+                        let (lw, lh) = dt_logical_size(&sample_cfg);
+                        let sc = (66.0 / lh).min(210.0 / lw).min(0.54);
+                        let slot_cx = 148.0 + (j as f32) * 232.0;
+                        let slot_cy = 179.0;
+                        let cx = (slot_cx - lw * sc * 0.5) * u;
+                        let cy = (slot_cy - lh * sc * 0.5) * u;
+                        draw_datetime_widget_full(rt, dw, custom_fonts, cx, cy, sc * u, &sample_cfg, false, None, self.widget_sim(0));
+                    }
+                    rt.PopAxisAlignedClip();
+                }
+
                 let folders = [
                     (
                         ClockThemeFolder::Realistic,
@@ -13301,9 +14222,9 @@ impl SettingsController {
                     let col = i % 2;
                     let row = i / 2;
                     let x0 = if col == 0 { 26.0 } else { 388.0 };
-                    let y0 = 136.0 + (row as f32) * 222.0;
+                    let y0 = 280.0 + (row as f32) * 148.0;
                     let x1 = x0 + 346.0;
-                    let y1 = y0 + 208.0;
+                    let y1 = y0 + 138.0;
                     let folder_items = ClockStyle::in_folder(folder);
                     let count_lbl = format!("{} Themes", folder_items.len());
                     let has_active = folder != ClockThemeFolder::All
@@ -13321,7 +14242,7 @@ impl SettingsController {
                         y0,
                         x1,
                         y1,
-                        y0 + 150.0,
+                        y0 + 88.0,
                         folder.label(),
                         &count_lbl,
                         sub_lbl,
@@ -13344,9 +14265,9 @@ impl SettingsController {
                         sample_cfg.dt_elem_transforms = [ClockElemTransform::default(); 8];
                         sample_cfg.dt_elem_fonts = std::array::from_fn(|_| String::new());
                         let (lw, lh) = dt_logical_size(&sample_cfg);
-                        let sc = (96.0 / lh).min(140.0 / lw).min(0.62);
+                        let sc = (62.0 / lh).min(144.0 / lw).min(0.46);
                         let slot_cx = x0 + 93.0 + (j as f32) * 160.0;
-                        let slot_cy = y0 + 87.0;
+                        let slot_cy = y0 + 51.0;
                         let cx = (slot_cx - lw * sc * 0.5) * u;
                         let cy = (slot_cy - lh * sc * 0.5) * u;
                         draw_datetime_widget_full(rt, dw, custom_fonts, cx, cy, sc * u, &sample_cfg, false, None, self.widget_sim(0));
@@ -13593,6 +14514,71 @@ impl SettingsController {
                 draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_music);
 
                 let preview_bands = effective_preview_bands(&self.preview_bands);
+                // Featured Hero Banner: Photorealistic Horology (10)
+                {
+                    let folder = MusicThemeFolder::Horology;
+                    let folder_items = MusicStyle::in_folder(folder);
+                    let count_lbl = format!("{} Themes", folder_items.len());
+                    let has_active = folder_items.contains(&self.draft_cfg.music_style);
+                    let hov = self.hovered == HitZone::OpenMusicFolder(folder);
+                    let horo_pal = ThemePalette::for_horology(crate::horology_pbr::HorologyTheme::PatekMoonphase);
+                    let pv = self.draw_folder_card_shell_with_pal(
+                        rt,
+                        r,
+                        u,
+                        &self.draft_cfg,
+                        self.draft_cfg.music_match_wallpaper,
+                        Some(&horo_pal),
+                        26.0,
+                        136.0,
+                        734.0,
+                        270.0,
+                        220.0,
+                        folder.label(),
+                        &count_lbl,
+                        "Sapphire turntable bezel, twin ballistic VU sub-dials & machined crown keys",
+                        has_active,
+                        hov,
+                    );
+                    rt.PushAxisAlignedClip(&pv.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    for (k, style) in [
+                        MusicStyle::HoroRoyalOakDeck,
+                        MusicStyle::HoroTourbillonDeck,
+                        MusicStyle::HoroBreguetDeck,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let mut sample_cfg = AppConfig::default();
+                        sample_cfg.apply_music_style_preset(style);
+                        if style == self.draft_cfg.music_style {
+                            sample_cfg.music_horology = self.draft_cfg.music_horology;
+                        }
+                        let (mlw, mlh) = music_logical_size(&sample_cfg);
+                        let sc = (62.0 / mlh).min(212.0 / mlw);
+                        let slot_cx = 148.0 + (k as f32) * 232.0;
+                        let slot_cy = 179.0;
+                        let mx = (slot_cx - mlw * sc * 0.5) * u;
+                        let my = (slot_cy - mlh * sc * 0.5) * u;
+                        draw_music_widget_with_viz(
+                            rt,
+                            dw,
+                            Some(d2d),
+                            custom_fonts,
+                            mx,
+                            my,
+                            sc * u,
+                            &sample_cfg,
+                            &self.preview_media,
+                            &preview_bands,
+                            cover_bmp,
+                            WidgetHitZone::None,
+                            self.widget_sim(3),
+                        );
+                    }
+                    rt.PopAxisAlignedClip();
+                }
+
                 let folders = [
                     (
                         MusicThemeFolder::Realistic,
@@ -13624,9 +14610,9 @@ impl SettingsController {
                     let col = i % 2;
                     let row = i / 2;
                     let x0 = if col == 0 { 26.0 } else { 388.0 };
-                    let y0 = 136.0 + (row as f32) * 222.0;
+                    let y0 = 280.0 + (row as f32) * 148.0;
                     let x1 = x0 + 346.0;
-                    let y1 = y0 + 208.0;
+                    let y1 = y0 + 138.0;
                     let folder_items = MusicStyle::in_folder(folder);
                     let count_lbl = format!("{} Themes", folder_items.len());
                     let has_active = folder != MusicThemeFolder::All
@@ -13644,7 +14630,7 @@ impl SettingsController {
                         y0,
                         x1,
                         y1,
-                        y0 + 150.0,
+                        y0 + 88.0,
                         folder.label(),
                         &count_lbl,
                         sub_lbl,
@@ -13652,7 +14638,7 @@ impl SettingsController {
                         hov,
                     );
                     rt.PushAxisAlignedClip(&pv.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                    for (k, style) in previews.into_iter().enumerate() {
+                    for (k, style) in previews.into_iter().take(1).enumerate() {
                         let mut sample_cfg = AppConfig::default();
                         sample_cfg.apply_music_style_preset(style);
                         if style == self.draft_cfg.music_style {
@@ -13666,9 +14652,9 @@ impl SettingsController {
                         sample_cfg.music_elem_transforms = [ClockElemTransform::default(); 6];
                         sample_cfg.music_elem_fonts = std::array::from_fn(|_| String::new());
                         let (mlw, mlh) = music_logical_size(&sample_cfg);
-                        let sc = (48.0 / mlh).min(276.0 / mlw);
+                        let sc = (62.0 / mlh).min(276.0 / mlw);
                         let slot_cx = x0 + 173.0;
-                        let slot_cy = y0 + 60.0 + (k as f32) * 56.0;
+                        let slot_cy = y0 + 51.0 + (k as f32) * 56.0;
                         let mx = (slot_cx - mlw * sc * 0.5) * u;
                         let my = (slot_cy - mlh * sc * 0.5) * u;
                         draw_music_widget_with_viz(
@@ -13908,6 +14894,676 @@ impl SettingsController {
                 draw_txt(rt, "Apply", &r.tf_btn, app_rr.rect, &r.dark_ink);
             }
 
+            WidgetPage::AppsFolders => {
+                let back_rr = rrect(26.0, 94.0, 116.0, 124.0, 8.0, u);
+                let bhov = self.hovered == HitZone::BtnBackGallery;
+                rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "← Back", &r.tf_btn, back_rr.rect, &r.cream);
+
+                draw_txt(rt, "Apps Dock Folders", &r.tf_title, rect_f(124.0, 94.0, 274.0, 124.0, u), &r.cream);
+
+                let all_rr = rrect(278.0, 94.0, 366.0, 124.0, 8.0, u);
+                let all_hov = self.hovered == HitZone::OpenAppsFolder(AppsThemeFolder::All);
+                rt.FillRoundedRectangle(&all_rr, if all_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&all_rr, if all_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(
+                    rt,
+                    &format!("All ({})", apps_styles_in_folder(AppsThemeFolder::All).len()),
+                    &r.tf_badge,
+                    all_rr.rect,
+                    if all_hov { &r.sun_gold } else { &r.cream },
+                );
+
+                draw_compact_toggle(
+                    rt, r, u, 372.0, 94.0, 524.0, 124.0, "Match WP",
+                    self.draft_cfg.apps_match_wallpaper,
+                    self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Apps),
+                );
+
+                let cust_rr = rrect(532.0, 94.0, 636.0, 124.0, 8.0, u);
+                let c_hov = self.hovered == HitZone::OpenCustomizeApps;
+                rt.FillRoundedRectangle(&cust_rr, if c_hov { &r.sun_gold } else { &r.card_active });
+                rt.DrawRoundedRectangle(&cust_rr, &r.sun_gold, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, cust_rr.rect, if c_hov { &r.dark_ink } else { &r.cream });
+
+                let en_rr = rrect(644.0, 94.0, 734.0, 124.0, 8.0, u);
+                let ehov = self.hovered == HitZone::ToggleAppsQuick;
+                rt.FillRoundedRectangle(&en_rr, if ehov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
+                draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_apps);
+
+                let draw_apps_sample = |sh: u8, cx_l: f32, cy_l: f32, max_w: f32, max_h: f32| {
+                    let mut sample_cfg = AppConfig::default();
+                    sample_cfg.apps_tile_shape = sh;
+                    sample_cfg.apps_show_plate = true;
+                    sample_cfg.apps_show_tiles = true;
+                    sample_cfg.apps_show_labels = true;
+                    sample_cfg.apps_show_dots = true;
+                    if sh == self.draft_cfg.apps_tile_shape {
+                        sample_cfg.apps_horology = self.draft_cfg.apps_horology;
+                    }
+                    let use_cnt = self.draft_cfg.apps.len().clamp(3, 3);
+                    let (offsets, total_w, _) = apps_layout_offsets(use_cnt, 3);
+                    let sf = (max_w / total_w).min(max_h / 94.0).min(0.72);
+                    let fallback = ["Files", "Code", "Web"];
+                    let tiles: Vec<AppTileDrawItem<'_>> = (0..use_cnt)
+                        .map(|i| {
+                            if let Some(a) = self.draft_cfg.apps.get(i) {
+                                AppTileDrawItem {
+                                    label: &a.name,
+                                    bmp: self.preview_icons.slot(i),
+                                    rel_x: offsets[i].0,
+                                    rel_y: offsets[i].1,
+                                    hovered: false,
+                                    is_add_tile: false,
+                                }
+                            } else {
+                                AppTileDrawItem {
+                                    label: fallback[i % fallback.len()],
+                                    bmp: None,
+                                    rel_x: offsets[i].0,
+                                    rel_y: offsets[i].1,
+                                    hovered: false,
+                                    is_add_tile: false,
+                                }
+                            }
+                        })
+                        .collect();
+                    let ax = (cx_l - total_w * sf * 0.5) * u;
+                    let ay = (cy_l - 47.0 * sf) * u;
+                    draw_apps_widget_with_viz(rt, dw, custom_fonts, ax, ay, sf * u, &sample_cfg, &tiles, self.widget_sim(1));
+                };
+
+                // Hero Folder 1: Photorealistic Horology (10)
+                let h_items = apps_styles_in_folder(AppsThemeFolder::Horology);
+                let h_pal = ThemePalette::for_horology(HorologyTheme::RoyalOakSteel);
+                let pv_h = self.draw_folder_card_shell_with_pal(
+                    rt, r, u, &self.draft_cfg, self.draft_cfg.apps_match_wallpaper, Some(&h_pal),
+                    26.0, 136.0, 734.0, 356.0, 304.0,
+                    AppsThemeFolder::Horology.label(),
+                    &format!("{} Themes", h_items.len()),
+                    "Machined horology trays with sapphire jewel wells, chamfered bezels & AR crystal",
+                    h_items.contains(&self.draft_cfg.apps_tile_shape),
+                    self.hovered == HitZone::OpenAppsFolder(AppsThemeFolder::Horology),
+                );
+                rt.PushAxisAlignedClip(&pv_h.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (j, sh) in [4u8, 5, 10].into_iter().enumerate() {
+                    draw_apps_sample(sh, 148.0 + (j as f32) * 232.0, 224.0, 206.0, 118.0);
+                }
+                rt.PopAxisAlignedClip();
+
+                // Folder 2: Classic Shapes (4)
+                let c_items = apps_styles_in_folder(AppsThemeFolder::Classic);
+                let pv_c = self.draw_folder_card_shell_with_pal(
+                    rt, r, u, &self.draft_cfg, self.draft_cfg.apps_match_wallpaper, None,
+                    26.0, 368.0, 734.0, 568.0, 516.0,
+                    AppsThemeFolder::Classic.label(),
+                    &format!("{} Styles", c_items.len()),
+                    "Squircle glass, Circle Orb, Geometric Hexagon & Cyber Chamfer tile docks",
+                    c_items.contains(&self.draft_cfg.apps_tile_shape),
+                    self.hovered == HitZone::OpenAppsFolder(AppsThemeFolder::Classic),
+                );
+                rt.PushAxisAlignedClip(&pv_c.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (j, sh) in [0u8, 2].into_iter().enumerate() {
+                    draw_apps_sample(sh, 212.0 + (j as f32) * 336.0, 444.0, 276.0, 112.0);
+                }
+                rt.PopAxisAlignedClip();
+
+                // Footer (584..622)
+                let res_rr = rrect(26.0, 584.0, 184.0, 622.0, 9.0, u);
+                let res_hov = self.hovered == HitZone::BtnResampleWallpaper;
+                rt.FillRoundedRectangle(&res_rr, if res_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&res_rr, if res_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "↻ Sample Wallpaper", &r.tf_btn, res_rr.rect, if res_hov { &r.sun_gold } else { &r.warm_sub });
+
+                let dirty = self.draft_cfg != *cfg;
+                let st_txt = if self.applied_flash {
+                    "✓ Applied & saved"
+                } else if dirty {
+                    "Unsaved changes — click Apply"
+                } else {
+                    "Click a folder to browse Dock themes"
+                };
+                draw_txt(rt, st_txt, &r.tf_sub, rect_f(196.0, 584.0, 414.0, 622.0, u), if self.applied_flash { &r.sage } else if dirty { &r.sun_gold } else { &r.muted_txt });
+
+                let bk_rr = rrect(422.0, 584.0, 546.0, 622.0, 9.0, u);
+                let b_hov = self.hovered == HitZone::OpenCustomizeApps;
+                rt.FillRoundedRectangle(&bk_rr, if b_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&bk_rr, if b_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, bk_rr.rect, &r.cream);
+
+                let app_rr = rrect(558.0, 584.0, 734.0, 622.0, 9.0, u);
+                let a_hov = self.hovered == HitZone::BtnApplyWidgets;
+                rt.FillRoundedRectangle(&app_rr, if a_hov { &r.cream } else { &r.sun_gold });
+                draw_txt(rt, "Apply", &r.tf_btn, app_rr.rect, &r.dark_ink);
+            }
+
+            WidgetPage::AppsThemes => {
+                let back_rr = rrect(26.0, 94.0, 126.0, 124.0, 8.0, u);
+                let bhov = self.hovered == HitZone::OpenAppsFolders;
+                rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "← Folders", &r.tf_btn, back_rr.rect, &r.cream);
+
+                let list = apps_styles_in_folder(self.apps_folder);
+                let max_page = list.len().saturating_sub(1) / 6;
+                let page = self.apps_theme_page.min(max_page);
+                let title_x1 = if max_page > 0 { 274.0 } else { 366.0 };
+                draw_txt(rt, &format!("Dock • {}", self.apps_folder.label()), &r.tf_title, rect_f(134.0, 94.0, title_x1, 124.0, u), &r.cream);
+
+                if max_page > 0 {
+                    let p_hov = self.hovered == HitZone::ScrollAppsThemesPrev;
+                    let p_rr = rrect(278.0, 96.0, 304.0, 122.0, 7.0, u);
+                    rt.FillRoundedRectangle(&p_rr, if p_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&p_rr, if p_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "◀", &r.tf_badge, p_rr.rect, if page > 0 { &r.sun_gold } else { &r.muted_txt });
+                    draw_txt(rt, &format!("{}/{}", page + 1, max_page + 1), &r.tf_badge, rect_f(304.0, 96.0, 340.0, 122.0, u), &r.cream);
+                    let n_hov = self.hovered == HitZone::ScrollAppsThemesNext;
+                    let n_rr = rrect(340.0, 96.0, 366.0, 122.0, 7.0, u);
+                    rt.FillRoundedRectangle(&n_rr, if n_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&n_rr, if n_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "▶", &r.tf_badge, n_rr.rect, if page < max_page { &r.sun_gold } else { &r.muted_txt });
+                }
+
+                draw_compact_toggle(rt, r, u, 372.0, 94.0, 524.0, 124.0, "Match WP", self.draft_cfg.apps_match_wallpaper, self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Apps));
+                let cust_rr = rrect(532.0, 94.0, 636.0, 124.0, 8.0, u);
+                let c_hov = self.hovered == HitZone::OpenCustomizeApps;
+                rt.FillRoundedRectangle(&cust_rr, if c_hov { &r.sun_gold } else { &r.card_active });
+                rt.DrawRoundedRectangle(&cust_rr, &r.sun_gold, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, cust_rr.rect, if c_hov { &r.dark_ink } else { &r.cream });
+                let en_rr = rrect(644.0, 94.0, 734.0, 124.0, 8.0, u);
+                let ehov = self.hovered == HitZone::ToggleAppsQuick;
+                rt.FillRoundedRectangle(&en_rr, if ehov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
+                draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_apps);
+
+                for (i, &sh) in list.iter().skip(page * 6).take(6).enumerate() {
+                    let col = i % 2;
+                    let row = i / 2;
+                    let x0 = if col == 0 { 26.0 } else { 386.0 };
+                    let x1 = x0 + 348.0;
+                    let y0 = 136.0 + (row as f32) * 144.0;
+                    let y1 = y0 + 134.0;
+                    let active = self.draft_cfg.apps_tile_shape == sh;
+                    let hov = self.hovered == HitZone::SelectAppsTheme(sh);
+                    let card_rr = rrect(x0, y0, x1, y1, 12.0, u);
+                    rt.FillRoundedRectangle(&card_rr, if active { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&card_rr, if active || hov { &r.sun_gold } else { &r.card_border }, if active { 1.5 * u } else { 1.0 * u }, None);
+
+                    let pv = rrect(x0 + 8.0, y0 + 6.0, x1 - 8.0, y0 + 92.0, 9.0, u);
+                    if let Some(ht) = apps_style_horology(sh) {
+                        let style_pal = ThemePalette::for_horology(ht);
+                        draw_palette_preview_backdrop(rt, pv, u, &style_pal);
+                    } else {
+                        draw_theme_preview_backdrop(rt, pv, u, &self.draft_cfg, false);
+                    }
+                    rt.PushAxisAlignedClip(&pv.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    let mut sample_cfg = AppConfig::default();
+                    sample_cfg.apps_tile_shape = sh;
+                    sample_cfg.apps_show_plate = true;
+                    sample_cfg.apps_show_tiles = true;
+                    sample_cfg.apps_show_labels = true;
+                    sample_cfg.apps_show_dots = true;
+                    if active {
+                        sample_cfg.apps_horology = self.draft_cfg.apps_horology;
+                    }
+                    let use_cnt = 4usize;
+                    let (offsets, total_w, _) = apps_layout_offsets(use_cnt, 4);
+                    let sf = (296.0 / total_w).min(74.0 / 94.0).min(0.68);
+                    let fallback = ["Files", "Code", "Web", "Notes"];
+                    let tiles: Vec<AppTileDrawItem<'_>> = (0..use_cnt)
+                        .map(|ti| {
+                            if let Some(a) = self.draft_cfg.apps.get(ti) {
+                                AppTileDrawItem {
+                                    label: &a.name,
+                                    bmp: self.preview_icons.slot(ti),
+                                    rel_x: offsets[ti].0,
+                                    rel_y: offsets[ti].1,
+                                    hovered: false,
+                                    is_add_tile: false,
+                                }
+                            } else {
+                                AppTileDrawItem {
+                                    label: fallback[ti],
+                                    bmp: None,
+                                    rel_x: offsets[ti].0,
+                                    rel_y: offsets[ti].1,
+                                    hovered: false,
+                                    is_add_tile: false,
+                                }
+                            }
+                        })
+                        .collect();
+                    let ax = (x0 + 174.0 - total_w * sf * 0.5) * u;
+                    let ay = (y0 + 49.0 - 47.0 * sf) * u;
+                    draw_apps_widget_with_viz(rt, dw, custom_fonts, ax, ay, sf * u, &sample_cfg, &tiles, self.widget_sim(1));
+                    rt.PopAxisAlignedClip();
+
+                    let title_max_x = self.draw_theme_card_badges(rt, r, u, x1, y0 + 96.0, y0 + 115.0, active, hov, apps_style_badge(sh));
+                    draw_txt(rt, apps_style_label(sh), &r.tf_title, rect_f(x0 + 12.0, y0 + 95.0, title_max_x, y0 + 115.0, u), &r.cream);
+                    draw_txt(rt, apps_style_subtitle(sh), &r.tf_sub, rect_f(x0 + 12.0, y0 + 114.0, x1 - 12.0, y1 - 2.0, u), &r.warm_sub);
+                }
+
+                // Footer (584..622)
+                let res_rr = rrect(26.0, 584.0, 184.0, 622.0, 9.0, u);
+                let res_hov = self.hovered == HitZone::BtnResampleWallpaper;
+                rt.FillRoundedRectangle(&res_rr, if res_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&res_rr, if res_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "↻ Sample Wallpaper", &r.tf_btn, res_rr.rect, if res_hov { &r.sun_gold } else { &r.warm_sub });
+                let dirty = self.draft_cfg != *cfg;
+                let st_txt = if self.applied_flash { "✓ Applied & saved" } else if dirty { "Unsaved changes — click Apply" } else { "Click active card again to customize" };
+                draw_txt(rt, st_txt, &r.tf_sub, rect_f(196.0, 584.0, 414.0, 622.0, u), if self.applied_flash { &r.sage } else if dirty { &r.sun_gold } else { &r.muted_txt });
+                let bk_rr = rrect(422.0, 584.0, 546.0, 622.0, 9.0, u);
+                let b_hov = self.hovered == HitZone::OpenCustomizeApps;
+                rt.FillRoundedRectangle(&bk_rr, if b_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&bk_rr, if b_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, bk_rr.rect, &r.cream);
+                let app_rr = rrect(558.0, 584.0, 734.0, 622.0, 9.0, u);
+                let a_hov = self.hovered == HitZone::BtnApplyWidgets;
+                rt.FillRoundedRectangle(&app_rr, if a_hov { &r.cream } else { &r.sun_gold });
+                draw_txt(rt, "Apply", &r.tf_btn, app_rr.rect, &r.dark_ink);
+            }
+
+            WidgetPage::VitalsFolders => {
+                let back_rr = rrect(26.0, 94.0, 116.0, 124.0, 8.0, u);
+                let bhov = self.hovered == HitZone::BtnBackGallery;
+                rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "← Back", &r.tf_btn, back_rr.rect, &r.cream);
+
+                draw_txt(rt, "Vitals Folders", &r.tf_title, rect_f(124.0, 94.0, 274.0, 124.0, u), &r.cream);
+
+                let all_rr = rrect(278.0, 94.0, 366.0, 124.0, 8.0, u);
+                let all_hov = self.hovered == HitZone::OpenVitalsFolder(VitalsThemeFolder::All);
+                rt.FillRoundedRectangle(&all_rr, if all_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&all_rr, if all_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, &format!("All ({})", vitals_styles_in_folder(VitalsThemeFolder::All).len()), &r.tf_badge, all_rr.rect, if all_hov { &r.sun_gold } else { &r.cream });
+
+                draw_compact_toggle(rt, r, u, 372.0, 94.0, 524.0, 124.0, "Match WP", self.draft_cfg.vitals_match_wallpaper, self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Vitals));
+                let cust_rr = rrect(532.0, 94.0, 636.0, 124.0, 8.0, u);
+                let c_hov = self.hovered == HitZone::OpenCustomizeVitals;
+                rt.FillRoundedRectangle(&cust_rr, if c_hov { &r.sun_gold } else { &r.card_active });
+                rt.DrawRoundedRectangle(&cust_rr, &r.sun_gold, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, cust_rr.rect, if c_hov { &r.dark_ink } else { &r.cream });
+                let en_rr = rrect(644.0, 94.0, 734.0, 124.0, 8.0, u);
+                let ehov = self.hovered == HitZone::ToggleVitalsQuick;
+                rt.FillRoundedRectangle(&en_rr, if ehov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
+                draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_vitals);
+
+                let draw_vitals_sample = |st: u8, cx_l: f32, cy_l: f32, max_w: f32, max_h: f32| {
+                    let mut sample_cfg = AppConfig::default();
+                    sample_cfg.vitals_style = st;
+                    sample_cfg.vitals_show_plate = true;
+                    if st == self.draft_cfg.vitals_style {
+                        sample_cfg.vitals_horology = self.draft_cfg.vitals_horology;
+                    }
+                    let (vw, vh) = vitals_logical_size(&sample_cfg);
+                    let sf = (max_w / vw).min(max_h / vh).min(0.84);
+                    let vx = (cx_l - vw * sf * 0.5) * u;
+                    let vy = (cy_l - vh * sf * 0.5) * u;
+                    draw_vitals_widget_with_telemetry_and_viz(
+                        rt, dw, Some(d2d), custom_fonts, vx, vy, sf * u, &sample_cfg,
+                        self.telemetry_ext.0, self.telemetry_ext.1, self.telemetry_ext.2, self.telemetry_ext.3, self.telemetry_ext.4,
+                        WidgetHitZone::None, self.widget_sim(2),
+                    );
+                };
+
+                // Hero Folder 1: Photorealistic Horology (10)
+                let h_items = vitals_styles_in_folder(VitalsThemeFolder::Horology);
+                let h_pal = ThemePalette::for_horology(HorologyTheme::DaytonaCeramic);
+                let pv_h = self.draw_folder_card_shell_with_pal(
+                    rt, r, u, &self.draft_cfg, self.draft_cfg.vitals_match_wallpaper, Some(&h_pal),
+                    26.0, 136.0, 734.0, 356.0, 304.0,
+                    VitalsThemeFolder::Horology.label(),
+                    &format!("{} Themes", h_items.len()),
+                    "Quad CPU/GPU/RAM/Temp analog chronometer sub-dials with Sleep & Shutdown crown pushers",
+                    h_items.contains(&self.draft_cfg.vitals_style),
+                    self.hovered == HitZone::OpenVitalsFolder(VitalsThemeFolder::Horology),
+                );
+                rt.PushAxisAlignedClip(&pv_h.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (j, st) in [5u8, 6, 11].into_iter().enumerate() {
+                    draw_vitals_sample(st, 148.0 + (j as f32) * 232.0, 224.0, 212.0, 118.0);
+                }
+                rt.PopAxisAlignedClip();
+
+                // Folder 2: Classic Gauges & HUD (5)
+                let c_items = vitals_styles_in_folder(VitalsThemeFolder::Classic);
+                let pv_c = self.draw_folder_card_shell_with_pal(
+                    rt, r, u, &self.draft_cfg, self.draft_cfg.vitals_match_wallpaper, None,
+                    26.0, 368.0, 734.0, 568.0, 516.0,
+                    VitalsThemeFolder::Classic.label(),
+                    &format!("{} Styles", c_items.len()),
+                    "Ring-Pill Telemetry HUD, Capsule Bars, Radial Rings, Cyber HUD & Minimal Text",
+                    c_items.contains(&self.draft_cfg.vitals_style),
+                    self.hovered == HitZone::OpenVitalsFolder(VitalsThemeFolder::Classic),
+                );
+                rt.PushAxisAlignedClip(&pv_c.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (j, st) in [4u8, 1].into_iter().enumerate() {
+                    draw_vitals_sample(st, 212.0 + (j as f32) * 336.0, 444.0, 290.0, 110.0);
+                }
+                rt.PopAxisAlignedClip();
+
+                // Footer
+                let res_rr = rrect(26.0, 584.0, 184.0, 622.0, 9.0, u);
+                let res_hov = self.hovered == HitZone::BtnResampleWallpaper;
+                rt.FillRoundedRectangle(&res_rr, if res_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&res_rr, if res_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "↻ Sample Wallpaper", &r.tf_btn, res_rr.rect, if res_hov { &r.sun_gold } else { &r.warm_sub });
+                let dirty = self.draft_cfg != *cfg;
+                let st_txt = if self.applied_flash { "✓ Applied & saved" } else if dirty { "Unsaved changes — click Apply" } else { "Click a folder to browse Vitals themes" };
+                draw_txt(rt, st_txt, &r.tf_sub, rect_f(196.0, 584.0, 414.0, 622.0, u), if self.applied_flash { &r.sage } else if dirty { &r.sun_gold } else { &r.muted_txt });
+                let bk_rr = rrect(422.0, 584.0, 546.0, 622.0, 9.0, u);
+                let b_hov = self.hovered == HitZone::OpenCustomizeVitals;
+                rt.FillRoundedRectangle(&bk_rr, if b_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&bk_rr, if b_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, bk_rr.rect, &r.cream);
+                let app_rr = rrect(558.0, 584.0, 734.0, 622.0, 9.0, u);
+                let a_hov = self.hovered == HitZone::BtnApplyWidgets;
+                rt.FillRoundedRectangle(&app_rr, if a_hov { &r.cream } else { &r.sun_gold });
+                draw_txt(rt, "Apply", &r.tf_btn, app_rr.rect, &r.dark_ink);
+            }
+
+            WidgetPage::VitalsThemes => {
+                let back_rr = rrect(26.0, 94.0, 126.0, 124.0, 8.0, u);
+                let bhov = self.hovered == HitZone::OpenVitalsFolders;
+                rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "← Folders", &r.tf_btn, back_rr.rect, &r.cream);
+
+                let list = vitals_styles_in_folder(self.vitals_folder);
+                let max_page = list.len().saturating_sub(1) / 6;
+                let page = self.vitals_theme_page.min(max_page);
+                let title_x1 = if max_page > 0 { 274.0 } else { 366.0 };
+                draw_txt(rt, &format!("Vitals • {}", self.vitals_folder.label()), &r.tf_title, rect_f(134.0, 94.0, title_x1, 124.0, u), &r.cream);
+
+                if max_page > 0 {
+                    let p_hov = self.hovered == HitZone::ScrollVitalsThemesPrev;
+                    let p_rr = rrect(278.0, 96.0, 304.0, 122.0, 7.0, u);
+                    rt.FillRoundedRectangle(&p_rr, if p_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&p_rr, if p_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "◀", &r.tf_badge, p_rr.rect, if page > 0 { &r.sun_gold } else { &r.muted_txt });
+                    draw_txt(rt, &format!("{}/{}", page + 1, max_page + 1), &r.tf_badge, rect_f(304.0, 96.0, 340.0, 122.0, u), &r.cream);
+                    let n_hov = self.hovered == HitZone::ScrollVitalsThemesNext;
+                    let n_rr = rrect(340.0, 96.0, 366.0, 122.0, 7.0, u);
+                    rt.FillRoundedRectangle(&n_rr, if n_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&n_rr, if n_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "▶", &r.tf_badge, n_rr.rect, if page < max_page { &r.sun_gold } else { &r.muted_txt });
+                }
+
+                draw_compact_toggle(rt, r, u, 372.0, 94.0, 524.0, 124.0, "Match WP", self.draft_cfg.vitals_match_wallpaper, self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Vitals));
+                let cust_rr = rrect(532.0, 94.0, 636.0, 124.0, 8.0, u);
+                let c_hov = self.hovered == HitZone::OpenCustomizeVitals;
+                rt.FillRoundedRectangle(&cust_rr, if c_hov { &r.sun_gold } else { &r.card_active });
+                rt.DrawRoundedRectangle(&cust_rr, &r.sun_gold, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, cust_rr.rect, if c_hov { &r.dark_ink } else { &r.cream });
+                let en_rr = rrect(644.0, 94.0, 734.0, 124.0, 8.0, u);
+                let ehov = self.hovered == HitZone::ToggleVitalsQuick;
+                rt.FillRoundedRectangle(&en_rr, if ehov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
+                draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_vitals);
+
+                for (i, &st) in list.iter().skip(page * 6).take(6).enumerate() {
+                    let col = i % 2;
+                    let row = i / 2;
+                    let x0 = if col == 0 { 26.0 } else { 386.0 };
+                    let x1 = x0 + 348.0;
+                    let y0 = 136.0 + (row as f32) * 144.0;
+                    let y1 = y0 + 134.0;
+                    let active = self.draft_cfg.vitals_style == st;
+                    let hov = self.hovered == HitZone::SelectVitalsTheme(st);
+                    let card_rr = rrect(x0, y0, x1, y1, 12.0, u);
+                    rt.FillRoundedRectangle(&card_rr, if active { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&card_rr, if active || hov { &r.sun_gold } else { &r.card_border }, if active { 1.5 * u } else { 1.0 * u }, None);
+
+                    let pv = rrect(x0 + 8.0, y0 + 6.0, x1 - 8.0, y0 + 92.0, 9.0, u);
+                    if let Some(ht) = vitals_style_horology(st) {
+                        let style_pal = ThemePalette::for_horology(ht);
+                        draw_palette_preview_backdrop(rt, pv, u, &style_pal);
+                    } else {
+                        draw_theme_preview_backdrop(rt, pv, u, &self.draft_cfg, false);
+                    }
+                    rt.PushAxisAlignedClip(&pv.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    let mut sample_cfg = AppConfig::default();
+                    sample_cfg.vitals_style = st;
+                    sample_cfg.vitals_show_plate = true;
+                    if active {
+                        sample_cfg.vitals_horology = self.draft_cfg.vitals_horology;
+                    }
+                    let (vw, vh) = vitals_logical_size(&sample_cfg);
+                    let sf = (314.0 / vw).min(76.0 / vh).min(0.76);
+                    let vx = (x0 + 174.0 - vw * sf * 0.5) * u;
+                    let vy = (y0 + 49.0 - vh * sf * 0.5) * u;
+                    draw_vitals_widget_with_telemetry_and_viz(
+                        rt, dw, Some(d2d), custom_fonts, vx, vy, sf * u, &sample_cfg,
+                        self.telemetry_ext.0, self.telemetry_ext.1, self.telemetry_ext.2, self.telemetry_ext.3, self.telemetry_ext.4,
+                        WidgetHitZone::None, self.widget_sim(2),
+                    );
+                    rt.PopAxisAlignedClip();
+
+                    let title_max_x = self.draw_theme_card_badges(rt, r, u, x1, y0 + 96.0, y0 + 115.0, active, hov, vitals_style_badge(st));
+                    draw_txt(rt, vitals_style_label(st), &r.tf_title, rect_f(x0 + 12.0, y0 + 95.0, title_max_x, y0 + 115.0, u), &r.cream);
+                    draw_txt(rt, vitals_style_subtitle(st), &r.tf_sub, rect_f(x0 + 12.0, y0 + 114.0, x1 - 12.0, y1 - 2.0, u), &r.warm_sub);
+                }
+
+                // Footer
+                let res_rr = rrect(26.0, 584.0, 184.0, 622.0, 9.0, u);
+                let res_hov = self.hovered == HitZone::BtnResampleWallpaper;
+                rt.FillRoundedRectangle(&res_rr, if res_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&res_rr, if res_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "↻ Sample Wallpaper", &r.tf_btn, res_rr.rect, if res_hov { &r.sun_gold } else { &r.warm_sub });
+                let dirty = self.draft_cfg != *cfg;
+                let st_txt = if self.applied_flash { "✓ Applied & saved" } else if dirty { "Unsaved changes — click Apply" } else { "Click active card again to customize" };
+                draw_txt(rt, st_txt, &r.tf_sub, rect_f(196.0, 584.0, 414.0, 622.0, u), if self.applied_flash { &r.sage } else if dirty { &r.sun_gold } else { &r.muted_txt });
+                let bk_rr = rrect(422.0, 584.0, 546.0, 622.0, 9.0, u);
+                let b_hov = self.hovered == HitZone::OpenCustomizeVitals;
+                rt.FillRoundedRectangle(&bk_rr, if b_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&bk_rr, if b_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, bk_rr.rect, &r.cream);
+                let app_rr = rrect(558.0, 584.0, 734.0, 622.0, 9.0, u);
+                let a_hov = self.hovered == HitZone::BtnApplyWidgets;
+                rt.FillRoundedRectangle(&app_rr, if a_hov { &r.cream } else { &r.sun_gold });
+                draw_txt(rt, "Apply", &r.tf_btn, app_rr.rect, &r.dark_ink);
+            }
+
+            WidgetPage::CcFolders => {
+                let back_rr = rrect(26.0, 94.0, 116.0, 124.0, 8.0, u);
+                let bhov = self.hovered == HitZone::BtnBackGallery;
+                rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "← Back", &r.tf_btn, back_rr.rect, &r.cream);
+
+                draw_txt(rt, "Console Folders", &r.tf_title, rect_f(124.0, 94.0, 274.0, 124.0, u), &r.cream);
+
+                let all_rr = rrect(278.0, 94.0, 366.0, 124.0, 8.0, u);
+                let all_hov = self.hovered == HitZone::OpenCcFolder(CcThemeFolder::All);
+                rt.FillRoundedRectangle(&all_rr, if all_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&all_rr, if all_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, &format!("All ({})", cc_styles_in_folder(CcThemeFolder::All).len()), &r.tf_badge, all_rr.rect, if all_hov { &r.sun_gold } else { &r.cream });
+
+                draw_compact_toggle(rt, r, u, 372.0, 94.0, 524.0, 124.0, "Match WP", self.draft_cfg.cc_match_wallpaper, self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::ControlCenter));
+                let cust_rr = rrect(532.0, 94.0, 636.0, 124.0, 8.0, u);
+                let c_hov = self.hovered == HitZone::OpenCustomizeCc;
+                rt.FillRoundedRectangle(&cust_rr, if c_hov { &r.sun_gold } else { &r.card_active });
+                rt.DrawRoundedRectangle(&cust_rr, &r.sun_gold, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, cust_rr.rect, if c_hov { &r.dark_ink } else { &r.cream });
+                let en_rr = rrect(644.0, 94.0, 734.0, 124.0, 8.0, u);
+                let ehov = self.hovered == HitZone::ToggleCcQuick;
+                rt.FillRoundedRectangle(&en_rr, if ehov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
+                draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_cc);
+
+                let draw_cc_sample = |st: u8, cx_l: f32, cy_l: f32, sf: f32| {
+                    let mut sample_cfg = AppConfig::default();
+                    sample_cfg.cc_tile_style = st;
+                    sample_cfg.cc_show_plate = true;
+                    if st == self.draft_cfg.cc_tile_style {
+                        sample_cfg.cc_horology = self.draft_cfg.cc_horology;
+                    }
+                    let wx = (cx_l - 194.0 * sf) * u;
+                    let wy = (cy_l - 149.0 * sf) * u;
+                    draw_control_center_widget_live_with_viz(
+                        rt, dw, Some(d2d), custom_fonts, wx, wy, sf * u, &sample_cfg, &self.preview_cc,
+                        0.0, WidgetHitZone::None, None, None, self.widget_sim(4),
+                    );
+                };
+
+                // Hero Folder 1: Photorealistic Horology (10)
+                let h_items = cc_styles_in_folder(CcThemeFolder::Horology);
+                let h_pal = ThemePalette::for_horology(HorologyTheme::SubmarinerEmerald);
+                let pv_h = self.draw_folder_card_shell_with_pal(
+                    rt, r, u, &self.draft_cfg, self.draft_cfg.cc_match_wallpaper, Some(&h_pal),
+                    26.0, 136.0, 734.0, 356.0, 304.0,
+                    CcThemeFolder::Horology.label(),
+                    &format!("{} Themes", h_items.len()),
+                    "Machined horology switchboards with chamfered jewel pushers & knurled metallic faders",
+                    h_items.contains(&self.draft_cfg.cc_tile_style),
+                    self.hovered == HitZone::OpenCcFolder(CcThemeFolder::Horology),
+                );
+                rt.PushAxisAlignedClip(&pv_h.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (j, st) in [4u8, 5, 10].into_iter().enumerate() {
+                    draw_cc_sample(st, 148.0 + (j as f32) * 232.0, 224.0, 0.45);
+                }
+                rt.PopAxisAlignedClip();
+
+                // Folder 2: Classic Styles (4)
+                let c_items = cc_styles_in_folder(CcThemeFolder::Classic);
+                let pv_c = self.draw_folder_card_shell_with_pal(
+                    rt, r, u, &self.draft_cfg, self.draft_cfg.cc_match_wallpaper, None,
+                    26.0, 368.0, 734.0, 568.0, 516.0,
+                    CcThemeFolder::Classic.label(),
+                    &format!("{} Styles", c_items.len()),
+                    "Rounded glass tiles, Capsule Pills, Cyber Chamfer & Minimal Flat control panels",
+                    c_items.contains(&self.draft_cfg.cc_tile_style),
+                    self.hovered == HitZone::OpenCcFolder(CcThemeFolder::Classic),
+                );
+                rt.PushAxisAlignedClip(&pv_c.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (j, st) in [0u8, 2].into_iter().enumerate() {
+                    draw_cc_sample(st, 212.0 + (j as f32) * 336.0, 444.0, 0.42);
+                }
+                rt.PopAxisAlignedClip();
+
+                // Footer
+                let res_rr = rrect(26.0, 584.0, 184.0, 622.0, 9.0, u);
+                let res_hov = self.hovered == HitZone::BtnResampleWallpaper;
+                rt.FillRoundedRectangle(&res_rr, if res_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&res_rr, if res_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "↻ Sample Wallpaper", &r.tf_btn, res_rr.rect, if res_hov { &r.sun_gold } else { &r.warm_sub });
+                let dirty = self.draft_cfg != *cfg;
+                let st_txt = if self.applied_flash { "✓ Applied & saved" } else if dirty { "Unsaved changes — click Apply" } else { "Click a folder to browse Console themes" };
+                draw_txt(rt, st_txt, &r.tf_sub, rect_f(196.0, 584.0, 414.0, 622.0, u), if self.applied_flash { &r.sage } else if dirty { &r.sun_gold } else { &r.muted_txt });
+                let bk_rr = rrect(422.0, 584.0, 546.0, 622.0, 9.0, u);
+                let b_hov = self.hovered == HitZone::OpenCustomizeCc;
+                rt.FillRoundedRectangle(&bk_rr, if b_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&bk_rr, if b_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, bk_rr.rect, &r.cream);
+                let app_rr = rrect(558.0, 584.0, 734.0, 622.0, 9.0, u);
+                let a_hov = self.hovered == HitZone::BtnApplyWidgets;
+                rt.FillRoundedRectangle(&app_rr, if a_hov { &r.cream } else { &r.sun_gold });
+                draw_txt(rt, "Apply", &r.tf_btn, app_rr.rect, &r.dark_ink);
+            }
+
+            WidgetPage::CcThemes => {
+                let back_rr = rrect(26.0, 94.0, 126.0, 124.0, 8.0, u);
+                let bhov = self.hovered == HitZone::OpenCcFolders;
+                rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "← Folders", &r.tf_btn, back_rr.rect, &r.cream);
+
+                let list = cc_styles_in_folder(self.cc_folder);
+                let max_page = list.len().saturating_sub(1) / 6;
+                let page = self.cc_theme_page.min(max_page);
+                let title_x1 = if max_page > 0 { 274.0 } else { 366.0 };
+                draw_txt(rt, &format!("Console • {}", self.cc_folder.label()), &r.tf_title, rect_f(134.0, 94.0, title_x1, 124.0, u), &r.cream);
+
+                if max_page > 0 {
+                    let p_hov = self.hovered == HitZone::ScrollCcThemesPrev;
+                    let p_rr = rrect(278.0, 96.0, 304.0, 122.0, 7.0, u);
+                    rt.FillRoundedRectangle(&p_rr, if p_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&p_rr, if p_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "◀", &r.tf_badge, p_rr.rect, if page > 0 { &r.sun_gold } else { &r.muted_txt });
+                    draw_txt(rt, &format!("{}/{}", page + 1, max_page + 1), &r.tf_badge, rect_f(304.0, 96.0, 340.0, 122.0, u), &r.cream);
+                    let n_hov = self.hovered == HitZone::ScrollCcThemesNext;
+                    let n_rr = rrect(340.0, 96.0, 366.0, 122.0, 7.0, u);
+                    rt.FillRoundedRectangle(&n_rr, if n_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&n_rr, if n_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "▶", &r.tf_badge, n_rr.rect, if page < max_page { &r.sun_gold } else { &r.muted_txt });
+                }
+
+                draw_compact_toggle(rt, r, u, 372.0, 94.0, 524.0, 124.0, "Match WP", self.draft_cfg.cc_match_wallpaper, self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::ControlCenter));
+                let cust_rr = rrect(532.0, 94.0, 636.0, 124.0, 8.0, u);
+                let c_hov = self.hovered == HitZone::OpenCustomizeCc;
+                rt.FillRoundedRectangle(&cust_rr, if c_hov { &r.sun_gold } else { &r.card_active });
+                rt.DrawRoundedRectangle(&cust_rr, &r.sun_gold, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, cust_rr.rect, if c_hov { &r.dark_ink } else { &r.cream });
+                let en_rr = rrect(644.0, 94.0, 734.0, 124.0, 8.0, u);
+                let ehov = self.hovered == HitZone::ToggleCcQuick;
+                rt.FillRoundedRectangle(&en_rr, if ehov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
+                draw_switch_r(rt, r, 667.0, 99.0, u, self.draft_cfg.show_cc);
+
+                for (i, &st) in list.iter().skip(page * 6).take(6).enumerate() {
+                    let col = i % 2;
+                    let row = i / 2;
+                    let x0 = if col == 0 { 26.0 } else { 386.0 };
+                    let x1 = x0 + 348.0;
+                    let y0 = 136.0 + (row as f32) * 144.0;
+                    let y1 = y0 + 134.0;
+                    let active = self.draft_cfg.cc_tile_style == st;
+                    let hov = self.hovered == HitZone::SelectCcTheme(st);
+                    let card_rr = rrect(x0, y0, x1, y1, 12.0, u);
+                    rt.FillRoundedRectangle(&card_rr, if active { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&card_rr, if active || hov { &r.sun_gold } else { &r.card_border }, if active { 1.5 * u } else { 1.0 * u }, None);
+
+                    let pv = rrect(x0 + 8.0, y0 + 6.0, x1 - 8.0, y0 + 92.0, 9.0, u);
+                    if let Some(ht) = cc_style_horology(st) {
+                        let style_pal = ThemePalette::for_horology(ht);
+                        draw_palette_preview_backdrop(rt, pv, u, &style_pal);
+                    } else {
+                        draw_theme_preview_backdrop(rt, pv, u, &self.draft_cfg, false);
+                    }
+                    rt.PushAxisAlignedClip(&pv.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    let mut sample_cfg = AppConfig::default();
+                    sample_cfg.cc_tile_style = st;
+                    sample_cfg.cc_show_plate = true;
+                    if active {
+                        sample_cfg.cc_horology = self.draft_cfg.cc_horology;
+                    }
+                    let sf = 0.27;
+                    let wx = (x0 + 174.0 - 194.0 * sf) * u;
+                    let wy = (y0 + 49.0 - 149.0 * sf) * u;
+                    draw_control_center_widget_live_with_viz(
+                        rt, dw, Some(d2d), custom_fonts, wx, wy, sf * u, &sample_cfg, &self.preview_cc,
+                        0.0, WidgetHitZone::None, None, None, self.widget_sim(4),
+                    );
+                    rt.PopAxisAlignedClip();
+
+                    let title_max_x = self.draw_theme_card_badges(rt, r, u, x1, y0 + 96.0, y0 + 115.0, active, hov, cc_style_badge(st));
+                    draw_txt(rt, cc_style_label(st), &r.tf_title, rect_f(x0 + 12.0, y0 + 95.0, title_max_x, y0 + 115.0, u), &r.cream);
+                    draw_txt(rt, cc_style_subtitle(st), &r.tf_sub, rect_f(x0 + 12.0, y0 + 114.0, x1 - 12.0, y1 - 2.0, u), &r.warm_sub);
+                }
+
+                // Footer
+                let res_rr = rrect(26.0, 584.0, 184.0, 622.0, 9.0, u);
+                let res_hov = self.hovered == HitZone::BtnResampleWallpaper;
+                rt.FillRoundedRectangle(&res_rr, if res_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&res_rr, if res_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "↻ Sample Wallpaper", &r.tf_btn, res_rr.rect, if res_hov { &r.sun_gold } else { &r.warm_sub });
+                let dirty = self.draft_cfg != *cfg;
+                let st_txt = if self.applied_flash { "✓ Applied & saved" } else if dirty { "Unsaved changes — click Apply" } else { "Click active card again to customize" };
+                draw_txt(rt, st_txt, &r.tf_sub, rect_f(196.0, 584.0, 414.0, 622.0, u), if self.applied_flash { &r.sage } else if dirty { &r.sun_gold } else { &r.muted_txt });
+                let bk_rr = rrect(422.0, 584.0, 546.0, 622.0, 9.0, u);
+                let b_hov = self.hovered == HitZone::OpenCustomizeCc;
+                rt.FillRoundedRectangle(&bk_rr, if b_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(&bk_rr, if b_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                draw_txt(rt, "Customize →", &r.tf_btn, bk_rr.rect, &r.cream);
+                let app_rr = rrect(558.0, 584.0, 734.0, 622.0, 9.0, u);
+                let a_hov = self.hovered == HitZone::BtnApplyWidgets;
+                rt.FillRoundedRectangle(&app_rr, if a_hov { &r.cream } else { &r.sun_gold });
+                draw_txt(rt, "Apply", &r.tf_btn, app_rr.rect, &r.dark_ink);
+            }
+
             WidgetPage::CustomizeDateTime => {
                 let is_on = self.draft_cfg.show_datetime;
                 self.render_custom_header(rt, r, u, "Customize Date & Time Card", is_on, HitZone::ToggleDateTimeQuick);
@@ -13935,20 +15591,8 @@ impl SettingsController {
 
                 rt.PopAxisAlignedClip();
 
-                // Sub-Tabs: Layout & Elements | Fonts & Calligraphy | Colors & Wallpaper
-                let sub_tabs = [
-                    (DtSubTab::Layout, "Layout & Elements", 26.0, 254.0),
-                    (DtSubTab::Fonts, "Fonts & Calligraphy", 264.0, 492.0),
-                    (DtSubTab::Colors, "Colors & Wallpaper", 502.0, 734.0),
-                ];
-                for (st, lbl, x0, x1) in sub_tabs {
-                    let act = self.dt_sub_tab == st;
-                    let hov = self.hovered == HitZone::DtSubTabBtn(st);
-                    let rr = rrect(x0, 306.0, x1, 338.0, 8.0, u);
-                    rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_bg });
-                    rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                    draw_txt(rt, lbl, &r.tf_btn, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                }
+                // 4 Sub-Tabs: Layout | Fonts | Colors | Materials
+                self.render_dt_sub_tabs(rt, r, u, ["1. Layout", "2. Fonts", "3. Colors", "4. Materials"]);
 
                 // Controls Panel (344..574)
                 let pnl = rrect(26.0, 344.0, 734.0, 574.0, 12.0, u);
@@ -14211,6 +15855,10 @@ impl SettingsController {
                             &format!("#{:06X}", active_hex),
                             self.hovered == HitZone::Slider(SliderKind::DtHue) || self.dragging_slider == Some(SliderKind::DtHue),
                         );
+                    }
+
+                    DtSubTab::Materials => {
+                        self.render_horology_materials_subtab(rt, r, u, WidgetCanvasTarget::DateTime);
                     }
                 }
 
@@ -15311,20 +16959,8 @@ impl SettingsController {
                     self.hovered == HitZone::ToggleAppsPlate,
                 );
 
-                // 3 Sub-Tabs (306..338)
-                let sub_tabs = [
-                    (DtSubTab::Layout, "1. Apps & Grid Layout", 26.0, 254.0),
-                    (DtSubTab::Fonts, "2. Fonts & Tile Shape", 264.0, 492.0),
-                    (DtSubTab::Colors, "3. Colors & Wallpaper", 502.0, 734.0),
-                ];
-                for (st, lbl, x0, x1) in sub_tabs {
-                    let act = self.dt_sub_tab == st;
-                    let hov = self.hovered == HitZone::DtSubTabBtn(st);
-                    let rr = rrect(x0, 306.0, x1, 338.0, 8.0, u);
-                    rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_bg });
-                    rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                    draw_txt(rt, lbl, &r.tf_btn, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                }
+                // 4 Sub-Tabs (306..338)
+                self.render_dt_sub_tabs(rt, r, u, ["1. Apps & Grid", "2. Fonts & Style", "3. Colors", "4. Materials"]);
 
                 // Controls Panel (344..574)
                 let pnl = rrect(26.0, 344.0, 734.0, 574.0, 12.0, u);
@@ -15438,16 +17074,19 @@ impl SettingsController {
                     }
 
                     DtSubTab::Fonts => {
-                        draw_txt(rt, "Tile Shape:", &r.tf_sub, rect_f(40.0, 352.0, 132.0, 384.0, u), &r.sun_gold);
-                        for (sh, lbl) in [(0u8, "Squircle"), (1, "Circle Orb"), (2, "Hexagon"), (3, "Cyber Chamfer")] {
-                            let sx0 = 136.0 + (sh as f32) * 146.0;
-                            let rr = rrect(sx0, 352.0, sx0 + 140.0, 384.0, 8.0, u);
-                            let act = self.draft_cfg.apps_tile_shape == sh;
-                            let hov = self.hovered == HitZone::AppsShapeBtn(sh);
-                            rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_active });
-                            rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                            draw_txt(rt, lbl, &r.tf_badge, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                        }
+                        let sty_rr = rrect(40.0, 352.0, 320.0, 384.0, 8.0, u);
+                        let sty_hov = self.hovered == HitZone::OpenAppsThemes;
+                        rt.FillRoundedRectangle(&sty_rr, if sty_hov { &r.card_hover } else { &r.amber_dim });
+                        rt.DrawRoundedRectangle(&sty_rr, &r.sun_gold, 1.0 * u, None);
+                        draw_txt(rt, &format!("Style: {} ▾", apps_style_label(self.draft_cfg.apps_tile_shape)), &r.tf_badge, sty_rr.rect, if sty_hov { &r.cream } else { &r.sun_gold });
+
+                        let fld_rr = rrect(330.0, 352.0, 500.0, 384.0, 8.0, u);
+                        let fld_hov = self.hovered == HitZone::OpenAppsFolders;
+                        rt.FillRoundedRectangle(&fld_rr, if fld_hov { &r.card_hover } else { &r.card_active });
+                        rt.DrawRoundedRectangle(&fld_rr, if fld_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                        draw_txt(rt, "Theme Folders ▾", &r.tf_btn, fld_rr.rect, if fld_hov { &r.sun_gold } else { &r.cream });
+
+                        draw_txt(rt, "14 Styles • 10 Horology", &r.tf_right, rect_f(508.0, 352.0, 720.0, 384.0, u), &r.warm_sub);
 
                         let fam = if self.draft_cfg.apps_font_label.is_empty() {
                             "SF Pro Display"
@@ -15499,6 +17138,10 @@ impl SettingsController {
                             ("Accent", "Text", "Tile BG"),
                             None,
                         );
+                    }
+
+                    DtSubTab::Materials => {
+                        self.render_horology_materials_subtab(rt, r, u, WidgetCanvasTarget::Apps);
                     }
                 }
 
@@ -15960,20 +17603,8 @@ impl SettingsController {
                 );
                 rt.PopAxisAlignedClip();
 
-                // 3 Sub-Tabs (306..338)
-                let sub_tabs = [
-                    (DtSubTab::Layout, "1. Layout & Gauges", 26.0, 254.0),
-                    (DtSubTab::Fonts, "2. Fonts & Readouts", 264.0, 492.0),
-                    (DtSubTab::Colors, "3. Colors & Wallpaper", 502.0, 734.0),
-                ];
-                for (st, lbl, x0, x1) in sub_tabs {
-                    let act = self.dt_sub_tab == st;
-                    let hov = self.hovered == HitZone::DtSubTabBtn(st);
-                    let rr = rrect(x0, 306.0, x1, 338.0, 8.0, u);
-                    rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_bg });
-                    rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                    draw_txt(rt, lbl, &r.tf_btn, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                }
+                // 4 Sub-Tabs (306..338)
+                self.render_dt_sub_tabs(rt, r, u, ["1. Layout", "2. Fonts", "3. Colors", "4. Materials"]);
 
                 // Controls Panel (344..574)
                 let pnl = rrect(26.0, 344.0, 734.0, 574.0, 12.0, u);
@@ -15982,22 +17613,19 @@ impl SettingsController {
 
                 match self.dt_sub_tab {
                     DtSubTab::Layout => {
-                        draw_txt(rt, "Style:", &r.tf_sub, rect_f(40.0, 354.0, 108.0, 386.0, u), &r.sun_gold);
-                        for (st, lbl) in [
-                            (0u8, "Capsule Bars"),
-                            (1, "Radial Rings"),
-                            (2, "Cyber HUD"),
-                            (3, "Minimal Text"),
-                            (4, "Ring-Pill HUD"),
-                        ] {
-                            let sx0 = 112.0 + (st as f32) * 122.0;
-                            let rr = rrect(sx0, 354.0, sx0 + 116.0, 386.0, 8.0, u);
-                            let act = self.draft_cfg.vitals_style == st;
-                            let hov = self.hovered == HitZone::VitalsStyleBtn(st);
-                            rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_active });
-                            rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                            draw_txt(rt, lbl, &r.tf_badge, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                        }
+                        let sty_rr = rrect(40.0, 354.0, 290.0, 386.0, 8.0, u);
+                        let sty_hov = self.hovered == HitZone::OpenVitalsThemes;
+                        rt.FillRoundedRectangle(&sty_rr, if sty_hov { &r.card_hover } else { &r.amber_dim });
+                        rt.DrawRoundedRectangle(&sty_rr, &r.sun_gold, 1.0 * u, None);
+                        draw_txt(rt, &format!("Style: {} ▾", vitals_style_label(self.draft_cfg.vitals_style)), &r.tf_badge, sty_rr.rect, if sty_hov { &r.cream } else { &r.sun_gold });
+
+                        let fld_rr = rrect(300.0, 354.0, 470.0, 386.0, 8.0, u);
+                        let fld_hov = self.hovered == HitZone::OpenVitalsFolders;
+                        rt.FillRoundedRectangle(&fld_rr, if fld_hov { &r.card_hover } else { &r.card_active });
+                        rt.DrawRoundedRectangle(&fld_rr, if fld_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                        draw_txt(rt, "Theme Folders ▾", &r.tf_btn, fld_rr.rect, if fld_hov { &r.sun_gold } else { &r.cream });
+
+                        draw_txt(rt, "15 Gauge Styles • 10 Horology", &r.tf_right, rect_f(478.0, 354.0, 720.0, 386.0, u), &r.warm_sub);
 
                         let t_sc = (self.draft_cfg.vitals_scale_pct as f32 - 70.0) / 80.0;
                         draw_compact_slider(
@@ -16046,6 +17674,10 @@ impl SettingsController {
                             None,
                         );
                     }
+
+                    DtSubTab::Materials => {
+                        self.render_horology_materials_subtab(rt, r, u, WidgetCanvasTarget::Vitals);
+                    }
                 }
 
                 self.render_custom_footer(rt, r, cfg, u);
@@ -16089,20 +17721,8 @@ impl SettingsController {
                 );
                 rt.PopAxisAlignedClip();
 
-                // 3 Sub-Tabs (306..338)
-                let sub_tabs = [
-                    (DtSubTab::Layout, "1. Layout & Elements", 26.0, 254.0),
-                    (DtSubTab::Fonts, "2. Fonts & Typography", 264.0, 492.0),
-                    (DtSubTab::Colors, "3. Colors & Wallpaper", 502.0, 734.0),
-                ];
-                for (st, lbl, x0, x1) in sub_tabs {
-                    let act = self.dt_sub_tab == st;
-                    let hov = self.hovered == HitZone::DtSubTabBtn(st);
-                    let rr = rrect(x0, 306.0, x1, 338.0, 8.0, u);
-                    rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_bg });
-                    rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                    draw_txt(rt, lbl, &r.tf_btn, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                }
+                // 4 Sub-Tabs (306..338)
+                self.render_dt_sub_tabs(rt, r, u, ["1. Layout", "2. Fonts", "3. Colors", "4. Materials"]);
 
                 // Controls Panel (344..574)
                 let pnl = rrect(26.0, 344.0, 734.0, 574.0, 12.0, u);
@@ -16177,6 +17797,10 @@ impl SettingsController {
                             )),
                         );
                     }
+
+                    DtSubTab::Materials => {
+                        self.render_horology_materials_subtab(rt, r, u, WidgetCanvasTarget::Music);
+                    }
                 }
 
                 self.render_custom_footer(rt, r, cfg, u);
@@ -16216,20 +17840,8 @@ impl SettingsController {
                 );
                 rt.PopAxisAlignedClip();
 
-                // 3 Sub-Tabs (306..338)
-                let sub_tabs = [
-                    (DtSubTab::Layout, "1. Layout & Modules", 26.0, 254.0),
-                    (DtSubTab::Fonts, "2. Fonts & Readouts", 264.0, 492.0),
-                    (DtSubTab::Colors, "3. Colors & Wallpaper", 502.0, 734.0),
-                ];
-                for (st, lbl, x0, x1) in sub_tabs {
-                    let act = self.dt_sub_tab == st;
-                    let hov = self.hovered == HitZone::DtSubTabBtn(st);
-                    let rr = rrect(x0, 306.0, x1, 338.0, 8.0, u);
-                    rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_bg });
-                    rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                    draw_txt(rt, lbl, &r.tf_btn, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                }
+                // 4 Sub-Tabs (306..338)
+                self.render_dt_sub_tabs(rt, r, u, ["1. Layout", "2. Fonts", "3. Colors", "4. Materials"]);
 
                 // Controls Panel (344..574)
                 let pnl = rrect(26.0, 344.0, 734.0, 574.0, 12.0, u);
@@ -16238,21 +17850,19 @@ impl SettingsController {
 
                 match self.dt_sub_tab {
                     DtSubTab::Layout => {
-                        draw_txt(rt, "Tile Shape:", &r.tf_sub, rect_f(40.0, 354.0, 124.0, 386.0, u), &r.sun_gold);
-                        for (st, lbl) in [
-                            (0u8, "Rounded"),
-                            (1, "Capsule Pill"),
-                            (2, "Cyber Chamfer"),
-                            (3, "Minimal Flat"),
-                        ] {
-                            let sx0 = 128.0 + (st as f32) * 148.0;
-                            let rr = rrect(sx0, 354.0, sx0 + 142.0, 386.0, 8.0, u);
-                            let act = self.draft_cfg.cc_tile_style == st;
-                            let hov = self.hovered == HitZone::CcTileStyleBtn(st);
-                            rt.FillRoundedRectangle(&rr, if act { &r.sun_gold } else if hov { &r.card_hover } else { &r.card_active });
-                            rt.DrawRoundedRectangle(&rr, if act || hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                            draw_txt(rt, lbl, &r.tf_badge, rr.rect, if act { &r.dark_ink } else { &r.cream });
-                        }
+                        let sty_rr = rrect(40.0, 354.0, 290.0, 386.0, 8.0, u);
+                        let sty_hov = self.hovered == HitZone::OpenCcThemes;
+                        rt.FillRoundedRectangle(&sty_rr, if sty_hov { &r.card_hover } else { &r.amber_dim });
+                        rt.DrawRoundedRectangle(&sty_rr, &r.sun_gold, 1.0 * u, None);
+                        draw_txt(rt, &format!("Style: {} ▾", cc_style_label(self.draft_cfg.cc_tile_style)), &r.tf_badge, sty_rr.rect, if sty_hov { &r.cream } else { &r.sun_gold });
+
+                        let fld_rr = rrect(300.0, 354.0, 470.0, 386.0, 8.0, u);
+                        let fld_hov = self.hovered == HitZone::OpenCcFolders;
+                        rt.FillRoundedRectangle(&fld_rr, if fld_hov { &r.card_hover } else { &r.card_active });
+                        rt.DrawRoundedRectangle(&fld_rr, if fld_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                        draw_txt(rt, "Theme Folders ▾", &r.tf_btn, fld_rr.rect, if fld_hov { &r.sun_gold } else { &r.cream });
+
+                        draw_txt(rt, "14 Console Styles • 10 Horology", &r.tf_right, rect_f(478.0, 354.0, 720.0, 386.0, u), &r.warm_sub);
 
                         let t_sc = (self.draft_cfg.cc_scale_pct as f32 - 70.0) / 80.0;
                         draw_compact_slider(
@@ -16300,6 +17910,10 @@ impl SettingsController {
                             ("Accent", "Text", "Card BG"),
                             None,
                         );
+                    }
+
+                    DtSubTab::Materials => {
+                        self.render_horology_materials_subtab(rt, r, u, WidgetCanvasTarget::ControlCenter);
                     }
                 }
 
@@ -16353,7 +17967,68 @@ impl SettingsController {
                 rt.DrawRoundedRectangle(&en_rr, &r.card_border, 1.0 * u, None);
                 draw_switch_r(rt, r, 667.0, 99.0, u, wcfg.enabled);
 
-                // Folder 1: Realistic & Calm Materials
+                // Featured Hero Banner: Photorealistic Horology (10)
+                {
+                    let h_has = wcfg.enabled && ExtWidgetTheme::HOROLOGY_FOLDER.contains(&wcfg.theme);
+                    let h_cnt = format!("{} Themes", ExtWidgetTheme::HOROLOGY_FOLDER.len());
+                    let h_pal = ThemePalette::for_horology(HorologyTheme::RoyalOakSteel);
+                    let pv_h = self.draw_folder_card_shell_with_pal(
+                        rt,
+                        r,
+                        u,
+                        &self.draft_cfg,
+                        wcfg.match_wallpaper,
+                        Some(&h_pal),
+                        26.0,
+                        136.0,
+                        734.0,
+                        270.0,
+                        220.0,
+                        ExtThemeFolder::Horology.label(),
+                        &h_cnt,
+                        "Royal Oak Steel, Patek Moonphase, Tourbillon Gold, Daytona Ceramic, Porcelain & Carbon",
+                        h_has,
+                        self.hovered == HitZone::OpenExtFolder(id, ExtThemeFolder::Horology),
+                    );
+                    rt.PushAxisAlignedClip(&pv_h.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    for (j, theme) in [
+                        ExtWidgetTheme::HoroRoyalOak,
+                        ExtWidgetTheme::HoroPatekMoon,
+                        ExtWidgetTheme::HoroBreguetPorcelain,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let mut s_cfg = AppConfig::default();
+                        s_cfg.widgets_24h = self.draft_cfg.widgets_24h;
+                        s_cfg.ext_widgets[id.idx()].apply_theme_preset(theme);
+                        if theme == wcfg.theme {
+                            s_cfg.ext_widgets[id.idx()].horology = wcfg.horology;
+                        }
+                        let (lw, lh) = s_cfg.ext_widgets[id.idx()].logical_size(id);
+                        let sc = (68.0 / lh).min(206.0 / lw).min(0.60);
+                        let slot_cx = 148.0 + (j as f32) * 232.0;
+                        let slot_cy = 179.0;
+                        draw_ext_widget_with_viz(
+                            rt,
+                            dw,
+                            Some(d2d),
+                            custom_fonts,
+                            (slot_cx - lw * sc * 0.5) * u,
+                            (slot_cy - lh * sc * 0.5) * u,
+                            sc * u,
+                            id,
+                            &s_cfg,
+                            &self.preview_ext_state,
+                            &self.preview_cc,
+                            WidgetHitZone::None,
+                            None,
+                        );
+                    }
+                    rt.PopAxisAlignedClip();
+                }
+
+                // Folder 1: Realistic & Calm Materials (Row 0 Col 0: 26..372, 280..418)
                 let rm_has = wcfg.enabled && ExtWidgetTheme::REALISTIC_FOLDER.contains(&wcfg.theme);
                 let rm_cnt = format!("{} Themes", ExtWidgetTheme::REALISTIC_FOLDER.len());
                 let rm_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::AbyssalTrench);
@@ -16365,10 +18040,10 @@ impl SettingsController {
                     wcfg.match_wallpaper,
                     Some(&rm_pal),
                     26.0,
-                    136.0,
+                    280.0,
                     372.0,
-                    344.0,
-                    286.0,
+                    418.0,
+                    368.0,
                     "Realistic & Calm",
                     &rm_cnt,
                     "Crystal Water, Zen Mist, Brushed Ti, Hi-Fi, Leather & Marble",
@@ -16379,14 +18054,14 @@ impl SettingsController {
                 let mut s_cfg = AppConfig::default();
                 s_cfg.ext_widgets[id.idx()].apply_theme_preset(ExtWidgetTheme::CrystalWater);
                 let (lw, lh) = s_cfg.ext_widgets[id.idx()].logical_size(id);
-                let sc_ie = (86.0 / lh).min(156.0 / lw).min(0.64);
+                let sc_ie = (64.0 / lh).min(150.0 / lw).min(0.50);
                 draw_ext_widget_with_viz(
                     rt,
                     dw,
                     Some(d2d),
                     custom_fonts,
                     (118.0 - lw * sc_ie * 0.5) * u,
-                    (211.0 - lh * sc_ie * 0.5) * u,
+                    (328.0 - lh * sc_ie * 0.5) * u,
                     sc_ie * u,
                     id,
                     &s_cfg,
@@ -16402,7 +18077,7 @@ impl SettingsController {
                     Some(d2d),
                     custom_fonts,
                     (280.0 - lw * sc_ie * 0.5) * u,
-                    (211.0 - lh * sc_ie * 0.5) * u,
+                    (328.0 - lh * sc_ie * 0.5) * u,
                     sc_ie * u,
                     id,
                     &s_cfg,
@@ -16413,7 +18088,7 @@ impl SettingsController {
                 );
                 rt.PopAxisAlignedClip();
 
-                // Folder 2: Interactive Elements
+                // Folder 2: Interactive Elements (Row 0 Col 1: 388..734, 280..418)
                 let ie_has = wcfg.enabled && ExtWidgetTheme::INTERACTIVE_FOLDER.contains(&wcfg.theme);
                 let ie_cnt = format!("{} Themes", ExtWidgetTheme::INTERACTIVE_FOLDER.len());
                 let ie_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::CosmicLens);
@@ -16425,10 +18100,10 @@ impl SettingsController {
                     wcfg.match_wallpaper,
                     Some(&ie_pal),
                     388.0,
-                    136.0,
+                    280.0,
                     734.0,
-                    344.0,
-                    286.0,
+                    418.0,
+                    368.0,
                     "Interactive Physics",
                     &ie_cnt,
                     "Hover-reactive Snow, Fire, Water, Sakura, Cosmic & Plasma",
@@ -16443,7 +18118,7 @@ impl SettingsController {
                     Some(d2d),
                     custom_fonts,
                     (480.0 - lw * sc_ie * 0.5) * u,
-                    (211.0 - lh * sc_ie * 0.5) * u,
+                    (328.0 - lh * sc_ie * 0.5) * u,
                     sc_ie * u,
                     id,
                     &s_cfg,
@@ -16459,7 +18134,7 @@ impl SettingsController {
                     Some(d2d),
                     custom_fonts,
                     (642.0 - lw * sc_ie * 0.5) * u,
-                    (211.0 - lh * sc_ie * 0.5) * u,
+                    (328.0 - lh * sc_ie * 0.5) * u,
                     sc_ie * u,
                     id,
                     &s_cfg,
@@ -16470,7 +18145,7 @@ impl SettingsController {
                 );
                 rt.PopAxisAlignedClip();
 
-                // Folder 3: Glass & Minimal
+                // Folder 3: Glass & Minimal (Row 1 Col 0: 26..372, 428..566)
                 let gm_has = wcfg.enabled && ExtWidgetTheme::GLASS_FOLDER.contains(&wcfg.theme);
                 let gm_cnt = format!("{} Themes", ExtWidgetTheme::GLASS_FOLDER.len());
                 let gm_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::FloatingIsland);
@@ -16482,10 +18157,10 @@ impl SettingsController {
                     wcfg.match_wallpaper,
                     Some(&gm_pal),
                     26.0,
-                    356.0,
+                    428.0,
                     372.0,
-                    564.0,
-                    506.0,
+                    566.0,
+                    516.0,
                     "Glass & Minimal",
                     &gm_cnt,
                     "Autumn crystal, Swiss minimal, floating island & sun-dial",
@@ -16494,12 +18169,12 @@ impl SettingsController {
                 );
                 rt.PushAxisAlignedClip(&pv_gm.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                 s_cfg.ext_widgets[id.idx()].apply_theme_preset(ExtWidgetTheme::FloatingIsland);
-                let sc = (112.0 / lh).min(276.0 / lw).min(0.76);
-                let wy_gm = (431.0 - lh * sc * 0.5) * u;
+                let sc = (68.0 / lh).min(240.0 / lw).min(0.60);
+                let wy_gm = (476.0 - lh * sc * 0.5) * u;
                 draw_ext_widget_with_viz(rt, dw, Some(d2d), custom_fonts, (199.0 - lw * sc * 0.5) * u, wy_gm, sc * u, id, &s_cfg, &self.preview_ext_state, &self.preview_cc, WidgetHitZone::None, None);
                 rt.PopAxisAlignedClip();
 
-                // Folder 4: Cyber & Editorial
+                // Folder 4: Cyber & Editorial (Row 1 Col 1: 388..734, 428..566)
                 let ce_has = wcfg.enabled && ExtWidgetTheme::CYBER_FOLDER.contains(&wcfg.theme);
                 let ce_cnt = format!("{} Themes", ExtWidgetTheme::CYBER_FOLDER.len());
                 let ce_pal = ThemePalette::for_ext_widget_theme(ExtWidgetTheme::CyberHud);
@@ -16511,10 +18186,10 @@ impl SettingsController {
                     wcfg.match_wallpaper,
                     Some(&ce_pal),
                     388.0,
-                    356.0,
+                    428.0,
                     734.0,
-                    564.0,
-                    506.0,
+                    566.0,
+                    516.0,
                     "Cyber & Editorial",
                     &ce_cnt,
                     "Editorial serif, Cyber HUD brackets & neon matrix",
@@ -16523,7 +18198,7 @@ impl SettingsController {
                 );
                 rt.PushAxisAlignedClip(&pv_ce.rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                 s_cfg.ext_widgets[id.idx()].apply_theme_preset(ExtWidgetTheme::CyberHud);
-                let wy_ce = (431.0 - lh * sc * 0.5) * u;
+                let wy_ce = (476.0 - lh * sc * 0.5) * u;
                 draw_ext_widget_with_viz(rt, dw, Some(d2d), custom_fonts, (561.0 - lw * sc * 0.5) * u, wy_ce, sc * u, id, &s_cfg, &self.preview_ext_state, &self.preview_cc, WidgetHitZone::None, None);
                 rt.PopAxisAlignedClip();
 
@@ -16777,16 +18452,17 @@ impl SettingsController {
 
                 // Sub-Tabs (302..334)
                 if id == ExtWidgetId::Notes || id == ExtWidgetId::WorldClock {
-                    let (fourth_tab, fourth_lbl) = if id == ExtWidgetId::Notes {
-                        (ExtSubTab::NotesText, "4. Edit Text")
+                    let (fifth_tab, fifth_lbl) = if id == ExtWidgetId::Notes {
+                        (ExtSubTab::NotesText, "5. Edit Text")
                     } else {
-                        (ExtSubTab::WorldClockCities, "4. Choose Cities")
+                        (ExtSubTab::WorldClockCities, "5. Cities")
                     };
                     let sub_tabs = [
-                        (ExtSubTab::Layout, "1. Layout", 26.0, 196.0),
-                        (ExtSubTab::Features, "2. Features", 204.0, 374.0),
-                        (ExtSubTab::Appearance, "3. Colors & Fonts", 382.0, 552.0),
-                        (fourth_tab, fourth_lbl, 560.0, 734.0),
+                        (ExtSubTab::Layout, "1. Layout", 26.0, 162.0),
+                        (ExtSubTab::Features, "2. Features", 169.0, 305.0),
+                        (ExtSubTab::Appearance, "3. Colors", 312.0, 448.0),
+                        (ExtSubTab::Materials, "4. Materials", 455.0, 591.0),
+                        (fifth_tab, fifth_lbl, 598.0, 734.0),
                     ];
                     for (st, lbl, x0, x1) in sub_tabs {
                         let act = self.ext_sub_tab == st;
@@ -16798,9 +18474,10 @@ impl SettingsController {
                     }
                 } else {
                     let sub_tabs = [
-                        (ExtSubTab::Layout, "1. Layout & Geometry", 26.0, 254.0),
-                        (ExtSubTab::Features, "2. Content & Features", 266.0, 494.0),
-                        (ExtSubTab::Appearance, "3. Glass, Colors & Fonts", 506.0, 734.0),
+                        (ExtSubTab::Layout, "1. Layout", 26.0, 196.0),
+                        (ExtSubTab::Features, "2. Features", 204.0, 374.0),
+                        (ExtSubTab::Appearance, "3. Colors & Fonts", 382.0, 552.0),
+                        (ExtSubTab::Materials, "4. Materials", 560.0, 734.0),
                     ];
                     for (st, lbl, x0, x1) in sub_tabs {
                         let act = self.ext_sub_tab == st;
@@ -17264,6 +18941,10 @@ impl SettingsController {
                             &format!("#{:06X}", active_hex),
                             self.hovered == HitZone::Slider(SliderKind::DtHue) || self.dragging_slider == Some(SliderKind::DtHue),
                         );
+                    }
+
+                    ExtSubTab::Materials => {
+                        self.render_horology_materials_subtab(rt, r, u, WidgetCanvasTarget::Ext(id));
                     }
                 }
 
@@ -18045,10 +19726,10 @@ impl SettingsController {
                     if all_hov { &r.dark_ink } else { &r.cream },
                 );
 
-                // Balanced 2+2+3 Tactile Suite Collection Folder Cards
+                // Balanced 2+3+3 Tactile Suite Collection Folder Cards
                 for (i, &cat) in SuiteCategory::CURATED_FOLDERS.iter().enumerate() {
                     let list = suites_in_category(cat);
-                    let cnt_lbl = if cat == SuiteCategory::Atelier {
+                    let cnt_lbl = if cat == SuiteCategory::Horology {
                         format!("{} NEW", list.len())
                     } else {
                         format!("{} Setups", list.len())
@@ -18711,7 +20392,7 @@ impl SettingsController {
 
         draw_txt(
             rt,
-            "AutumnDeck Studio v2.0.0 • Native Win32 + Direct2D + DirectComposition • Hotkey: Ctrl + Alt + T",
+            "AutumnDeck Studio v2.0.9 • Native Win32 + Direct2D + DirectComposition • Hotkey: Ctrl + Alt + T",
             &r.tf_sub,
             rect_f(40.0, 536.0, 720.0, 562.0, u),
             &r.muted_txt,
@@ -18912,6 +20593,304 @@ impl SettingsController {
         rt.FillRoundedRectangle(&rf_rr, if rf_hov { &r.card_hover } else { &r.card_active });
         rt.DrawRoundedRectangle(&rf_rr, if rf_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
         draw_txt(rt, "Reset Style Fonts", &r.tf_btn, rf_rr.rect, if rf_hov { &r.sun_gold } else { &r.cream });
+    }
+
+    unsafe fn render_dt_sub_tabs(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        r: &PaintResources,
+        u: f32,
+        labels: [&str; 4],
+    ) {
+        let sub_tabs = [
+            (DtSubTab::Layout, labels[0], 26.0, 197.0),
+            (DtSubTab::Fonts, labels[1], 205.0, 376.0),
+            (DtSubTab::Colors, labels[2], 384.0, 555.0),
+            (DtSubTab::Materials, labels[3], 563.0, 734.0),
+        ];
+        for (st, lbl, x0, x1) in sub_tabs {
+            let act = self.dt_sub_tab == st;
+            let hov = self.hovered == HitZone::DtSubTabBtn(st);
+            let rr = rrect(x0, 306.0, x1, 338.0, 8.0, u);
+            rt.FillRoundedRectangle(
+                &rr,
+                if act {
+                    &r.sun_gold
+                } else if hov {
+                    &r.card_hover
+                } else {
+                    &r.card_bg
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &rr,
+                if act || hov {
+                    &r.sun_gold
+                } else {
+                    &r.card_border
+                },
+                1.0 * u,
+                None,
+            );
+            draw_txt(
+                rt,
+                lbl,
+                &r.tf_btn,
+                rr.rect,
+                if act { &r.dark_ink } else { &r.cream },
+            );
+        }
+    }
+
+    unsafe fn render_horology_materials_subtab(
+        &self,
+        rt: &ID2D1DCRenderTarget,
+        r: &PaintResources,
+        u: f32,
+        target: WidgetCanvasTarget,
+    ) {
+        let Some(_active_theme) = self.draft_cfg.active_horology_theme(target) else {
+            let card = rrect(40.0, 362.0, 720.0, 556.0, 12.0, u);
+            rt.FillRoundedRectangle(&card, &r.card_active);
+            rt.DrawRoundedRectangle(&card, &r.card_border, 1.0 * u, None);
+            draw_txt(
+                rt,
+                "Photorealistic Horology • Parts & Materials",
+                &r.tf_title,
+                rect_f(56.0, 378.0, 704.0, 408.0, u),
+                &r.sun_gold,
+            );
+            draw_txt(
+                rt,
+                "Choose any of the 10 Photorealistic Horology themes for this widget to independently customize its Bezel Metal, Dial Texture, Hands, Lume, Sapphire AR Glare, Hex Screws & Depth Shadows.",
+                &r.tf_sub,
+                rect_f(56.0, 412.0, 704.0, 464.0, u),
+                &r.warm_sub,
+            );
+            let cta = rrect(210.0, 476.0, 550.0, 516.0, 9.0, u);
+            let hov = self.hovered == HitZone::JumpHoroThemes(target);
+            rt.FillRoundedRectangle(&cta, if hov { &r.cream } else { &r.sun_gold });
+            draw_txt(
+                rt,
+                &format!("Browse Photorealistic Horology ({}) →", HorologyTheme::COUNT),
+                &r.tf_btn,
+                cta.rect,
+                &r.dark_ink,
+            );
+            return;
+        };
+
+        let parts = self.draft_cfg.horology_parts(target);
+
+        // Row 1 (350..380): Bezel Finish (Auto + 9 finishes)
+        draw_txt(rt, "Bezel:", &r.tf_sub, rect_f(40.0, 350.0, 92.0, 380.0, u), &r.sun_gold);
+        for i in 0..=HorologyBezelFinish::ALL.len() {
+            let opt = if i == 0 {
+                None
+            } else {
+                Some(HorologyBezelFinish::ALL[i - 1])
+            };
+            let lbl = opt.map(|f| f.label()).unwrap_or("Auto");
+            let px0 = 94.0 + (i as f32) * 62.6;
+            let rr = rrect(px0, 350.0, px0 + 59.0, 380.0, 6.0, u);
+            let act = parts.bezel_finish == opt;
+            let hov = self.hovered == HitZone::SetHoroBezelFinish(target, opt);
+            rt.FillRoundedRectangle(
+                &rr,
+                if act {
+                    &r.sun_gold
+                } else if hov {
+                    &r.card_hover
+                } else {
+                    &r.card_active
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &rr,
+                if act || hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            draw_txt(rt, lbl, &r.tf_badge, rr.rect, if act { &r.dark_ink } else { &r.cream });
+        }
+
+        // Row 2 (384..414): Dial Finish (Auto + 8 finishes)
+        draw_txt(rt, "Dial:", &r.tf_sub, rect_f(40.0, 384.0, 92.0, 414.0, u), &r.sun_gold);
+        for i in 0..=HorologyDialFinish::ALL.len() {
+            let opt = if i == 0 {
+                None
+            } else {
+                Some(HorologyDialFinish::ALL[i - 1])
+            };
+            let lbl = opt.map(|f| f.label()).unwrap_or("Auto");
+            let px0 = 94.0 + (i as f32) * 69.5;
+            let rr = rrect(px0, 384.0, px0 + 66.0, 414.0, 6.0, u);
+            let act = parts.dial_finish == opt;
+            let hov = self.hovered == HitZone::SetHoroDialFinish(target, opt);
+            rt.FillRoundedRectangle(
+                &rr,
+                if act {
+                    &r.sun_gold
+                } else if hov {
+                    &r.card_hover
+                } else {
+                    &r.card_active
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &rr,
+                if act || hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            draw_txt(rt, lbl, &r.tf_badge, rr.rect, if act { &r.dark_ink } else { &r.cream });
+        }
+
+        // Helper closure for swatch strips
+        let draw_swatch_strip = |lbl: &str,
+                                 lx0: f32,
+                                 auto_x0: f32,
+                                 sw_x0: f32,
+                                 cy: f32,
+                                 cur: Option<u32>,
+                                 swatches: &[u32; 8],
+                                 make_hz: &dyn Fn(Option<u32>) -> HitZone| {
+            draw_txt(rt, lbl, &r.tf_sub, rect_f(lx0, cy - 15.0, auto_x0 - 2.0, cy + 15.0, u), &r.warm_sub);
+            let auto_rr = rrect(auto_x0, cy - 13.0, auto_x0 + 38.0, cy + 13.0, 6.0, u);
+            let a_act = cur.is_none();
+            let a_hov = self.hovered == make_hz(None);
+            rt.FillRoundedRectangle(
+                &auto_rr,
+                if a_act {
+                    &r.sun_gold
+                } else if a_hov {
+                    &r.card_hover
+                } else {
+                    &r.card_active
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &auto_rr,
+                if a_act || a_hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            draw_txt(rt, "Auto", &r.tf_badge, auto_rr.rect, if a_act { &r.dark_ink } else { &r.cream });
+
+            for (i, &rgb) in swatches.iter().enumerate() {
+                let (sr, sg, sb) = u32_to_rgb(rgb);
+                let pt = Vector2 { X: (sw_x0 + (i as f32) * 28.0) * u, Y: cy * u };
+                let s_act = cur == Some(rgb);
+                let s_hov = self.hovered == make_hz(Some(rgb));
+                if let Some(br) = solid(rt, rgb_u8(sr, sg, sb, 1.0)) {
+                    rt.FillEllipse(&D2D1_ELLIPSE { point: pt, radiusX: 9.5 * u, radiusY: 9.5 * u }, &br);
+                }
+                rt.DrawEllipse(
+                    &D2D1_ELLIPSE { point: pt, radiusX: 10.2 * u, radiusY: 10.2 * u },
+                    if s_act || s_hov { &r.sun_gold } else { &r.card_border },
+                    if s_act { 2.2 * u } else if s_hov { 1.6 * u } else { 1.0 * u },
+                    None,
+                );
+            }
+        };
+
+        // Row 3 (420..450): Bezel Color (left) & Dial Color (right)
+        draw_swatch_strip(
+            "Bezel:",
+            40.0,
+            106.0,
+            160.0,
+            435.0,
+            parts.bezel_rgb,
+            &HOROLOGY_BEZEL_SWATCHES,
+            &|c| HitZone::SetHoroBezelRgb(target, c),
+        );
+        draw_swatch_strip(
+            "Dial:",
+            386.0,
+            448.0,
+            502.0,
+            435.0,
+            parts.dial_rgb,
+            &HOROLOGY_DIAL_SWATCHES,
+            &|c| HitZone::SetHoroDialRgb(target, c),
+        );
+
+        // Row 4 (456..486): Hands Color (left) & Lume Color (right)
+        draw_swatch_strip(
+            "Hands:",
+            40.0,
+            106.0,
+            160.0,
+            471.0,
+            parts.hands_rgb,
+            &HOROLOGY_ACCENT_SWATCHES,
+            &|c| HitZone::SetHoroHandsRgb(target, c),
+        );
+        draw_swatch_strip(
+            "Lume:",
+            386.0,
+            448.0,
+            502.0,
+            471.0,
+            parts.lume_rgb,
+            &HOROLOGY_ACCENT_SWATCHES,
+            &|c| HitZone::SetHoroLumeRgb(target, c),
+        );
+
+        // Row 5 (494..528): Sapphire AR Glare slider (left) + Octagonal Bezel Screws toggle (right)
+        let t_glare = (parts.glare_pct as f32 / 100.0).clamp(0.0, 1.0);
+        draw_compact_slider(
+            rt,
+            r,
+            u,
+            "AR Glare",
+            40.0,
+            136.0,
+            318.0,
+            511.0,
+            t_glare,
+            &format!("{}%", parts.glare_pct),
+            self.hovered == HitZone::Slider(SliderKind::HoroGlare)
+                || self.dragging_slider == Some(SliderKind::HoroGlare),
+        );
+        draw_inline_toggle(
+            rt,
+            r,
+            u,
+            386.0,
+            494.0,
+            720.0,
+            528.0,
+            "Octagonal Bezel Screws",
+            parts.show_screws,
+            self.hovered == HitZone::ToggleHoroScrews(target),
+        );
+
+        // Row 6 (534..566): Cast Needle Shadows toggle (left) + Reset Materials button (right)
+        draw_inline_toggle(
+            rt,
+            r,
+            u,
+            40.0,
+            534.0,
+            490.0,
+            566.0,
+            "Cast Needle & Index Depth Shadows",
+            parts.show_needle_shadows,
+            self.hovered == HitZone::ToggleHoroNeedleShadows(target),
+        );
+        let rst_rr = rrect(502.0, 534.0, 720.0, 566.0, 8.0, u);
+        let rst_hov = self.hovered == HitZone::ResetHoroParts(target);
+        rt.FillRoundedRectangle(&rst_rr, if rst_hov { &r.card_hover } else { &r.card_active });
+        rt.DrawRoundedRectangle(&rst_rr, if rst_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+        draw_txt(
+            rt,
+            "Reset Horology Parts",
+            &r.tf_btn,
+            rst_rr.rect,
+            if rst_hov { &r.sun_gold } else { &r.cream },
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -19597,8 +21576,14 @@ fn is_mouse_over_interactive_preview_pos(
             | WidgetPage::ExtThemes(_)
             | WidgetPage::DateTimeFolders
             | WidgetPage::DateTimeThemes
+            | WidgetPage::AppsFolders
+            | WidgetPage::AppsThemes
+            | WidgetPage::VitalsFolders
+            | WidgetPage::VitalsThemes
             | WidgetPage::MusicFolders
             | WidgetPage::MusicThemes
+            | WidgetPage::CcFolders
+            | WidgetPage::CcThemes
             | WidgetPage::Gallery => my >= 120.0 && my <= 576.0,
             WidgetPage::CustomizeDateTime
             | WidgetPage::CustomizeApps
@@ -19629,16 +21614,15 @@ fn tb_folder_card_rect(i: usize) -> (f32, f32, f32, f32) {
 }
 
 fn suite_folder_card_rect(i: usize) -> (f32, f32, f32, f32) {
-    if i < 4 {
-        let col = i % 2;
-        let row = i / 2;
-        let x0 = if col == 0 { 26.0 } else { 388.0 };
-        let y0 = 134.0 + (row as f32) * 145.0;
-        (x0, y0, x0 + 346.0, y0 + 138.0)
+    if i < 2 {
+        let x0 = if i == 0 { 26.0 } else { 388.0 };
+        (x0, 134.0, x0 + 346.0, 134.0 + 138.0)
     } else {
-        let col = i - 4;
+        let j = i - 2;
+        let col = j % 3;
+        let row = j / 3;
         let x0 = 26.0 + (col as f32) * 240.0;
-        let y0 = 424.0;
+        let y0 = 279.0 + (row as f32) * 145.0;
         (x0, y0, x0 + 228.0, y0 + 138.0)
     }
 }
@@ -20016,6 +22000,50 @@ unsafe fn draw_suite_mini_desktop(
                     }
                 }
             }
+            SuiteCategory::Horology => {
+                // Precision Haute Horlogerie watchmaker sunburst & concentric bezel calibration rings
+                let cx = mx + mw * 0.50;
+                let cy = my + mh * 0.48;
+                if let Some(glow) = solid(rt, rgb_u8(ar, ag, ab, 0.22)) {
+                    rt.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: Vector2 { X: cx * u, Y: cy * u },
+                            radiusX: mw * 0.34 * u,
+                            radiusY: mh * 0.34 * u,
+                        },
+                        &glow,
+                    );
+                }
+                if let Some(ring) = solid(rt, rgb_u8(rr_c, rg_c, rb_c, 0.32)) {
+                    for &rf in &[0.22f32, 0.36f32] {
+                        rt.DrawEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 { X: cx * u, Y: cy * u },
+                                radiusX: mh * rf * u,
+                                radiusY: mh * rf * u,
+                            },
+                            &ring,
+                            0.75 * u,
+                            None,
+                        );
+                    }
+                    // 4 subtle cardinal watchmaker crosshair ticks
+                    for &(dx0, dy0, dx1, dy1) in &[
+                        (0.0, -0.44, 0.0, -0.34),
+                        (0.0, 0.34, 0.0, 0.44),
+                        (-0.44, 0.0, -0.34, 0.0),
+                        (0.34, 0.0, 0.44, 0.0),
+                    ] {
+                        rt.DrawLine(
+                            Vector2 { X: (cx + mh * dx0) * u, Y: (cy + mh * dy0) * u },
+                            Vector2 { X: (cx + mh * dx1) * u, Y: (cy + mh * dy1) * u },
+                            &ring,
+                            0.7 * u,
+                            None,
+                        );
+                    }
+                }
+            }
             SuiteCategory::All | SuiteCategory::Realistic => {}
         }
     }
@@ -20072,7 +22100,61 @@ unsafe fn draw_suite_mini_desktop(
         match kind {
             SuitePreviewWidgetKind::Clock(cs) => {
                 match cs {
-                    ClockStyle::ChronoDial
+                    ClockStyle::HoroPatekMoon => {
+                        // Centered lunar dial flanked by wing bars
+                        let r_d = (bh * 0.36).min(bw * 0.22).max(2.0);
+                        let dcx = bx0 + bw * 0.50;
+                        let dcy = by0 + bh * 0.50;
+                        if let Some(dbr) = solid(rt, rgb_u8(ar, ag, ab, 0.94)) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: dcx * u, Y: dcy * u }, radiusX: r_d * u, radiusY: r_d * u }, &dbr, 0.9 * u, None);
+                        }
+                        if let Some(tbr) = solid(rt, rgb_u8(tr, tg, tb, 0.85)) {
+                            rt.FillRectangle(&rect_f(bx0 + bw * 0.08, by0 + bh * 0.42, bx0 + bw * 0.26, by0 + bh * 0.58, u), &tbr);
+                            rt.FillRectangle(&rect_f(bx0 + bw * 0.74, by0 + bh * 0.42, bx0 + bw * 0.92, by0 + bh * 0.58, u), &tbr);
+                        }
+                    }
+                    ClockStyle::HoroDaytonaCeramic => {
+                        // 3 miniature white Panda sub-dials across bottom half
+                        let r_d = (bh * 0.22).min(bw * 0.12).max(1.5);
+                        if let Some(pbr) = solid(rt, rgb_u8(242, 245, 250, 0.92)) {
+                            for &fx in &[0.24f32, 0.50f32, 0.76f32] {
+                                rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: (bx0 + bw * fx) * u, Y: (by0 + bh * 0.66) * u }, radiusX: r_d * u, radiusY: r_d * u }, &pbr);
+                            }
+                        }
+                        if let Some(tbr) = solid(rt, rgb_u8(tr, tg, tb, 0.90)) {
+                            rt.FillRectangle(&rect_f(bx0 + bw * 0.08, by0 + bh * 0.16, bx0 + bw * 0.46, by0 + bh * 0.34, u), &tbr);
+                        }
+                    }
+                    ClockStyle::HoroSubmarinerEmerald | ClockStyle::HoroSapphireObsidian => {
+                        // Flipped right-hand watch dial + left readout
+                        let r_d = (bh * 0.36).min(bw * 0.22).max(2.0);
+                        let dcx = bx0 + bw * 0.74;
+                        let dcy = by0 + bh * 0.50;
+                        if let Some(dbr) = solid(rt, rgb_u8(ar, ag, ab, 0.92)) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: dcx * u, Y: dcy * u }, radiusX: r_d * u, radiusY: r_d * u }, &dbr, 0.85 * u, None);
+                        }
+                        if let Some(tbr) = solid(rt, rgb_u8(tr, tg, tb, 0.90)) {
+                            rt.FillRectangle(&rect_f(bx0 + bw * 0.10, by0 + bh * 0.36, bx0 + bw * 0.50, by0 + bh * 0.62, u), &tbr);
+                        }
+                    }
+                    ClockStyle::HoroForgedCarbon => {
+                        // Centered glowing orange RPM halo + bold center readout
+                        let r_d = (bh * 0.42).min(bw * 0.26).max(2.2);
+                        let dcx = bx0 + bw * 0.50;
+                        let dcy = by0 + bh * 0.54;
+                        if let Some(dbr) = solid(rt, rgb_u8(ar, ag, ab, 0.96)) {
+                            rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: dcx * u, Y: dcy * u }, radiusX: r_d * u, radiusY: r_d * u }, &dbr, 1.0 * u, None);
+                        }
+                        if let Some(tbr) = solid(rt, rgb_u8(tr, tg, tb, 0.94)) {
+                            rt.FillRectangle(&rect_f(bx0 + bw * 0.32, by0 + bh * 0.44, bx0 + bw * 0.68, by0 + bh * 0.64, u), &tbr);
+                        }
+                    }
+                    ClockStyle::HoroRoyalOak
+                    | ClockStyle::HoroTourbillonGold
+                    | ClockStyle::HoroIwcTitanium
+                    | ClockStyle::HoroBreguetPorcelain
+                    | ClockStyle::HoroWalnutRegulator
+                    | ClockStyle::ChronoDial
                     | ClockStyle::SwissChronometer
                     | ClockStyle::OrbitalEclipse
                     | ClockStyle::SunDialHorizon => {
@@ -20534,17 +22616,37 @@ mod tests {
         assert_eq!(sc.active_tab, StudioTab::SuiteGallery);
         assert_eq!(sc.suite_gallery_page, SuiteGalleryPage::Folders);
 
-        // Verify top-level 7 curated folder-like cards + "All Suites" button
+        // Verify top-level 8 curated folder-like cards (2+3+3) + "All Suites" button
         assert_eq!(sc.hit_test(650.0, 108.0), HitZone::OpenSuiteFolder(SuiteCategory::All));
-        assert_eq!(sc.hit_test(200.0, 200.0), HitZone::OpenSuiteFolder(SuiteCategory::Realistic));
-        assert_eq!(sc.hit_test(520.0, 200.0), HitZone::OpenSuiteFolder(SuiteCategory::Atelier));
-        assert_eq!(sc.hit_test(200.0, 340.0), HitZone::OpenSuiteFolder(SuiteCategory::Nature));
-        assert_eq!(sc.hit_test(520.0, 340.0), HitZone::OpenSuiteFolder(SuiteCategory::CyberTech));
+        assert_eq!(sc.hit_test(200.0, 200.0), HitZone::OpenSuiteFolder(SuiteCategory::Horology));
+        assert_eq!(sc.hit_test(520.0, 200.0), HitZone::OpenSuiteFolder(SuiteCategory::Realistic));
+        assert_eq!(sc.hit_test(140.0, 340.0), HitZone::OpenSuiteFolder(SuiteCategory::Atelier));
+        assert_eq!(sc.hit_test(380.0, 340.0), HitZone::OpenSuiteFolder(SuiteCategory::Nature));
+        assert_eq!(sc.hit_test(620.0, 340.0), HitZone::OpenSuiteFolder(SuiteCategory::CyberTech));
         assert_eq!(sc.hit_test(140.0, 480.0), HitZone::OpenSuiteFolder(SuiteCategory::Minimal));
         assert_eq!(sc.hit_test(380.0, 480.0), HitZone::OpenSuiteFolder(SuiteCategory::Retro));
         assert_eq!(sc.hit_test(620.0, 480.0), HitZone::OpenSuiteFolder(SuiteCategory::Dark));
         assert!(sc.render_d2d(&cfg));
         dump_dib_bmp(&sc.backbuf, &art_dir.join("suite_0_folders.bmp"));
+
+        // Open Photorealistic Horology folder (18 suites, 3 pages) & apply Royal Oak 316L Atelier
+        sc.activate_zone(HitZone::OpenSuiteFolder(SuiteCategory::Horology), &mut cfg);
+        assert_eq!(sc.suite_gallery_page, SuiteGalleryPage::Collection);
+        let h_c0 = sc.hit_test(200.0, 200.0);
+        assert_eq!(h_c0, HitZone::ApplySuite(54));
+        let cmd_h = sc.activate_zone(h_c0, &mut cfg);
+        assert!(matches!(cmd_h, SettingsCommand::SuiteApplied));
+        assert_eq!(cfg.active_suite, "horo_royal_oak_atelier");
+        assert_eq!(cfg.dt_style, ClockStyle::HoroRoyalOak);
+        assert_eq!(cfg.wallpaper_path, r"C:\Users\demo\my_wallpaper.mp4");
+        assert!(sc.render_d2d(&cfg));
+        sc.activate_zone(HitZone::ScrollSuitesNext, &mut cfg);
+        assert_eq!(sc.suite_page, 1);
+        assert!(sc.render_d2d(&cfg));
+        sc.activate_zone(HitZone::ScrollSuitesNext, &mut cfg);
+        assert_eq!(sc.suite_page, 2);
+        assert!(sc.render_d2d(&cfg));
+        sc.activate_zone(HitZone::OpenSuiteFolders, &mut cfg);
 
         // Open Nature folder & apply Autumn Sanctuary (card 0)
         sc.activate_zone(HitZone::OpenSuiteFolder(SuiteCategory::Nature), &mut cfg);
@@ -20630,27 +22732,30 @@ mod tests {
         assert!(sc.render_d2d(&cfg));
         dump_dib_bmp(&sc.backbuf, &art_dir.join("realistic_3_docks_p3.bmp"));
 
-        // Realistic Clock Themes (6)
+        // Horology & Realistic Clock Themes
         sc.active_tab = StudioTab::DesktopWidgets;
         sc.widget_page = WidgetPage::DateTimeFolders;
         assert_eq!(sc.hit_test(320.0, 108.0), HitZone::OpenClockFolder(ClockThemeFolder::All));
-        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenClockFolder(ClockThemeFolder::Realistic));
+        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenClockFolder(ClockThemeFolder::Horology));
+        assert_eq!(sc.hit_test(180.0, 340.0), HitZone::OpenClockFolder(ClockThemeFolder::Realistic));
         sc.activate_zone(HitZone::OpenClockFolder(ClockThemeFolder::Realistic), &mut cfg);
         assert!(sc.render_d2d(&cfg));
         dump_dib_bmp(&sc.backbuf, &art_dir.join("realistic_4_clocks.bmp"));
 
-        // Realistic Music Themes (6)
+        // Horology & Realistic Music Themes
         sc.widget_page = WidgetPage::MusicFolders;
         assert_eq!(sc.hit_test(320.0, 108.0), HitZone::OpenMusicFolder(MusicThemeFolder::All));
-        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenMusicFolder(MusicThemeFolder::Realistic));
+        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenMusicFolder(MusicThemeFolder::Horology));
+        assert_eq!(sc.hit_test(180.0, 340.0), HitZone::OpenMusicFolder(MusicThemeFolder::Realistic));
         sc.activate_zone(HitZone::OpenMusicFolder(MusicThemeFolder::Realistic), &mut cfg);
         assert!(sc.render_d2d(&cfg));
         dump_dib_bmp(&sc.backbuf, &art_dir.join("realistic_5_music.bmp"));
 
-        // Realistic Extended Widget Themes (8)
+        // Horology & Realistic Extended Widget Themes
         sc.widget_page = WidgetPage::ExtFolders(ExtWidgetId::Weather);
         assert_eq!(sc.hit_test(320.0, 108.0), HitZone::OpenExtFolder(ExtWidgetId::Weather, ExtThemeFolder::All));
-        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenExtFolder(ExtWidgetId::Weather, ExtThemeFolder::RealisticMaterials));
+        assert_eq!(sc.hit_test(180.0, 200.0), HitZone::OpenExtFolder(ExtWidgetId::Weather, ExtThemeFolder::Horology));
+        assert_eq!(sc.hit_test(180.0, 340.0), HitZone::OpenExtFolder(ExtWidgetId::Weather, ExtThemeFolder::RealisticMaterials));
         sc.activate_zone(HitZone::OpenExtFolder(ExtWidgetId::Weather, ExtThemeFolder::RealisticMaterials), &mut cfg);
         assert!(sc.render_d2d(&cfg));
         dump_dib_bmp(&sc.backbuf, &art_dir.join("realistic_6_ext_p1.bmp"));
@@ -23705,6 +25810,768 @@ mod tests {
             crate::dock_themes::dock_spec(cfg.tb_theme).layout,
             crate::config::DockLayoutKind::IndependentOrbs
         );
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    fn count_nonzero_dib_pixels(buf: &DibBuffer) -> usize {
+        assert!(!buf.bits.is_null() && buf.width > 0 && buf.height > 0);
+        let px_count = (buf.width as usize) * (buf.height as usize);
+        let slice = unsafe { std::slice::from_raw_parts(buf.bits as *const u32, px_count) };
+        slice.iter().filter(|&&px| px != 0).count()
+    }
+
+    #[test]
+    fn horology_config_ini_roundtrip_and_v208_compat() {
+        use crate::config::{parse_config_ini, serialize_config_ini};
+
+        // 1. Every Horology theme variant across Clock (10), Music (10), Ext (10), Vitals (5..=14), CC (4..=13), Apps (4..=13)
+        for i in 0..HorologyTheme::COUNT {
+            let mut cfg = AppConfig::default();
+            cfg.dt_style = ClockStyle::HOROLOGY_FOLDER[i];
+            cfg.music_style = MusicStyle::HOROLOGY_FOLDER[i];
+            cfg.vitals_style = 5 + (i as u8);
+            cfg.cc_tile_style = 4 + (i as u8);
+            cfg.apps_tile_shape = 4 + (i as u8);
+            for id in ExtWidgetId::ALL {
+                cfg.ext_widgets[id.idx()].theme = ExtWidgetTheme::HOROLOGY_FOLDER[i];
+            }
+            let ini = serialize_config_ini(&cfg);
+            let parsed = parse_config_ini(&ini).expect("Horology INI round-trip must parse");
+            assert_eq!(parsed.dt_style, ClockStyle::HOROLOGY_FOLDER[i]);
+            assert_eq!(parsed.music_style, MusicStyle::HOROLOGY_FOLDER[i]);
+            assert_eq!(parsed.vitals_style, 5 + (i as u8));
+            assert_eq!(parsed.cc_tile_style, 4 + (i as u8));
+            assert_eq!(parsed.apps_tile_shape, 4 + (i as u8));
+            for id in ExtWidgetId::ALL {
+                assert_eq!(parsed.ext_widgets[id.idx()].theme, ExtWidgetTheme::HOROLOGY_FOLDER[i]);
+            }
+        }
+
+        // 2. Per-part Horology material customization round-trip across Core + Extended widgets
+        let mut cfg = AppConfig::default();
+        cfg.dt_horology = HorologyPartConfig {
+            bezel_finish: Some(HorologyBezelFinish::RoseGold),
+            bezel_rgb: Some(0xD89A72),
+            dial_finish: Some(HorologyDialFinish::PorcelainIvory),
+            dial_rgb: Some(0xF6F0E4),
+            hands_rgb: Some(0x1E4FA8),
+            lume_rgb: Some(0x52E5A8),
+            glare_pct: 74,
+            show_screws: false,
+            show_needle_shadows: true,
+        };
+        cfg.apps_horology = HorologyPartConfig {
+            bezel_finish: Some(HorologyBezelFinish::ForgedCarbon),
+            bezel_rgb: Some(0x202226),
+            dial_finish: Some(HorologyDialFinish::SmokedSkeleton),
+            dial_rgb: None,
+            hands_rgb: Some(0xFF4F2B),
+            lume_rgb: Some(0xFFD24D),
+            glare_pct: 25,
+            show_screws: true,
+            show_needle_shadows: false,
+        };
+        cfg.vitals_horology.glare_pct = 90;
+        cfg.vitals_horology.bezel_finish = Some(HorologyBezelFinish::BeadTitanium);
+        cfg.music_horology.dial_finish = Some(HorologyDialFinish::CathedralWalnut);
+        cfg.cc_horology.show_screws = false;
+        cfg.ext_widgets[ExtWidgetId::Weather.idx()].horology = HorologyPartConfig {
+            bezel_finish: Some(HorologyBezelFinish::MatteCeramic),
+            bezel_rgb: Some(0x14171D),
+            dial_finish: Some(HorologyDialFinish::TapisserieGuilloche),
+            dial_rgb: Some(0x102840),
+            hands_rgb: Some(0xF0F4FA),
+            lume_rgb: Some(0x38D6FF),
+            glare_pct: 62,
+            show_screws: true,
+            show_needle_shadows: true,
+        };
+        cfg.ext_widgets[ExtWidgetId::RecycleBin.idx()].horology.glare_pct = 12;
+
+        let ini = serialize_config_ini(&cfg);
+        let parsed = parse_config_ini(&ini).expect("HorologyPartConfig INI round-trip must parse");
+        assert_eq!(parsed.dt_horology, cfg.dt_horology);
+        assert_eq!(parsed.apps_horology, cfg.apps_horology);
+        assert_eq!(parsed.vitals_horology, cfg.vitals_horology);
+        assert_eq!(parsed.music_horology, cfg.music_horology);
+        assert_eq!(parsed.cc_horology, cfg.cc_horology);
+        assert_eq!(parsed.ext_widgets[ExtWidgetId::Weather.idx()].horology, cfg.ext_widgets[ExtWidgetId::Weather.idx()].horology);
+        assert_eq!(parsed.ext_widgets[ExtWidgetId::RecycleBin.idx()].horology, cfg.ext_widgets[ExtWidgetId::RecycleBin.idx()].horology);
+
+        // 3. v2.0.8 INI without any horology keys loads cleanly with defaults
+        let legacy_ini = "[AutumnStudioV5]\nwidgets_enabled=1\nvitals_style=4\ncc_tile_style=2\napps_tile_shape=1\ndt_style=glass\n";
+        let legacy = parse_config_ini(legacy_ini).expect("Legacy v2.0.8 INI must load cleanly");
+        assert_eq!(legacy.vitals_style, 4);
+        assert_eq!(legacy.cc_tile_style, 2);
+        assert_eq!(legacy.apps_tile_shape, 1);
+        assert_eq!(legacy.dt_horology, HorologyPartConfig::default());
+        assert_eq!(legacy.ext_widgets[0].horology, HorologyPartConfig::default());
+    }
+
+    #[test]
+    fn horology_all_19_widgets_x_10_themes_d2d_smoke_and_lru_cache() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        crate::horology_pbr::evict_all();
+
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(640, 420));
+
+        let d2d = sc.d2d_factory.as_ref().expect("D2D factory").clone();
+        let dw = sc.dwrite_factory.as_ref().expect("DW factory").clone();
+        let dc_rt = sc.dc_rt.as_ref().expect("D2D DC RT").clone();
+        let rt: windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = dc_rt.clone().into();
+        let bind_rc = RECT { left: 0, top: 0, right: 640, bottom: 420 };
+        let clear_zero = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+
+        let media = MediaSnapshot::default();
+        let cc = CcSnapshot::default();
+        let ext_state = ExtRuntimeState::new_studio_preview();
+        let bands = STUDIO_PREVIEW_BANDS;
+
+        let mut cfg = AppConfig::default();
+        cfg.apps = vec![
+            AppShortcut { name: "Code".to_string(), path: r"C:\Windows\System32\cmd.exe".to_string(), offset_x: 0, offset_y: 0 },
+            AppShortcut { name: "Files".to_string(), path: r"C:\Windows\explorer.exe".to_string(), offset_x: 0, offset_y: 0 },
+            AppShortcut { name: "Web".to_string(), path: r"C:\Windows\notepad.exe".to_string(), offset_x: 0, offset_y: 0 },
+        ];
+        let (offsets, _, _) = apps_layout_offsets(3, 3);
+        let app_labels = ["Code", "Files", "Web"];
+        let app_tiles: Vec<AppTileDrawItem<'_>> = app_labels.iter().enumerate().map(|(i, &lbl)| AppTileDrawItem {
+            label: lbl,
+            bmp: None,
+            rel_x: offsets[i].0,
+            rel_y: offsets[i].1,
+            hovered: false,
+            is_add_tile: false,
+        }).collect();
+
+        // Render all 19 widgets × all 10 Horology themes (190 bespoke renders!)
+        for theme_idx in 0..HorologyTheme::COUNT {
+            // 1. Clock
+            cfg.apply_clock_style_preset(ClockStyle::HOROLOGY_FOLDER[theme_idx]);
+            let mut dt_boxes = [ClockElemBox::default(); 8];
+            unsafe {
+                dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).expect("BindDC");
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_datetime_widget_with_boxes(&rt, &dw, None, 40.0, 40.0, 1.0, &cfg, false, Some(&mut dt_boxes));
+                rt.EndDraw(None, None).expect("EndDraw Clock");
+            }
+            assert!(count_nonzero_dib_pixels(&sc.backbuf) > 1000, "Clock Horology #{} must draw pixels", theme_idx);
+            assert!(dt_boxes[ClockElemId::Card.idx()].visible, "Clock Horology #{} must record Card box", theme_idx);
+
+            // 2. Music
+            cfg.apply_music_style_preset(MusicStyle::HOROLOGY_FOLDER[theme_idx]);
+            let mut m_boxes = [ClockElemBox::default(); 6];
+            unsafe {
+                dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).expect("BindDC");
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_music_widget_with_boxes(&rt, &dw, Some(&d2d), None, 40.0, 40.0, 1.0, &cfg, &media, &bands, None, WidgetHitZone::None, None, Some(&mut m_boxes));
+                rt.EndDraw(None, None).expect("EndDraw Music");
+            }
+            assert!(count_nonzero_dib_pixels(&sc.backbuf) > 1000, "Music Horology #{} must draw pixels", theme_idx);
+            assert!(m_boxes[5].visible, "Music Horology #{} must record Card box", theme_idx);
+
+            // 3. Vitals
+            cfg.vitals_style = 5 + (theme_idx as u8);
+            cfg.vitals_show_plate = true;
+            let mut v_boxes = [ClockElemBox::default(); 6];
+            unsafe {
+                dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).expect("BindDC");
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_vitals_widget_with_telemetry_and_boxes(&rt, &dw, Some(&d2d), None, 40.0, 40.0, 1.0, &cfg, 28.0, 42.0, 61.0, 56.0, 88.0, WidgetHitZone::None, None, Some(&mut v_boxes));
+                rt.EndDraw(None, None).expect("EndDraw Vitals");
+            }
+            assert!(count_nonzero_dib_pixels(&sc.backbuf) > 1000, "Vitals Horology #{} must draw pixels", theme_idx);
+            assert!(v_boxes[5].visible, "Vitals Horology #{} must record Card box", theme_idx);
+
+            // 4. Control Center
+            cfg.cc_tile_style = 4 + (theme_idx as u8);
+            cfg.cc_show_plate = true;
+            let mut cc_boxes = [ClockElemBox::default(); 6];
+            unsafe {
+                dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).expect("BindDC");
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_control_center_widget_with_boxes(&rt, &dw, Some(&d2d), None, 40.0, 20.0, 1.0, &cfg, &cc, 0.0, WidgetHitZone::None, None, None, None, Some(&mut cc_boxes));
+                rt.EndDraw(None, None).expect("EndDraw CC");
+            }
+            assert!(count_nonzero_dib_pixels(&sc.backbuf) > 1000, "CC Horology #{} must draw pixels", theme_idx);
+            assert!(cc_boxes[5].visible, "CC Horology #{} must record Card box", theme_idx);
+
+            // 5. Quick Apps
+            cfg.apps_tile_shape = 4 + (theme_idx as u8);
+            cfg.apps_show_plate = true;
+            let mut ap_boxes = [ClockElemBox::default(); 5];
+            unsafe {
+                dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).expect("BindDC");
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_apps_widget_with_boxes(&rt, &dw, None, 40.0, 40.0, 1.0, &cfg, &app_tiles, None, Some(&mut ap_boxes));
+                rt.EndDraw(None, None).expect("EndDraw Apps");
+            }
+            assert!(count_nonzero_dib_pixels(&sc.backbuf) > 1000, "Apps Horology #{} must draw pixels", theme_idx);
+            assert!(ap_boxes[4].visible, "Apps Horology #{} must record Card box", theme_idx);
+
+            // 6..19. All 14 Extended Widgets
+            for id in ExtWidgetId::ALL {
+                cfg.ext_widgets[id.idx()].apply_theme_preset(ExtWidgetTheme::HOROLOGY_FOLDER[theme_idx]);
+                let mut e_boxes = [ClockElemBox::default(); 6];
+                unsafe {
+                    dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).expect("BindDC");
+                    rt.BeginDraw();
+                    rt.Clear(Some(&clear_zero));
+                    draw_ext_widget_with_boxes(&rt, &dw, Some(&d2d), None, 30.0, 30.0, 1.0, id, &cfg, &ext_state, &cc, WidgetHitZone::None, None, Some(&mut e_boxes));
+                    rt.EndDraw(None, None).expect("EndDraw Ext");
+                }
+                assert!(
+                    count_nonzero_dib_pixels(&sc.backbuf) > 400,
+                    "Ext {:?} Horology #{} must draw visible instrument pixels",
+                    id,
+                    theme_idx
+                );
+                assert!(
+                    e_boxes[5].visible,
+                    "Ext {:?} Horology #{} must record Pen & Canvas Card box",
+                    id,
+                    theme_idx
+                );
+            }
+        }
+
+        // Verify Horology LRU GPU texture cache stayed strictly bounded (<= 16) and evicts cleanly
+        let cache_len = crate::horology_pbr::cache_len_for_tests();
+        assert!(cache_len > 0 && cache_len <= 16, "Horology RT LRU cache must be bounded (got {})", cache_len);
+        crate::horology_pbr::evict_all();
+        assert_eq!(crate::horology_pbr::cache_len_for_tests(), 0, "evict_all must release all cached RT textures");
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn horology_strict_all_off_draws_zero_pixels() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(520, 360));
+
+        let d2d = sc.d2d_factory.as_ref().expect("D2D factory").clone();
+        let dw = sc.dwrite_factory.as_ref().expect("DW factory").clone();
+        let dc_rt = sc.dc_rt.as_ref().expect("D2D DC RT").clone();
+        let rt: windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = dc_rt.clone().into();
+        let bind_rc = RECT { left: 0, top: 0, right: 520, bottom: 360 };
+        let clear_zero = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+
+        let media = MediaSnapshot::default();
+        let cc = CcSnapshot::default();
+        let ext_state = ExtRuntimeState::new_studio_preview();
+        let bands = STUDIO_PREVIEW_BANDS;
+
+        // 1. Clock Horology All OFF
+        let mut cfg = AppConfig::default();
+        cfg.apply_clock_style_preset(ClockStyle::HoroRoyalOak);
+        cfg.dt_show_plate = false;
+        cfg.dt_show_clock = false;
+        cfg.dt_show_weekday = false;
+        cfg.dt_show_date = false;
+        cfg.dt_show_orb = false;
+        cfg.dt_show_spine = false;
+        cfg.dt_show_seconds = false;
+        cfg.dt_show_ampm = false;
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_datetime_widget_with_boxes(&rt, &dw, None, 20.0, 20.0, 1.0, &cfg, false, None);
+            rt.EndDraw(None, None).unwrap();
+        }
+        assert_eq!(count_nonzero_dib_pixels(&sc.backbuf), 0, "Horology Clock with all elements OFF must draw 0 pixels");
+
+        // 2. Vitals Horology All OFF
+        cfg.vitals_style = 5;
+        cfg.vitals_show_plate = false;
+        cfg.vitals_show_cpu = false;
+        cfg.vitals_show_ram = false;
+        cfg.vitals_show_power = false;
+        cfg.vitals_show_buttons = false;
+        cfg.vitals_show_bars = false;
+        cfg.vitals_show_dividers = false;
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_vitals_widget_with_telemetry_and_boxes(&rt, &dw, Some(&d2d), None, 20.0, 20.0, 1.0, &cfg, 25.0, 35.0, 50.0, 52.0, 90.0, WidgetHitZone::None, None, None);
+            rt.EndDraw(None, None).unwrap();
+        }
+        assert_eq!(count_nonzero_dib_pixels(&sc.backbuf), 0, "Horology Vitals with all elements OFF must draw 0 pixels");
+
+        // 3. Music Horology All OFF
+        cfg.apply_music_style_preset(MusicStyle::HoroPatekMoonDeck);
+        cfg.music_show_plate = false;
+        cfg.music_show_cover = false;
+        cfg.music_show_title = false;
+        cfg.music_show_artist = false;
+        cfg.music_show_viz = false;
+        cfg.music_show_controls = false;
+        cfg.music_show_badge = false;
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_music_widget_with_boxes(&rt, &dw, Some(&d2d), None, 20.0, 20.0, 1.0, &cfg, &media, &bands, None, WidgetHitZone::None, None, None);
+            rt.EndDraw(None, None).unwrap();
+        }
+        assert_eq!(count_nonzero_dib_pixels(&sc.backbuf), 0, "Horology Music with all elements OFF must draw 0 pixels");
+
+        // 4. Control Center Horology All OFF
+        cfg.cc_tile_style = 4;
+        cfg.cc_show_plate = false;
+        cfg.cc_show_tiles = false;
+        cfg.cc_show_bright = false;
+        cfg.cc_show_vol = false;
+        cfg.cc_show_labels = false;
+        cfg.cc_show_scrollbar = false;
+        cfg.cc_show_dividers = false;
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_control_center_widget_with_boxes(&rt, &dw, Some(&d2d), None, 20.0, 20.0, 1.0, &cfg, &cc, 0.0, WidgetHitZone::None, None, None, None, None);
+            rt.EndDraw(None, None).unwrap();
+        }
+        assert_eq!(count_nonzero_dib_pixels(&sc.backbuf), 0, "Horology Control Center with all elements OFF must draw 0 pixels");
+
+        // 5. Apps Horology All OFF
+        cfg.apps_tile_shape = 4;
+        cfg.apps_show_plate = false;
+        cfg.apps_show_tiles = false;
+        cfg.apps_show_labels = false;
+        cfg.apps_show_dots = false;
+        let sample_tiles = [AppTileDrawItem { label: "Code", bmp: None, rel_x: 0.0, rel_y: 0.0, hovered: false, is_add_tile: false }];
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_apps_widget_with_boxes(&rt, &dw, None, 20.0, 20.0, 1.0, &cfg, &sample_tiles, None, None);
+            rt.EndDraw(None, None).unwrap();
+        }
+        assert_eq!(count_nonzero_dib_pixels(&sc.backbuf), 0, "Horology Apps with all elements OFF must draw 0 pixels");
+
+        // 6. All 14 Extended Widgets Horology All OFF
+        for id in ExtWidgetId::ALL {
+            let ew = &mut cfg.ext_widgets[id.idx()];
+            ew.apply_theme_preset(ExtWidgetTheme::HoroRoyalOak);
+            ew.show_plate = false;
+            ew.show_header = false;
+            ew.show_primary = false;
+            ew.show_icon = false;
+            ew.show_dividers = false;
+            ew.show_footer = false;
+            unsafe {
+                dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_ext_widget_with_boxes(&rt, &dw, Some(&d2d), None, 20.0, 20.0, 1.0, id, &cfg, &ext_state, &cc, WidgetHitZone::None, None, None);
+                rt.EndDraw(None, None).unwrap();
+            }
+            assert_eq!(count_nonzero_dib_pixels(&sc.backbuf), 0, "Horology Ext {:?} with all elements OFF must draw 0 pixels", id);
+        }
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn horology_interactive_hitboxes_aligned() {
+        use crate::widgets_extra::{audio_switcher_layout, hit_test_ext_widget_with_audio, pomodoro_button_layout};
+
+        // 1. Pomodoro Horology Start/Pause & Reset crown pushers match hit_test
+        let mut cfg = AppConfig::default();
+        cfg.ext_widgets[ExtWidgetId::Pomodoro.idx()].apply_theme_preset(ExtWidgetTheme::HoroDaytonaCeramic);
+        let pomo_cfg = &cfg.ext_widgets[ExtWidgetId::Pomodoro.idx()];
+        let pomo_lo = pomodoro_button_layout(pomo_cfg);
+        let (sx0, sy0, sx1, sy1) = pomo_lo.start_btn.expect("Start btn");
+        let (rx0, ry0, rx1, ry1) = pomo_lo.reset_btn.expect("Reset btn");
+        assert_eq!(
+            hit_test_ext_widget_with_audio(ExtWidgetId::Pomodoro, pomo_cfg, 0, (sx0 + sx1) * 0.5, (sy0 + sy1) * 0.5),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Pomodoro, 0)
+        );
+        assert_eq!(
+            hit_test_ext_widget_with_audio(ExtWidgetId::Pomodoro, pomo_cfg, 0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5),
+            WidgetHitZone::ExtBtn(ExtWidgetId::Pomodoro, 1)
+        );
+
+        // 2. Audio Switcher Horology output buttons & mute match hit_test
+        cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].apply_theme_preset(ExtWidgetTheme::HoroIwcTitanium);
+        let aud_cfg = &cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()];
+        let aud_lo = audio_switcher_layout(aud_cfg, 3);
+        let (d0x0, d0y0, d0x1, d0y1) = aud_lo.dev_btn_0.expect("dev_btn_0");
+        assert_eq!(
+            hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, aud_cfg, 3, (d0x0 + d0x1) * 0.5, (d0y0 + d0y1) * 0.5),
+            WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 3)
+        );
+        let (d1x0, d1y0, d1x1, d1y1) = aud_lo.dev_btn_1.expect("dev_btn_1");
+        assert_eq!(
+            hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, aud_cfg, 3, (d1x0 + d1x1) * 0.5, (d1y0 + d1y1) * 0.5),
+            WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 4)
+        );
+        let (mx0, my0, mx1, my1) = aud_lo.vol_mute_btn.expect("vol_mute_btn");
+        assert_eq!(
+            hit_test_ext_widget_with_audio(ExtWidgetId::AudioSwitcher, aud_cfg, 3, (mx0 + mx1) * 0.5, (my0 + my1) * 0.5),
+            WidgetHitZone::ExtBtn(ExtWidgetId::AudioSwitcher, 1)
+        );
+
+        // 3. Music Horology transport pusher rects inside logical bounds
+        cfg.apply_music_style_preset(MusicStyle::HoroRoyalOakDeck);
+        let (mw, mh) = music_logical_size(&cfg);
+        let rects = crate::widgets_phase2::music_transport_rects(&cfg);
+        for (x0, y0, x1, y1) in rects {
+            assert!(x0 >= 0.0 && x1 <= mw && y0 >= 0.0 && y1 <= mh, "Music Horology transport rect must lie inside ({}, {})", mw, mh);
+        }
+    }
+
+    #[test]
+    fn horology_studio_galleries_and_parts_materials_customization() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(1140, 972));
+
+        let mut cfg = AppConfig::default();
+        sc.draft_cfg = cfg.clone();
+        sc.draft_initialized = true;
+        sc.active_tab = StudioTab::DesktopWidgets;
+        sc.widget_page = WidgetPage::Gallery;
+
+        // 1. Gallery cards navigate to Folder Galleries for Control Center, Quick Apps & Vitals
+        assert_eq!(sc.hit_test(520.0, 200.0), HitZone::OpenCcFolders);
+        assert_eq!(sc.hit_test(180.0, 350.0), HitZone::OpenAppsFolders);
+        assert_eq!(sc.hit_test(300.0, 500.0), HitZone::OpenVitalsFolders);
+
+        // 2. Render new Vitals, Control Center & Quick Apps Folder + Theme galleries
+        for (open_fld, horo_fld, open_pg, select_hz) in [
+            (HitZone::OpenVitalsFolders, HitZone::OpenVitalsFolder(VitalsThemeFolder::Horology), WidgetPage::VitalsThemes, HitZone::SelectVitalsTheme(5)),
+            (HitZone::OpenCcFolders, HitZone::OpenCcFolder(CcThemeFolder::Horology), WidgetPage::CcThemes, HitZone::SelectCcTheme(4)),
+            (HitZone::OpenAppsFolders, HitZone::OpenAppsFolder(AppsThemeFolder::Horology), WidgetPage::AppsThemes, HitZone::SelectAppsTheme(4)),
+        ] {
+            sc.activate_zone(open_fld, &mut cfg);
+            assert!(sc.render_d2d(&cfg), "Folder page {:?} must render", open_fld);
+            assert_eq!(sc.hit_test(380.0, 240.0), horo_fld);
+            sc.activate_zone(horo_fld, &mut cfg);
+            assert_eq!(sc.widget_page, open_pg);
+            assert!(sc.render_d2d(&cfg), "Theme gallery {:?} must render", open_pg);
+            let cmd = sc.activate_zone(select_hz, &mut cfg);
+            assert!(matches!(cmd, SettingsCommand::WidgetsConfigUpdated));
+        }
+        assert_eq!(cfg.vitals_style, 5);
+        assert_eq!(cfg.cc_tile_style, 4);
+        assert_eq!(cfg.apps_tile_shape, 4);
+
+        // 3. Unified Materials sub-tab on Clock: non-Horology shows 1-click JumpHoroThemes CTA
+        cfg.dt_style = ClockStyle::ChronoDial;
+        sc.draft_cfg.dt_style = ClockStyle::ChronoDial;
+        sc.widget_page = WidgetPage::CustomizeDateTime;
+        assert_eq!(sc.hit_test(650.0, 322.0), HitZone::DtSubTabBtn(DtSubTab::Materials));
+        sc.activate_zone(HitZone::DtSubTabBtn(DtSubTab::Materials), &mut cfg);
+        assert_eq!(sc.dt_sub_tab, DtSubTab::Materials);
+        assert!(sc.render_d2d(&cfg), "Non-Horology Materials prompt must render");
+        assert_eq!(sc.hit_test(380.0, 496.0), HitZone::JumpHoroThemes(WidgetCanvasTarget::DateTime));
+        sc.activate_zone(HitZone::JumpHoroThemes(WidgetCanvasTarget::DateTime), &mut cfg);
+        assert_eq!(sc.widget_page, WidgetPage::DateTimeThemes);
+        assert_eq!(sc.clock_folder, ClockThemeFolder::Horology);
+
+        // 4. Select Horology theme on Clock -> customize Bezel, Dial, Hands, Lume, Glare, Screws, Shadows
+        sc.activate_zone(HitZone::SelectClockTheme(ClockStyle::HoroRoyalOak), &mut cfg);
+        sc.widget_page = WidgetPage::CustomizeDateTime;
+        sc.dt_sub_tab = DtSubTab::Materials;
+        assert!(sc.render_d2d(&cfg), "Active Horology Materials sub-tab must render");
+
+        // Click RoseGold bezel pill (i=2 -> 94 + 2*62.6 = 219.2..278.2)
+        assert_eq!(
+            sc.hit_test(245.0, 365.0),
+            HitZone::SetHoroBezelFinish(WidgetCanvasTarget::DateTime, Some(HorologyBezelFinish::RoseGold))
+        );
+        sc.activate_zone(
+            HitZone::SetHoroBezelFinish(WidgetCanvasTarget::DateTime, Some(HorologyBezelFinish::RoseGold)),
+            &mut cfg,
+        );
+        assert_eq!(cfg.dt_horology.bezel_finish, Some(HorologyBezelFinish::RoseGold));
+
+        // Click Porcelain dial pill (i=4 -> 94 + 4*69.5 = 372..438)
+        assert_eq!(
+            sc.hit_test(400.0, 398.0),
+            HitZone::SetHoroDialFinish(WidgetCanvasTarget::DateTime, Some(HorologyDialFinish::PorcelainIvory))
+        );
+        sc.activate_zone(
+            HitZone::SetHoroDialFinish(WidgetCanvasTarget::DateTime, Some(HorologyDialFinish::PorcelainIvory)),
+            &mut cfg,
+        );
+        assert_eq!(cfg.dt_horology.dial_finish, Some(HorologyDialFinish::PorcelainIvory));
+
+        // Toggle Octagonal Screws & Cast Needle Shadows
+        assert_eq!(sc.hit_test(520.0, 510.0), HitZone::ToggleHoroScrews(WidgetCanvasTarget::DateTime));
+        sc.activate_zone(HitZone::ToggleHoroScrews(WidgetCanvasTarget::DateTime), &mut cfg);
+        assert!(!cfg.dt_horology.show_screws);
+        assert_eq!(sc.hit_test(200.0, 550.0), HitZone::ToggleHoroNeedleShadows(WidgetCanvasTarget::DateTime));
+        sc.activate_zone(HitZone::ToggleHoroNeedleShadows(WidgetCanvasTarget::DateTime), &mut cfg);
+        assert!(!cfg.dt_horology.show_needle_shadows);
+
+        // Adjust AR Glare slider
+        assert_eq!(sc.hit_test(220.0, 510.0), HitZone::Slider(SliderKind::HoroGlare));
+        sc.update_slider_from_x(SliderKind::HoroGlare, 227.0, &mut cfg);
+        assert_eq!(sc.draft_cfg.dt_horology.glare_pct, 50);
+
+        // Confirm per-widget isolation: Weather Horology parts remain default
+        assert_eq!(cfg.ext_widgets[ExtWidgetId::Weather.idx()].horology, HorologyPartConfig::default());
+
+        // 5. Extended Widget (Weather) Materials sub-tab works identically and independently
+        sc.activate_zone(HitZone::SelectExtTheme(ExtWidgetId::Weather, ExtWidgetTheme::HoroBreguetPorcelain), &mut cfg);
+        sc.widget_page = WidgetPage::CustomizeExt(ExtWidgetId::Weather);
+        assert_eq!(sc.hit_test(640.0, 318.0), HitZone::ExtSubTabBtn(ExtSubTab::Materials));
+        sc.activate_zone(HitZone::ExtSubTabBtn(ExtSubTab::Materials), &mut cfg);
+        assert!(sc.render_d2d(&cfg), "Ext Weather Horology Materials sub-tab must render");
+        sc.activate_zone(
+            HitZone::SetHoroHandsRgb(WidgetCanvasTarget::Ext(ExtWidgetId::Weather), Some(HOROLOGY_ACCENT_SWATCHES[0])),
+            &mut cfg,
+        );
+        assert_eq!(cfg.ext_widgets[ExtWidgetId::Weather.idx()].horology.hands_rgb, Some(HOROLOGY_ACCENT_SWATCHES[0]));
+
+        // 6. Reset Horology Parts restores Clock defaults cleanly without touching Weather
+        sc.widget_page = WidgetPage::CustomizeDateTime;
+        sc.dt_sub_tab = DtSubTab::Materials;
+        assert_eq!(sc.hit_test(600.0, 550.0), HitZone::ResetHoroParts(WidgetCanvasTarget::DateTime));
+        sc.activate_zone(HitZone::ResetHoroParts(WidgetCanvasTarget::DateTime), &mut cfg);
+        assert_eq!(cfg.dt_horology, HorologyPartConfig::default());
+        assert_eq!(cfg.ext_widgets[ExtWidgetId::Weather.idx()].horology.hands_rgb, Some(HOROLOGY_ACCENT_SWATCHES[0]));
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn horology_widgets_auto_wake_and_optional_preview_dump() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(1140, 972));
+
+        // 1. Reproduce user bug: widgets_enabled=false while individual widgets are ON
+        let mut cfg = AppConfig::default();
+        cfg.widgets_enabled = false;
+        cfg.show_datetime = true;
+        sc.draft_cfg = cfg.clone();
+        sc.draft_initialized = true;
+        sc.active_tab = StudioTab::DesktopWidgets;
+        sc.widget_page = WidgetPage::DateTimeThemes;
+        sc.clock_folder = ClockThemeFolder::Horology;
+
+        // Top header Lock & Engine switches must ALWAYS be reachable on theme sub-pages
+        assert_eq!(sc.hit_test(436.0, 32.0), HitZone::ToggleWidgetsLock);
+        assert_eq!(sc.hit_test(558.0, 32.0), HitZone::ToggleWidgetsMaster);
+
+        // Selecting any Clock theme auto-wakes widgets_enabled on both draft and live cfg
+        let cmd = sc.activate_zone(HitZone::SelectClockTheme(ClockStyle::HoroRoyalOak), &mut cfg);
+        assert!(matches!(cmd, SettingsCommand::WidgetsConfigUpdated));
+        assert!(cfg.widgets_enabled, "Selecting a Clock theme must auto-wake widgets_enabled");
+        assert!(sc.draft_cfg.widgets_enabled);
+
+        // Repeat auto-wake verification across Vitals, Music, CC, Apps, Ext, Quick Toggle, and Apply
+        for hz in [
+            HitZone::SelectVitalsTheme(5),
+            HitZone::SelectMusicTheme(MusicStyle::HoroDaytonaDeck),
+            HitZone::SelectCcTheme(4),
+            HitZone::SelectAppsTheme(4),
+            HitZone::SelectExtTheme(ExtWidgetId::Weather, ExtWidgetTheme::HoroBreguetPorcelain),
+        ] {
+            cfg.widgets_enabled = false;
+            sc.draft_cfg.widgets_enabled = false;
+            let c = sc.activate_zone(hz, &mut cfg);
+            assert!(matches!(c, SettingsCommand::WidgetsConfigUpdated));
+            assert!(cfg.widgets_enabled, "Zone {:?} must auto-wake widgets_enabled", hz);
+            assert!(sc.draft_cfg.widgets_enabled);
+        }
+
+        // Quick toggle ON wakes widgets_enabled
+        cfg.widgets_enabled = false;
+        cfg.show_vitals = false;
+        sc.draft_cfg.widgets_enabled = false;
+        sc.draft_cfg.show_vitals = false;
+        sc.activate_zone(HitZone::ToggleVitalsQuick, &mut cfg);
+        assert!(cfg.show_vitals && cfg.widgets_enabled, "Toggling Vitals ON must wake widgets_enabled");
+
+        // BtnApplyWidgets wakes widgets_enabled whenever any widget is enabled
+        cfg.widgets_enabled = false;
+        sc.draft_cfg.widgets_enabled = false;
+        sc.draft_cfg.show_datetime = true;
+        sc.activate_zone(HitZone::BtnApplyWidgets, &mut cfg);
+        assert!(cfg.widgets_enabled, "Clicking Apply with widgets ON must wake widgets_enabled");
+
+        // 1b. High-DPI (s = 1.5) + 24-hour mode strict bounds guard across ALL 10 Horology Clocks
+        // (prevents double-DPI scaling overflow like Royal Oak / IWC / Walnut aperture bug)
+        {
+            let dw = sc.dwrite_factory.as_ref().expect("DW factory").clone();
+            let dc_rt = sc.dc_rt.as_ref().expect("D2D DC RT").clone();
+            let rt: windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = dc_rt.clone().into();
+            let bind_rc = RECT { left: 0, top: 0, right: 1140, bottom: 972 };
+            let clear_zero = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+            let s_hi = 1.5f32;
+            let ox = 40.0f32;
+            let oy = 40.0f32;
+            for &cs in &ClockStyle::HOROLOGY_FOLDER {
+                let mut hcfg = AppConfig::default();
+                hcfg.apply_clock_style_preset(cs);
+                hcfg.widgets_24h = true;
+                hcfg.dt_show_ampm = false;
+                let (lw, lh) = dt_logical_size(&hcfg);
+                let dt_w = lw * s_hi;
+                let dt_h = lh * s_hi;
+                let mut boxes = [ClockElemBox::default(); 8];
+                unsafe {
+                    dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+                    rt.BeginDraw();
+                    rt.Clear(Some(&clear_zero));
+                    draw_datetime_widget_with_boxes(&rt, &dw, None, ox, oy, s_hi, &hcfg, false, Some(&mut boxes));
+                    rt.EndDraw(None, None).unwrap();
+                }
+                for (bi, b) in boxes.iter().enumerate() {
+                    if !b.visible {
+                        continue;
+                    }
+                    let bl = b.cx - b.tr_half_w;
+                    let br = b.cx + b.tr_half_w;
+                    let bt = b.cy - b.tr_half_h;
+                    let bb = b.cy + b.tr_half_h;
+                    assert!(
+                        bl >= ox - 2.0 && br <= ox + dt_w + 2.0 && bt >= oy - 2.0 && bb <= oy + dt_h + 2.0,
+                        "Horology Clock {:?} elem #{} out of bounds at 150% DPI 24h: ({:.1},{:.1},{:.1},{:.1}) vs ({:.1},{:.1},{:.1},{:.1})",
+                        cs, bi, bl, bt, br, bb, ox, oy, ox + dt_w, oy + dt_h
+                    );
+                }
+            }
+        }
+
+        // 2. Optional visual preview dump (only when AUTUMN_DUMP_HOROLOGY_DIR is set)
+        if let Ok(dump_dir) = std::env::var("AUTUMN_DUMP_HOROLOGY_DIR") {
+            let _ = std::fs::create_dir_all(&dump_dir);
+            let save_bmp = |buf: &DibBuffer, path: &str| {
+                let w = buf.width as u32;
+                let h = buf.height as u32;
+                let px_bytes = (w * h * 4) as u32;
+                let file_size = 54 + px_bytes;
+                let mut data = Vec::with_capacity(file_size as usize);
+                data.extend_from_slice(b"BM");
+                data.extend_from_slice(&file_size.to_le_bytes());
+                data.extend_from_slice(&0u32.to_le_bytes());
+                data.extend_from_slice(&54u32.to_le_bytes());
+                data.extend_from_slice(&40u32.to_le_bytes());
+                data.extend_from_slice(&(w as i32).to_le_bytes());
+                data.extend_from_slice(&(-(h as i32)).to_le_bytes()); // top-down DIB
+                data.extend_from_slice(&1u16.to_le_bytes());
+                data.extend_from_slice(&32u16.to_le_bytes());
+                data.extend_from_slice(&0u32.to_le_bytes());
+                data.extend_from_slice(&px_bytes.to_le_bytes());
+                data.extend_from_slice(&2835i32.to_le_bytes());
+                data.extend_from_slice(&2835i32.to_le_bytes());
+                data.extend_from_slice(&0u32.to_le_bytes());
+                data.extend_from_slice(&0u32.to_le_bytes());
+                let raw = unsafe { std::slice::from_raw_parts(buf.bits as *const u8, px_bytes as usize) };
+                data.extend_from_slice(raw);
+                let _ = std::fs::write(path, &data);
+            };
+
+            sc.active_tab = StudioTab::DesktopWidgets;
+            sc.clock_folder = ClockThemeFolder::Horology;
+            sc.widget_page = WidgetPage::DateTimeThemes;
+            sc.clock_theme_page = 0;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/clock_p1.bmp", dump_dir));
+            sc.clock_theme_page = 1;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/clock_p2.bmp", dump_dir));
+
+            sc.vitals_folder = VitalsThemeFolder::Horology;
+            sc.widget_page = WidgetPage::VitalsThemes;
+            sc.vitals_theme_page = 0;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/vitals_p1.bmp", dump_dir));
+            sc.vitals_theme_page = 1;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/vitals_p2.bmp", dump_dir));
+
+            sc.music_folder = MusicThemeFolder::Horology;
+            sc.widget_page = WidgetPage::MusicThemes;
+            sc.music_theme_page = 0;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/music_p1.bmp", dump_dir));
+            sc.music_theme_page = 1;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/music_p2.bmp", dump_dir));
+
+            sc.ext_folder = ExtThemeFolder::Horology;
+            sc.widget_page = WidgetPage::ExtThemes(ExtWidgetId::Weather);
+            sc.ext_theme_page = 0;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/weather_p1.bmp", dump_dir));
+
+            // Dump 150%-DPI 24-hour renders of Royal Oak, IWC Pilot Titanium & Walnut Regulator
+            {
+                let dw = sc.dwrite_factory.as_ref().expect("DW factory").clone();
+                let dc_rt = sc.dc_rt.as_ref().expect("D2D DC RT").clone();
+                let rt: windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = dc_rt.clone().into();
+                let bind_rc = RECT { left: 0, top: 0, right: 1140, bottom: 972 };
+                let clear_bg = D2D1_COLOR_F { r: 0.08, g: 0.07, b: 0.06, a: 1.0 };
+                unsafe {
+                    dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+                    rt.BeginDraw();
+                    rt.Clear(Some(&clear_bg));
+                    for (idx, cs) in [ClockStyle::HoroRoyalOak, ClockStyle::HoroIwcTitanium, ClockStyle::HoroWalnutRegulator].iter().enumerate() {
+                        let mut c24 = AppConfig::default();
+                        c24.apply_clock_style_preset(*cs);
+                        c24.widgets_24h = true;
+                        c24.dt_show_ampm = false;
+                        draw_datetime_widget_with_boxes(&rt, &dw, None, 60.0, 40.0 + (idx as f32) * 290.0, 1.5, &c24, false, None);
+                    }
+                    rt.EndDraw(None, None).unwrap();
+                }
+                save_bmp(&sc.backbuf, &format!("{}/clock_24h_150dpi_fixed.bmp", dump_dir));
+            }
+
+            // Dump Suite Gallery Folders (8 folders) + Photorealistic Horology Suites (Pages 1, 2, 3)
+            sc.active_tab = StudioTab::SuiteGallery;
+            sc.suite_gallery_page = SuiteGalleryPage::Folders;
+            assert!(sc.render_d2d(&cfg));
+            save_bmp(&sc.backbuf, &format!("{}/suite_folders.bmp", dump_dir));
+
+            sc.suite_gallery_page = SuiteGalleryPage::Collection;
+            sc.suite_cat = SuiteCategory::Horology;
+            for p in 0..3 {
+                sc.suite_page = p;
+                assert!(sc.render_d2d(&cfg));
+                save_bmp(&sc.backbuf, &format!("{}/suite_horo_p{}.bmp", dump_dir, p + 1));
+            }
+        }
 
         sc.release_idle_resources();
         unsafe {

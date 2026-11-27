@@ -2185,6 +2185,7 @@ impl TaskbarTheme {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClockThemeFolder {
     All,
+    Horology,
     Realistic,
     SignatureSerif,
     MinimalIsland,
@@ -2193,8 +2194,9 @@ pub enum ClockThemeFolder {
 
 impl ClockThemeFolder {
     #[allow(dead_code)]
-    pub const ALL: [ClockThemeFolder; 5] = [
+    pub const ALL: [ClockThemeFolder; 6] = [
         ClockThemeFolder::All,
+        ClockThemeFolder::Horology,
         ClockThemeFolder::Realistic,
         ClockThemeFolder::SignatureSerif,
         ClockThemeFolder::MinimalIsland,
@@ -2203,7 +2205,8 @@ impl ClockThemeFolder {
 
     pub fn label(self) -> &'static str {
         match self {
-            ClockThemeFolder::All => "All Clocks (30)",
+            ClockThemeFolder::All => "All Clocks (40)",
+            ClockThemeFolder::Horology => "Photorealistic Horology (10)",
             ClockThemeFolder::Realistic => "Realistic & Calm (12)",
             ClockThemeFolder::SignatureSerif => "Signature & Art (6)",
             ClockThemeFolder::MinimalIsland => "Analog & Orbital (6)",
@@ -2245,10 +2248,31 @@ pub enum ClockStyle {
     CarbonSteelClock,
     GoldenHourClock,
     AlpineMistClock,
+    // Photorealistic Haute Horlogerie Collection (10 bespoke mechanical timepieces)
+    HoroRoyalOak,
+    HoroPatekMoon,
+    HoroTourbillonGold,
+    HoroDaytonaCeramic,
+    HoroSubmarinerEmerald,
+    HoroIwcTitanium,
+    HoroBreguetPorcelain,
+    HoroForgedCarbon,
+    HoroWalnutRegulator,
+    HoroSapphireObsidian,
 }
 
 impl ClockStyle {
-    pub const ALL: [ClockStyle; 30] = [
+    pub const ALL: [ClockStyle; 40] = [
+        ClockStyle::HoroRoyalOak,
+        ClockStyle::HoroPatekMoon,
+        ClockStyle::HoroTourbillonGold,
+        ClockStyle::HoroDaytonaCeramic,
+        ClockStyle::HoroSubmarinerEmerald,
+        ClockStyle::HoroIwcTitanium,
+        ClockStyle::HoroBreguetPorcelain,
+        ClockStyle::HoroForgedCarbon,
+        ClockStyle::HoroWalnutRegulator,
+        ClockStyle::HoroSapphireObsidian,
         ClockStyle::WaterCausticsClock,
         ClockStyle::RainWindowClock,
         ClockStyle::BraunIndustrial,
@@ -2281,6 +2305,19 @@ impl ClockStyle {
         ClockStyle::Cyber,
     ];
 
+    pub const HOROLOGY_FOLDER: [ClockStyle; 10] = [
+        ClockStyle::HoroRoyalOak,
+        ClockStyle::HoroPatekMoon,
+        ClockStyle::HoroTourbillonGold,
+        ClockStyle::HoroDaytonaCeramic,
+        ClockStyle::HoroSubmarinerEmerald,
+        ClockStyle::HoroIwcTitanium,
+        ClockStyle::HoroBreguetPorcelain,
+        ClockStyle::HoroForgedCarbon,
+        ClockStyle::HoroWalnutRegulator,
+        ClockStyle::HoroSapphireObsidian,
+    ];
+
     pub const REALISTIC_FOLDER: [ClockStyle; 12] = [
         ClockStyle::WaterCausticsClock,
         ClockStyle::RainWindowClock,
@@ -2295,6 +2332,23 @@ impl ClockStyle {
         ClockStyle::SwissChronometer,
         ClockStyle::ZenMistClock,
     ];
+
+    pub fn horology_theme(self) -> Option<crate::horology_pbr::HorologyTheme> {
+        use crate::horology_pbr::HorologyTheme;
+        match self {
+            ClockStyle::HoroRoyalOak => Some(HorologyTheme::RoyalOakSteel),
+            ClockStyle::HoroPatekMoon => Some(HorologyTheme::PatekMoonphase),
+            ClockStyle::HoroTourbillonGold => Some(HorologyTheme::TourbillonGold),
+            ClockStyle::HoroDaytonaCeramic => Some(HorologyTheme::DaytonaCeramic),
+            ClockStyle::HoroSubmarinerEmerald => Some(HorologyTheme::SubmarinerEmerald),
+            ClockStyle::HoroIwcTitanium => Some(HorologyTheme::IwcPilotTitanium),
+            ClockStyle::HoroBreguetPorcelain => Some(HorologyTheme::BreguetPorcelain),
+            ClockStyle::HoroForgedCarbon => Some(HorologyTheme::ForgedCarbonMoto),
+            ClockStyle::HoroWalnutRegulator => Some(HorologyTheme::WalnutRegulator),
+            ClockStyle::HoroSapphireObsidian => Some(HorologyTheme::SapphireObsidian),
+            _ => None,
+        }
+    }
 
     pub fn pbr_material(self) -> Option<crate::realistic_pbr::PbrMaterial> {
         use crate::realistic_pbr::PbrMaterial;
@@ -2318,13 +2372,17 @@ impl ClockStyle {
     }
 
     pub fn is_realistic_interactive(self) -> bool {
-        self.pbr_material().is_some()
+        self.horology_theme().is_some() || self.pbr_material().is_some()
     }
 
     pub fn has_idle_motion(self) -> bool {
-        self.pbr_material()
-            .map(|m| m.has_ambient_idle_motion())
+        self.horology_theme()
+            .map(|h| h.has_idle_motion())
             .unwrap_or(false)
+            || self
+                .pbr_material()
+                .map(|m| m.has_ambient_idle_motion())
+                .unwrap_or(false)
     }
 
     pub const SIG_SERIF_FOLDER: [ClockStyle; 6] = [
@@ -2355,6 +2413,7 @@ impl ClockStyle {
     pub fn in_folder(folder: ClockThemeFolder) -> &'static [ClockStyle] {
         match folder {
             ClockThemeFolder::All => &Self::ALL,
+            ClockThemeFolder::Horology => &Self::HOROLOGY_FOLDER,
             ClockThemeFolder::Realistic => &Self::REALISTIC_FOLDER,
             ClockThemeFolder::SignatureSerif => &Self::SIG_SERIF_FOLDER,
             ClockThemeFolder::MinimalIsland => &Self::MIN_ISLAND_FOLDER,
@@ -2363,6 +2422,9 @@ impl ClockStyle {
     }
 
     pub fn folder_badge(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.badge();
+        }
         match self {
             ClockStyle::SwissChronometer
             | ClockStyle::BraunIndustrial
@@ -2394,6 +2456,7 @@ impl ClockStyle {
             | ClockStyle::MatrixBinary
             | ClockStyle::Cyber
             | ClockStyle::SplitStack => "Mech & Tech",
+            _ => "Horology",
         }
     }
 
@@ -2412,6 +2475,9 @@ impl ClockStyle {
     }
 
     pub fn as_str(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.as_str();
+        }
         match self {
             ClockStyle::Signature => "signature",
             ClockStyle::Minimal => "minimal",
@@ -2443,10 +2509,14 @@ impl ClockStyle {
             ClockStyle::CarbonSteelClock => "carbon_steel_clock",
             ClockStyle::GoldenHourClock => "golden_hour_clock",
             ClockStyle::AlpineMistClock => "alpine_mist_clock",
+            _ => "horo_royal_oak",
         }
     }
 
     pub fn label(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.label();
+        }
         match self {
             ClockStyle::Signature => "Autumn Signature",
             ClockStyle::Minimal => "Nordic Minimal",
@@ -2478,10 +2548,14 @@ impl ClockStyle {
             ClockStyle::CarbonSteelClock => "Matte Carbon & Steel",
             ClockStyle::GoldenHourClock => "Golden Hour Horizon",
             ClockStyle::AlpineMistClock => "Alpine Forest Mist",
+            _ => "Royal Oak Guilloché Steel",
         }
     }
 
     pub fn subtitle(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.subtitle();
+        }
         match self {
             ClockStyle::Signature => "Bold day • Script • Spine",
             ClockStyle::Minimal => "Swiss clean horizontal",
@@ -2513,10 +2587,14 @@ impl ClockStyle {
             ClockStyle::CarbonSteelClock => "2x2 twill carbon weave • Hex steel & orange HUD",
             ClockStyle::GoldenHourClock => "Coastal dusk glare • Solar water shimmer track",
             ClockStyle::AlpineMistClock => "Volumetric pine mist • Sunbeams & drifting pollen",
+            _ => "Octagonal 316L steel • 8 hex screws & tapisserie waffle dial",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
+        if let Some(ht) = crate::horology_pbr::HorologyTheme::from_str(s) {
+            return Self::HOROLOGY_FOLDER[ht.idx()];
+        }
         match s.trim().to_ascii_lowercase().as_str() {
             "minimal" | "nordic" => ClockStyle::Minimal,
             "editorial" | "serif" => ClockStyle::Editorial,
@@ -2552,6 +2630,9 @@ impl ClockStyle {
     }
 
     pub fn default_fonts(self) -> (&'static str, &'static str, &'static str, &'static str) {
+        if let Some(ht) = self.horology_theme() {
+            return ht.default_fonts();
+        }
         match self {
             ClockStyle::Signature => ("Morganite Bold", "Tuesday Night", "SF Pro Display", "SF Pro Display"),
             ClockStyle::Minimal => ("SF Pro Display", "SF Pro Display", "Segoe UI Light", "SF Pro Display"),
@@ -2583,6 +2664,7 @@ impl ClockStyle {
             ClockStyle::CarbonSteelClock => ("Bahnschrift SemiBold", "Cascadia Mono", "Bahnschrift Bold", "Cascadia Mono"),
             ClockStyle::GoldenHourClock => ("Georgia", "Tuesday Night", "SF Pro Display", "Palatino Linotype"),
             ClockStyle::AlpineMistClock => ("Georgia", "Tuesday Night", "Segoe UI Light", "Segoe UI"),
+            _ => ("Bahnschrift SemiBold", "Georgia", "Bahnschrift Bold", "SF Pro Display"),
         }
     }
 }
@@ -2590,6 +2672,7 @@ impl ClockStyle {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MusicThemeFolder {
     All,
+    Horology,
     Realistic,
     GlassVinyl,
     SpectrumEq,
@@ -2598,8 +2681,9 @@ pub enum MusicThemeFolder {
 
 impl MusicThemeFolder {
     #[allow(dead_code)]
-    pub const ALL: [MusicThemeFolder; 5] = [
+    pub const ALL: [MusicThemeFolder; 6] = [
         MusicThemeFolder::All,
+        MusicThemeFolder::Horology,
         MusicThemeFolder::Realistic,
         MusicThemeFolder::GlassVinyl,
         MusicThemeFolder::SpectrumEq,
@@ -2608,7 +2692,8 @@ impl MusicThemeFolder {
 
     pub fn label(self) -> &'static str {
         match self {
-            MusicThemeFolder::All => "All Music (29)",
+            MusicThemeFolder::All => "All Music (39)",
+            MusicThemeFolder::Horology => "Photorealistic Horology (10)",
             MusicThemeFolder::Realistic => "Realistic & Calm (10)",
             MusicThemeFolder::GlassVinyl => "Vinyl & Art (7)",
             MusicThemeFolder::SpectrumEq => "Waves & Rings (6)",
@@ -2649,10 +2734,31 @@ pub enum MusicStyle {
     CarbonSteelDeck,
     GoldenHourAudio,
     DynamicIslandCapsule,
+    // Photorealistic Haute Horlogerie Collection (10 bespoke horology turntable/VU decks)
+    HoroRoyalOakDeck,
+    HoroPatekMoonDeck,
+    HoroTourbillonDeck,
+    HoroDaytonaDeck,
+    HoroSubmarinerDeck,
+    HoroIwcTitaniumDeck,
+    HoroBreguetDeck,
+    HoroForgedCarbonDeck,
+    HoroWalnutRegulatorDeck,
+    HoroSapphireObsidianDeck,
 }
 
 impl MusicStyle {
-    pub const ALL: [MusicStyle; 29] = [
+    pub const ALL: [MusicStyle; 39] = [
+        MusicStyle::HoroRoyalOakDeck,
+        MusicStyle::HoroPatekMoonDeck,
+        MusicStyle::HoroTourbillonDeck,
+        MusicStyle::HoroDaytonaDeck,
+        MusicStyle::HoroSubmarinerDeck,
+        MusicStyle::HoroIwcTitaniumDeck,
+        MusicStyle::HoroBreguetDeck,
+        MusicStyle::HoroForgedCarbonDeck,
+        MusicStyle::HoroWalnutRegulatorDeck,
+        MusicStyle::HoroSapphireObsidianDeck,
         MusicStyle::CalmWaterRipple,
         MusicStyle::RainWindowPlayer,
         MusicStyle::BrushedTitaniumDeck,
@@ -2684,6 +2790,19 @@ impl MusicStyle {
         MusicStyle::CyberHud,
     ];
 
+    pub const HOROLOGY_FOLDER: [MusicStyle; 10] = [
+        MusicStyle::HoroRoyalOakDeck,
+        MusicStyle::HoroPatekMoonDeck,
+        MusicStyle::HoroTourbillonDeck,
+        MusicStyle::HoroDaytonaDeck,
+        MusicStyle::HoroSubmarinerDeck,
+        MusicStyle::HoroIwcTitaniumDeck,
+        MusicStyle::HoroBreguetDeck,
+        MusicStyle::HoroForgedCarbonDeck,
+        MusicStyle::HoroWalnutRegulatorDeck,
+        MusicStyle::HoroSapphireObsidianDeck,
+    ];
+
     pub const REALISTIC_FOLDER: [MusicStyle; 10] = [
         MusicStyle::CalmWaterRipple,
         MusicStyle::RainWindowPlayer,
@@ -2696,6 +2815,23 @@ impl MusicStyle {
         MusicStyle::GoldenHourAudio,
         MusicStyle::VacuumTubeAmp,
     ];
+
+    pub fn horology_theme(self) -> Option<crate::horology_pbr::HorologyTheme> {
+        use crate::horology_pbr::HorologyTheme;
+        match self {
+            MusicStyle::HoroRoyalOakDeck => Some(HorologyTheme::RoyalOakSteel),
+            MusicStyle::HoroPatekMoonDeck => Some(HorologyTheme::PatekMoonphase),
+            MusicStyle::HoroTourbillonDeck => Some(HorologyTheme::TourbillonGold),
+            MusicStyle::HoroDaytonaDeck => Some(HorologyTheme::DaytonaCeramic),
+            MusicStyle::HoroSubmarinerDeck => Some(HorologyTheme::SubmarinerEmerald),
+            MusicStyle::HoroIwcTitaniumDeck => Some(HorologyTheme::IwcPilotTitanium),
+            MusicStyle::HoroBreguetDeck => Some(HorologyTheme::BreguetPorcelain),
+            MusicStyle::HoroForgedCarbonDeck => Some(HorologyTheme::ForgedCarbonMoto),
+            MusicStyle::HoroWalnutRegulatorDeck => Some(HorologyTheme::WalnutRegulator),
+            MusicStyle::HoroSapphireObsidianDeck => Some(HorologyTheme::SapphireObsidian),
+            _ => None,
+        }
+    }
 
     pub fn pbr_material(self) -> Option<crate::realistic_pbr::PbrMaterial> {
         use crate::realistic_pbr::PbrMaterial;
@@ -2716,13 +2852,17 @@ impl MusicStyle {
     }
 
     pub fn is_realistic_interactive(self) -> bool {
-        self.pbr_material().is_some()
+        self.horology_theme().is_some() || self.pbr_material().is_some()
     }
 
     pub fn has_idle_motion(self) -> bool {
-        self.pbr_material()
-            .map(|m| m.has_ambient_idle_motion())
+        self.horology_theme()
+            .map(|h| h.has_idle_motion())
             .unwrap_or(false)
+            || self
+                .pbr_material()
+                .map(|m| m.has_ambient_idle_motion())
+                .unwrap_or(false)
     }
 
     pub const GLASS_VINYL_FOLDER: [MusicStyle; 7] = [
@@ -2756,6 +2896,7 @@ impl MusicStyle {
     pub fn in_folder(folder: MusicThemeFolder) -> &'static [MusicStyle] {
         match folder {
             MusicThemeFolder::All => &Self::ALL,
+            MusicThemeFolder::Horology => &Self::HOROLOGY_FOLDER,
             MusicThemeFolder::Realistic => &Self::REALISTIC_FOLDER,
             MusicThemeFolder::GlassVinyl => &Self::GLASS_VINYL_FOLDER,
             MusicThemeFolder::SpectrumEq => &Self::SPECTRUM_EQ_FOLDER,
@@ -2764,6 +2905,9 @@ impl MusicStyle {
     }
 
     pub fn as_str(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.as_str();
+        }
         match self {
             MusicStyle::Sanctuary => "sanctuary",
             MusicStyle::VinylDeck => "vinyl_deck",
@@ -2794,10 +2938,14 @@ impl MusicStyle {
             MusicStyle::CarbonSteelDeck => "carbon_steel_deck",
             MusicStyle::GoldenHourAudio => "golden_hour_audio",
             MusicStyle::DynamicIslandCapsule => "dynamic_island_capsule",
+            _ => "horo_royal_oak",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
+        if let Some(ht) = crate::horology_pbr::HorologyTheme::from_str(s) {
+            return Self::HOROLOGY_FOLDER[ht.idx()];
+        }
         match s.trim().to_ascii_lowercase().as_str() {
             "vinyl_deck" | "vinyl" => MusicStyle::VinylDeck,
             "minimal_pill" | "pill" => MusicStyle::MinimalPill,
@@ -2832,6 +2980,9 @@ impl MusicStyle {
     }
 
     pub fn label(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.label();
+        }
         match self {
             MusicStyle::Sanctuary => "Autumn Sanctuary",
             MusicStyle::VinylDeck => "Spinning Vinyl Deck",
@@ -2862,10 +3013,14 @@ impl MusicStyle {
             MusicStyle::CarbonSteelDeck => "Matte Carbon Audio",
             MusicStyle::GoldenHourAudio => "Golden Hour Horizon",
             MusicStyle::DynamicIslandCapsule => "Dynamic Island Pill",
+            _ => "Royal Oak Guilloché Steel",
         }
     }
 
     pub fn subtitle(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.subtitle();
+        }
         match self {
             MusicStyle::Sanctuary => "Warm crystal card • Squircle art & 12-band EQ",
             MusicStyle::VinylDeck => "Turntable vinyl disc • Golden tonearm accent",
@@ -2896,10 +3051,14 @@ impl MusicStyle {
             MusicStyle::CarbonSteelDeck => "2x2 twill carbon • Stainless hex bolts & orange EQ",
             MusicStyle::GoldenHourAudio => "Coastal dusk glare • Shimmering solar audio wave",
             MusicStyle::DynamicIslandCapsule => "Frosted smoked capsule • squircle art, controls & live EQ",
+            _ => "Sapphire turntable bezel • Twin analog VU dials & crown keys",
         }
     }
 
     pub fn badge(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.badge();
+        }
         match self {
             MusicStyle::Sanctuary => "Classic",
             MusicStyle::VinylDeck => "Vinyl",
@@ -2930,7 +3089,238 @@ impl MusicStyle {
             MusicStyle::CarbonSteelDeck => "Carbon",
             MusicStyle::GoldenHourAudio => "Sunset",
             MusicStyle::DynamicIslandCapsule => "Island",
+            _ => "Horology",
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VitalsThemeFolder {
+    All,
+    Horology,
+    Classic,
+}
+
+impl VitalsThemeFolder {
+    pub fn label(self) -> &'static str {
+        match self {
+            VitalsThemeFolder::All => "All Vitals (15)",
+            VitalsThemeFolder::Horology => "Photorealistic Horology (10)",
+            VitalsThemeFolder::Classic => "Classic & HUD (5)",
+        }
+    }
+}
+
+pub const VITALS_HOROLOGY_STYLES: [u8; 10] = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+pub const VITALS_CLASSIC_STYLES: [u8; 5] = [4, 0, 1, 2, 3];
+pub const VITALS_ALL_STYLES: [u8; 15] = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 4, 0, 1, 2, 3];
+
+pub fn vitals_styles_in_folder(folder: VitalsThemeFolder) -> &'static [u8] {
+    match folder {
+        VitalsThemeFolder::All => &VITALS_ALL_STYLES,
+        VitalsThemeFolder::Horology => &VITALS_HOROLOGY_STYLES,
+        VitalsThemeFolder::Classic => &VITALS_CLASSIC_STYLES,
+    }
+}
+
+#[inline]
+pub fn vitals_style_horology(st: u8) -> Option<crate::horology_pbr::HorologyTheme> {
+    if (5..15).contains(&st) {
+        crate::horology_pbr::HorologyTheme::from_idx((st - 5) as usize)
+    } else {
+        None
+    }
+}
+
+#[inline]
+pub fn vitals_uses_quad_telemetry(st: u8) -> bool {
+    st == 4 || vitals_style_horology(st).is_some()
+}
+
+pub fn vitals_style_label(st: u8) -> &'static str {
+    if let Some(ht) = vitals_style_horology(st) {
+        return ht.label();
+    }
+    match st {
+        0 => "Capsule Bars",
+        1 => "Radial Rings",
+        2 => "Cyber HUD",
+        3 => "Minimal Text",
+        _ => "Ring-Pill HUD",
+    }
+}
+
+pub fn vitals_style_subtitle(st: u8) -> &'static str {
+    if let Some(ht) = vitals_style_horology(st) {
+        return ht.subtitle();
+    }
+    match st {
+        0 => "Classic capsule telemetry with horizontal load bars",
+        1 => "Circular radial rings for CPU, RAM & Power",
+        2 => "Bracketed monospace telemetry HUD",
+        3 => "Ultra-minimal pure typographic metrics",
+        _ => "Quad CPU / GPU / RAM / TEMP ring-pill cockpit",
+    }
+}
+
+pub fn vitals_style_badge(st: u8) -> &'static str {
+    if let Some(ht) = vitals_style_horology(st) {
+        return ht.badge();
+    }
+    match st {
+        0 => "Bars",
+        1 => "Rings",
+        2 => "Cyber",
+        3 => "Minimal",
+        _ => "Quad HUD",
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CcThemeFolder {
+    All,
+    Horology,
+    Classic,
+}
+
+impl CcThemeFolder {
+    pub fn label(self) -> &'static str {
+        match self {
+            CcThemeFolder::All => "All Control Centers (14)",
+            CcThemeFolder::Horology => "Photorealistic Horology (10)",
+            CcThemeFolder::Classic => "Classic Tiles (4)",
+        }
+    }
+}
+
+pub const CC_HOROLOGY_STYLES: [u8; 10] = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+pub const CC_CLASSIC_STYLES: [u8; 4] = [0, 1, 2, 3];
+pub const CC_ALL_STYLES: [u8; 14] = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1, 2, 3];
+
+pub fn cc_styles_in_folder(folder: CcThemeFolder) -> &'static [u8] {
+    match folder {
+        CcThemeFolder::All => &CC_ALL_STYLES,
+        CcThemeFolder::Horology => &CC_HOROLOGY_STYLES,
+        CcThemeFolder::Classic => &CC_CLASSIC_STYLES,
+    }
+}
+
+#[inline]
+pub fn cc_style_horology(st: u8) -> Option<crate::horology_pbr::HorologyTheme> {
+    if (4..14).contains(&st) {
+        crate::horology_pbr::HorologyTheme::from_idx((st - 4) as usize)
+    } else {
+        None
+    }
+}
+
+pub fn cc_style_label(st: u8) -> &'static str {
+    if let Some(ht) = cc_style_horology(st) {
+        return ht.label();
+    }
+    match st {
+        0 => "Rounded Glass",
+        1 => "Capsule Pill",
+        2 => "Cyber Chamfer",
+        _ => "Minimal Flat",
+    }
+}
+
+pub fn cc_style_subtitle(st: u8) -> &'static str {
+    if let Some(ht) = cc_style_horology(st) {
+        return ht.subtitle();
+    }
+    match st {
+        0 => "Soft rounded quick-action tiles & frosted sliders",
+        1 => "Full-capsule tactile pill controls",
+        2 => "Precision sharp-beveled chamfer tiles",
+        _ => "Ultra-clean translucent minimal controls",
+    }
+}
+
+pub fn cc_style_badge(st: u8) -> &'static str {
+    if let Some(ht) = cc_style_horology(st) {
+        return ht.badge();
+    }
+    match st {
+        0 => "Glass",
+        1 => "Pill",
+        2 => "Chamfer",
+        _ => "Flat",
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AppsThemeFolder {
+    All,
+    Horology,
+    Classic,
+}
+
+impl AppsThemeFolder {
+    pub fn label(self) -> &'static str {
+        match self {
+            AppsThemeFolder::All => "All Quick Apps (14)",
+            AppsThemeFolder::Horology => "Photorealistic Horology (10)",
+            AppsThemeFolder::Classic => "Classic Shapes (4)",
+        }
+    }
+}
+
+pub const APPS_HOROLOGY_STYLES: [u8; 10] = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+pub const APPS_CLASSIC_STYLES: [u8; 4] = [0, 1, 2, 3];
+pub const APPS_ALL_STYLES: [u8; 14] = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1, 2, 3];
+
+pub fn apps_styles_in_folder(folder: AppsThemeFolder) -> &'static [u8] {
+    match folder {
+        AppsThemeFolder::All => &APPS_ALL_STYLES,
+        AppsThemeFolder::Horology => &APPS_HOROLOGY_STYLES,
+        AppsThemeFolder::Classic => &APPS_CLASSIC_STYLES,
+    }
+}
+
+#[inline]
+pub fn apps_style_horology(st: u8) -> Option<crate::horology_pbr::HorologyTheme> {
+    if (4..14).contains(&st) {
+        crate::horology_pbr::HorologyTheme::from_idx((st - 4) as usize)
+    } else {
+        None
+    }
+}
+
+pub fn apps_style_label(st: u8) -> &'static str {
+    if let Some(ht) = apps_style_horology(st) {
+        return ht.label();
+    }
+    match st {
+        0 => "Squircle Glass",
+        1 => "Circle Orb",
+        2 => "Hexagon Tile",
+        _ => "Cyber Chamfer",
+    }
+}
+
+pub fn apps_style_subtitle(st: u8) -> &'static str {
+    if let Some(ht) = apps_style_horology(st) {
+        return ht.subtitle();
+    }
+    match st {
+        0 => "Classic rounded squircle app tiles",
+        1 => "Circular floating glass icon medallions",
+        2 => "Geometric hexagonal shortcut grid",
+        _ => "Octagonal chamfered tech app wells",
+    }
+}
+
+pub fn apps_style_badge(st: u8) -> &'static str {
+    if let Some(ht) = apps_style_horology(st) {
+        return ht.badge();
+    }
+    match st {
+        0 => "Squircle",
+        1 => "Orb",
+        2 => "Hex",
+        _ => "Chamfer",
     }
 }
 
@@ -3787,6 +4177,13 @@ pub struct AppConfig {
     pub music_elem_fonts: [String; 6],
     pub cc_elem_transforms: [ClockElemTransform; 6],
     pub cc_elem_fonts: [String; 6],
+
+    // Per-Widget Horology Material & Hardware Part Customization
+    pub dt_horology: crate::horology_pbr::HorologyPartConfig,
+    pub apps_horology: crate::horology_pbr::HorologyPartConfig,
+    pub vitals_horology: crate::horology_pbr::HorologyPartConfig,
+    pub music_horology: crate::horology_pbr::HorologyPartConfig,
+    pub cc_horology: crate::horology_pbr::HorologyPartConfig,
 
     // Phase 3: Hardware-Accelerated Video & Static Image Wallpaper Engine
     pub wallpaper_enabled: bool,
@@ -5343,6 +5740,12 @@ impl Default for AppConfig {
             cc_elem_transforms: [ClockElemTransform::default(); 6],
             cc_elem_fonts: std::array::from_fn(|_| String::new()),
 
+            dt_horology: crate::horology_pbr::HorologyPartConfig::default(),
+            apps_horology: crate::horology_pbr::HorologyPartConfig::default(),
+            vitals_horology: crate::horology_pbr::HorologyPartConfig::default(),
+            music_horology: crate::horology_pbr::HorologyPartConfig::default(),
+            cc_horology: crate::horology_pbr::HorologyPartConfig::default(),
+
             wallpaper_enabled: false,
             wallpaper_path: String::new(),
             wallpaper_pause_maximized: true,
@@ -5567,6 +5970,45 @@ impl AppConfig {
     pub fn reset_canvas_all(&mut self, target: WidgetCanvasTarget) {
         for i in 0..target.elem_count() {
             self.reset_canvas_elem(target, i);
+        }
+    }
+
+    pub fn horology_parts(&self, target: WidgetCanvasTarget) -> crate::horology_pbr::HorologyPartConfig {
+        match target {
+            WidgetCanvasTarget::DateTime => self.dt_horology,
+            WidgetCanvasTarget::Apps => self.apps_horology,
+            WidgetCanvasTarget::Vitals => self.vitals_horology,
+            WidgetCanvasTarget::Music => self.music_horology,
+            WidgetCanvasTarget::ControlCenter => self.cc_horology,
+            WidgetCanvasTarget::Ext(id) => self.ext_widgets[id.idx()].horology,
+        }
+    }
+
+    pub fn horology_parts_mut(
+        &mut self,
+        target: WidgetCanvasTarget,
+    ) -> &mut crate::horology_pbr::HorologyPartConfig {
+        match target {
+            WidgetCanvasTarget::DateTime => &mut self.dt_horology,
+            WidgetCanvasTarget::Apps => &mut self.apps_horology,
+            WidgetCanvasTarget::Vitals => &mut self.vitals_horology,
+            WidgetCanvasTarget::Music => &mut self.music_horology,
+            WidgetCanvasTarget::ControlCenter => &mut self.cc_horology,
+            WidgetCanvasTarget::Ext(id) => &mut self.ext_widgets[id.idx()].horology,
+        }
+    }
+
+    pub fn active_horology_theme(
+        &self,
+        target: WidgetCanvasTarget,
+    ) -> Option<crate::horology_pbr::HorologyTheme> {
+        match target {
+            WidgetCanvasTarget::DateTime => self.dt_style.horology_theme(),
+            WidgetCanvasTarget::Music => self.music_style.horology_theme(),
+            WidgetCanvasTarget::Vitals => vitals_style_horology(self.vitals_style),
+            WidgetCanvasTarget::ControlCenter => cc_style_horology(self.cc_tile_style),
+            WidgetCanvasTarget::Apps => apps_style_horology(self.apps_tile_shape),
+            WidgetCanvasTarget::Ext(id) => self.ext_widgets[id.idx()].theme.horology_theme(),
         }
     }
 
@@ -6038,14 +6480,25 @@ impl AppConfig {
                 self.music_rim_alpha = 140;
                 self.music_corner_radius = 37;
             }
+            s if s.horology_theme().is_some() => {
+                self.music_glass_alpha = 104;
+                self.music_rim_alpha = 215;
+                self.music_corner_radius = 18;
+                self.music_use_custom_color = false;
+                self.music_horology = crate::horology_pbr::HorologyPartConfig::default();
+            }
+            _ => {}
         }
     }
 
     pub fn apply_clock_style_preset(&mut self, style: ClockStyle) {
         self.dt_style = style;
         self.dt_show_clock = true;
-        if style.pbr_material().is_some() {
+        if style.pbr_material().is_some() || style.horology_theme().is_some() {
             self.dt_use_custom_color = false;
+        }
+        if style.horology_theme().is_some() {
+            self.dt_horology = crate::horology_pbr::HorologyPartConfig::default();
         }
         self.dt_font_day.clear();
         self.dt_font_script.clear();
@@ -6235,6 +6688,15 @@ impl AppConfig {
                 self.dt_corner_radius = 22;
                 self.dt_align = ClockAlign::Center;
             }
+            s if s.horology_theme().is_some() => {
+                self.dt_show_spine = true;
+                self.dt_show_orb = true;
+                self.dt_glass_alpha = 110;
+                self.dt_rim_alpha = 215;
+                self.dt_corner_radius = 20;
+                self.dt_align = ClockAlign::Left;
+            }
+            _ => {}
         }
     }
 
@@ -6890,6 +7352,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
     let mut legacy_dynamic_accent: Option<bool> = None;
     let mut pending_ext_elems: Vec<(usize, usize, ClockElemTransform)> = Vec::new();
     let mut pending_ext_fonts: Vec<(usize, usize, String)> = Vec::new();
+    let mut pending_ext_horology: Vec<(usize, crate::horology_pbr::HorologyPartConfig)> = Vec::new();
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -7056,7 +7519,13 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "apps_match_theme" => cfg.apps_match_theme = parse_bool(val),
                 "apps_individual_move" => cfg.apps_individual_move = parse_bool(val),
                 "apps_cols" => if let Ok(v) = val.parse::<u8>() { cfg.apps_cols = v.clamp(1, 12); },
-                "apps_tile_shape" => if let Ok(v) = val.parse::<u8>() { cfg.apps_tile_shape = v.min(3); },
+                "apps_tile_shape" => {
+                    if let Ok(v) = val.parse::<u8>() {
+                        cfg.apps_tile_shape = v.min(13);
+                    } else if let Some(ht) = crate::horology_pbr::HorologyTheme::from_str(val) {
+                        cfg.apps_tile_shape = 4 + ht.idx() as u8;
+                    }
+                }
                 "apps_corner_radius" => if let Ok(v) = val.parse::<u8>() { cfg.apps_corner_radius = v.min(32); },
                 "apps_show_plate" => cfg.apps_show_plate = parse_bool(val),
                 "apps_show_tiles" => cfg.apps_show_tiles = parse_bool(val),
@@ -7098,7 +7567,13 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "vitals_show_ram" => cfg.vitals_show_ram = parse_bool(val),
                 "vitals_show_power" => cfg.vitals_show_power = parse_bool(val),
                 "vitals_show_buttons" => cfg.vitals_show_buttons = parse_bool(val),
-                "vitals_style" => if let Ok(v) = val.parse::<u8>() { cfg.vitals_style = v.min(4); },
+                "vitals_style" => {
+                    if let Ok(v) = val.parse::<u8>() {
+                        cfg.vitals_style = v.min(14);
+                    } else if let Some(ht) = crate::horology_pbr::HorologyTheme::from_str(val) {
+                        cfg.vitals_style = 5 + ht.idx() as u8;
+                    }
+                }
                 "vitals_corner_radius" => if let Ok(v) = val.parse::<u8>() { cfg.vitals_corner_radius = v.min(36); },
                 "vitals_show_plate" => cfg.vitals_show_plate = parse_bool(val),
                 "vitals_show_dividers" => cfg.vitals_show_dividers = parse_bool(val),
@@ -7132,7 +7607,13 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "cc_scale_pct" => if let Ok(v) = val.parse::<u8>() { cfg.cc_scale_pct = v.clamp(70, 150); },
                 "cc_glass_alpha" => if let Ok(v) = val.parse::<u8>() { cfg.cc_glass_alpha = v; },
                 "cc_rim_alpha" => if let Ok(v) = val.parse::<u8>() { cfg.cc_rim_alpha = v; },
-                "cc_tile_style" => if let Ok(v) = val.parse::<u8>() { cfg.cc_tile_style = v.min(3); },
+                "cc_tile_style" => {
+                    if let Ok(v) = val.parse::<u8>() {
+                        cfg.cc_tile_style = v.min(13);
+                    } else if let Some(ht) = crate::horology_pbr::HorologyTheme::from_str(val) {
+                        cfg.cc_tile_style = 4 + ht.idx() as u8;
+                    }
+                }
                 "cc_corner_radius" => if let Ok(v) = val.parse::<u8>() { cfg.cc_corner_radius = v.min(36); },
                 "cc_show_plate" => cfg.cc_show_plate = parse_bool(val),
                 "cc_show_tiles" => cfg.cc_show_tiles = parse_bool(val),
@@ -7148,6 +7629,11 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "cc_accent_rgb" => if let Some(c) = parse_hex_rgb(val) { cfg.cc_accent_rgb = c; },
                 "cc_text_rgb" => if let Some(c) = parse_hex_rgb(val) { cfg.cc_text_rgb = c; },
                 "cc_bg_rgb" => if let Some(c) = parse_hex_rgb(val) { cfg.cc_bg_rgb = c; },
+                "dt_horology" => cfg.dt_horology = crate::horology_pbr::HorologyPartConfig::from_csv(val),
+                "apps_horology" => cfg.apps_horology = crate::horology_pbr::HorologyPartConfig::from_csv(val),
+                "vitals_horology" => cfg.vitals_horology = crate::horology_pbr::HorologyPartConfig::from_csv(val),
+                "music_horology" => cfg.music_horology = crate::horology_pbr::HorologyPartConfig::from_csv(val),
+                "cc_horology" => cfg.cc_horology = crate::horology_pbr::HorologyPartConfig::from_csv(val),
                 "wallpaper_enabled" => cfg.wallpaper_enabled = parse_bool(val),
                 "wallpaper_path" if !val.is_empty() => cfg.wallpaper_path = val.to_string(),
                 "wallpaper_pause_maximized" => cfg.wallpaper_pause_maximized = parse_bool(val),
@@ -7372,6 +7858,13 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                                 }
                             }
                         }
+                    } else if let Some(idx_s) = key.strip_prefix("ext_horology_") {
+                        if let Ok(idx) = idx_s.parse::<usize>() {
+                            pending_ext_horology.push((
+                                idx,
+                                crate::horology_pbr::HorologyPartConfig::from_csv(val),
+                            ));
+                        }
                     } else if let Some(idx_s) = key.strip_prefix("ext_widget_") {
                         if let Ok(idx) = idx_s.parse::<usize>() {
                             if let Some(id) = ExtWidgetId::from_idx(idx) {
@@ -7449,6 +7942,11 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
         let target_ei = if canvas_schema < 6 && ei == 4 { 5 } else { ei };
         if wi < cfg.ext_widgets.len() && target_ei < cfg.ext_widgets[wi].elem_fonts.len() {
             cfg.ext_widgets[wi].elem_fonts[target_ei] = f;
+        }
+    }
+    for (wi, hp) in pending_ext_horology {
+        if wi < cfg.ext_widgets.len() {
+            cfg.ext_widgets[wi].horology = hp;
         }
     }
 
@@ -7773,6 +8271,21 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("cc_accent_rgb=0x{:06X}\n", cfg.cc_accent_rgb & 0x00FF_FFFF));
     out.push_str(&format!("cc_text_rgb=0x{:06X}\n", cfg.cc_text_rgb & 0x00FF_FFFF));
     out.push_str(&format!("cc_bg_rgb=0x{:06X}\n", cfg.cc_bg_rgb & 0x00FF_FFFF));
+    if !cfg.dt_horology.is_default() {
+        out.push_str(&format!("dt_horology={}\n", cfg.dt_horology.to_csv()));
+    }
+    if !cfg.apps_horology.is_default() {
+        out.push_str(&format!("apps_horology={}\n", cfg.apps_horology.to_csv()));
+    }
+    if !cfg.vitals_horology.is_default() {
+        out.push_str(&format!("vitals_horology={}\n", cfg.vitals_horology.to_csv()));
+    }
+    if !cfg.music_horology.is_default() {
+        out.push_str(&format!("music_horology={}\n", cfg.music_horology.to_csv()));
+    }
+    if !cfg.cc_horology.is_default() {
+        out.push_str(&format!("cc_horology={}\n", cfg.cc_horology.to_csv()));
+    }
 
     out.push_str(&format!("wallpaper_enabled={}\n", b(cfg.wallpaper_enabled)));
     out.push_str(&format!("wallpaper_path={}\n", clean(&cfg.wallpaper_path)));
@@ -7784,6 +8297,9 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("onboarding_done={}\n", b(cfg.onboarding_done)));
     for (i, ew) in cfg.ext_widgets.iter().enumerate() {
         out.push_str(&format!("ext_widget_{}={}\n", i, ew.to_csv()));
+        if !ew.horology.is_default() {
+            out.push_str(&format!("ext_horology_{}={}\n", i, ew.horology.to_csv()));
+        }
         write_elems(
             &mut out,
             &format!("ext_elem_{}_", i),

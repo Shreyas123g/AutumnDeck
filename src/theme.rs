@@ -439,9 +439,60 @@ impl ThemePalette {
         Self::for_realistic_theme(key)
     }
 
+    /// Photorealistic Haute Horlogerie native palette matching each `HorologyTheme`.
+    pub fn for_horology(ht: crate::horology_pbr::HorologyTheme) -> Self {
+        let (bez, dial, hands, lume, jewel) = ht.default_colors();
+        let light = ht.is_light_dial();
+        let (br, bg, bb) = u32_to_rgb(bez);
+        let (dr, dg, db) = u32_to_rgb(dial);
+        let (hr, hg, hb) = u32_to_rgb(hands);
+        let (lr, lg, lb) = u32_to_rgb(lume);
+        let (jr, jg, jb) = u32_to_rgb(jewel);
+        let (dr_bot, dg_bot, db_bot) = if light {
+            (dr.saturating_sub(18), dg.saturating_sub(18), db.saturating_sub(20))
+        } else {
+            (dr / 2, dg / 2, db / 2)
+        };
+        let (tp, tm) = if light {
+            ((24, 32, 44), (82, 96, 114))
+        } else {
+            ((242, 246, 252), (168, 182, 202))
+        };
+        let (pa, pb, pc) = if light {
+            ((216, 212, 204), (242, 238, 228), (192, 186, 176))
+        } else {
+            (
+                (dr.saturating_add(6), dg.saturating_add(8), db.saturating_add(14)),
+                (
+                    dr.saturating_add((lr / 5).min(48)),
+                    dg.saturating_add((lg / 5).min(48)),
+                    db.saturating_add((lb / 5).min(48)),
+                ),
+                (dr_bot, dg_bot, db_bot),
+            )
+        };
+        Self {
+            accent: (lr, lg, lb),
+            accent_light: (hr, hg, hb),
+            accent_deep: (jr, jg, jb),
+            rim: (br, bg, bb),
+            text_primary: tp,
+            text_muted: tm,
+            glass_top: (dr, dg, db),
+            glass_bot: (dr_bot, dg_bot, db_bot),
+            preview_a: pa,
+            preview_b: pb,
+            preview_c: pc,
+            swatches: [lume, bez, hands, dial, jewel],
+        }
+    }
+
     /// Curated artistic native palette for each Date & Time widget style (replacing flat monochrome amber).
     pub fn for_clock_style(style: crate::config::ClockStyle) -> Self {
         use crate::config::ClockStyle;
+        if let Some(ht) = style.horology_theme() {
+            return Self::for_horology(ht);
+        }
         if let Some(mat) = style.pbr_material() {
             if let Some(p) = Self::for_pbr_material(mat) {
                 return p;
@@ -707,6 +758,9 @@ impl ThemePalette {
     /// Curated artistic native palette for each Music Bar widget style (including PBR material alignment).
     pub fn for_music_style(style: crate::config::MusicStyle) -> Self {
         use crate::config::MusicStyle;
+        if let Some(ht) = style.horology_theme() {
+            return Self::for_horology(ht);
+        }
         if let Some(mat) = style.pbr_material() {
             if let Some(p) = Self::for_pbr_material(mat) {
                 return p;
@@ -986,6 +1040,9 @@ impl ThemePalette {
     /// Artistic preview backdrop palette for an Extended Widget theme.
     pub fn for_ext_widget_theme(theme: crate::widgets_extra::ExtWidgetTheme) -> Self {
         use crate::widgets_extra::ExtWidgetTheme;
+        if let Some(ht) = theme.horology_theme() {
+            return Self::for_horology(ht);
+        }
         if let Some(mat) = theme.pbr_material() {
             if let Some(p) = Self::for_pbr_material(mat) {
                 return p;

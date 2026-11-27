@@ -8,7 +8,7 @@ DIST_DIR = os.path.join(ROOT_DIR, "dist")
 STAGE_DIR = os.path.join(DIST_DIR, "msix_stage")
 ASSETS_DIR = os.path.join(STAGE_DIR, "Assets")
 MAKEAPPX = r"C:\Program Files (x86)\Windows Kits\10\bin\10.0.28000.0\x64\makeappx.exe"
-VERSION = "2.0.8.0"
+VERSION = "2.0.9.0"
 
 # 1. Clean & prepare stage dir
 if os.path.exists(STAGE_DIR):
@@ -138,7 +138,13 @@ if res.returncode != 0:
 
 print(f"MSIX created successfully: {output_msix} ({os.path.getsize(output_msix)} bytes)")
 
-# 6. Copy to Downloads folder
+# 6. Copy to Downloads folder and Desktop
 downloads_dest = os.path.join(r"C:\Users\rshre\Downloads", f"AutumnDeck_{VERSION}_x64.msix")
 shutil.copy2(output_msix, downloads_dest)
 print(f"Copied to Downloads: {downloads_dest}")
+
+for desktop_dir in [r"C:\Users\rshre\OneDrive\Desktop", r"C:\Users\rshre\Desktop"]:
+    if os.path.exists(desktop_dir):
+        desktop_dest = os.path.join(desktop_dir, f"AutumnDeck_{VERSION}_x64.msix")
+        shutil.copy2(output_msix, desktop_dest)
+        print(f"Copied to Desktop: {desktop_dest}")

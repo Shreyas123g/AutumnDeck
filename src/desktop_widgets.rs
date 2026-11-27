@@ -1538,6 +1538,18 @@ impl FgKeyHasher {
         self.mix_u64(tr.border_rgb.map(|c| c as u64 | (1u64 << 32)).unwrap_or(0));
     }
 
+    pub fn mix_horology(&mut self, hp: &crate::horology_pbr::HorologyPartConfig) {
+        self.mix_u8(hp.bezel_finish.map(|f| f as u8 + 1).unwrap_or(0));
+        self.mix_u64(hp.bezel_rgb.map(|c| c as u64 | (1u64 << 32)).unwrap_or(0));
+        self.mix_u8(hp.dial_finish.map(|f| f as u8 + 1).unwrap_or(0));
+        self.mix_u64(hp.dial_rgb.map(|c| c as u64 | (1u64 << 32)).unwrap_or(0));
+        self.mix_u64(hp.hands_rgb.map(|c| c as u64 | (1u64 << 32)).unwrap_or(0));
+        self.mix_u64(hp.lume_rgb.map(|c| c as u64 | (1u64 << 32)).unwrap_or(0));
+        self.mix_u8(hp.glare_pct);
+        self.mix_bool(hp.show_screws);
+        self.mix_bool(hp.show_needle_shadows);
+    }
+
     #[inline]
     pub fn finish(self) -> u64 {
         if self.0 == 0 { 1 } else { self.0 }
@@ -1798,6 +1810,7 @@ pub fn dt_logical_size(cfg: &AppConfig) -> (f32, f32) {
         ClockStyle::CarbonSteelClock => (378.0, 148.0),
         ClockStyle::GoldenHourClock => (376.0, 144.0),
         ClockStyle::AlpineMistClock => (376.0, 140.0),
+        s if s.horology_theme().is_some() => (386.0, 156.0),
         _ => (372.0, 136.0),
     }
 }
@@ -2673,6 +2686,7 @@ unsafe fn clock_fg_key(
     for tr in &cfg.dt_elem_transforms {
         h.mix_tr(tr);
     }
+    h.mix_horology(&cfg.dt_horology);
     h.mix_i32(now.year);
     h.mix_str(now.month_name);
     h.mix_u64(now.day as u64);
@@ -8034,6 +8048,765 @@ unsafe fn draw_datetime_widget_inner(
                 }
             }
         }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHOTOREALISTIC HAUTE HORLOGERIE COLLECTION (10 Bespoke Timepieces)
+        // ═══════════════════════════════════════════════════════════════════
+        ClockStyle::HoroRoyalOak
+        | ClockStyle::HoroPatekMoon
+        | ClockStyle::HoroTourbillonGold
+        | ClockStyle::HoroDaytonaCeramic
+        | ClockStyle::HoroSubmarinerEmerald
+        | ClockStyle::HoroIwcTitanium
+        | ClockStyle::HoroBreguetPorcelain
+        | ClockStyle::HoroForgedCarbon
+        | ClockStyle::HoroWalnutRegulator
+        | ClockStyle::HoroSapphireObsidian => {
+            let ht = cfg.dt_style.horology_theme().unwrap();
+            let custom_acc = if cfg.dt_use_custom_color || cfg.dt_match_wallpaper {
+                Some(crate::theme::rgb_to_u32(pal.accent))
+            } else {
+                None
+            };
+            let custom_txt = if cfg.dt_use_custom_color {
+                Some(cfg.dt_digits_rgb)
+            } else {
+                None
+            };
+            let custom_bg = tr_card.color_rgb.or_else(|| {
+                if cfg.dt_use_custom_color || cfg.dt_match_wallpaper {
+                    Some(crate::theme::rgb_to_u32(pal.glass_top))
+                } else {
+                    None
+                }
+            });
+            let mut hpal = cfg.dt_horology.resolve(ht, custom_acc, custom_txt, custom_bg);
+            if let Some(bc) = tr_card.border_rgb {
+                hpal.bezel_rgb = bc;
+                hpal.bezel_hi_rgb = crate::horology_pbr::lighten_rgb(bc, 0.36);
+                hpal.bezel_lo_rgb = crate::horology_pbr::darken_rgb(bc, 0.45);
+            }
+            let main_rect = D2D_RECT_F {
+                left: x + 2.0 * s,
+                top: y + 4.0 * s,
+                right: x + dt_w - 2.0 * s,
+                bottom: y + dt_h - 4.0 * s,
+            };
+            let rad_sc = (cfg.dt_corner_radius as f32 / 18.0).clamp(0.0, 2.2);
+            let r_card = 20.0 * rad_sc * s;
+            let op = (cfg.dt_glass_alpha as f32 / 120.0).clamp(0.55, 0.99);
+            let r_base = if is_hovered {
+                ((cfg.dt_rim_alpha as f32 / 255.0) + 0.20).clamp(0.35, 0.99)
+            } else {
+                (cfg.dt_rim_alpha as f32 / 255.0).clamp(0.0, 1.0)
+            };
+            let inter = crate::realistic_pbr::pbr_input_from_viz(
+                fx_viz,
+                (now.second as f32) * 0.25,
+                is_hovered,
+            );
+            let st_now = GetLocalTime();
+            let lunar = crate::horology_pbr::lunar_phase_0_to_1(
+                now.year,
+                st_now.wMonth as u32,
+                now.day,
+            );
+
+            // 1. Machined Horology Case Plate (Card slot)
+            if cfg.dt_show_plate {
+                let mut nb: Option<&mut [ClockElemBox]> = None;
+                let g = begin_elem_xf_slot(rt, ClockElemId::Card.idx(), tr_card, card_rect, s, &mut nb);
+                crate::horology_pbr::draw_horology_case_plate(
+                    rt,
+                    d2d.as_ref(),
+                    main_rect,
+                    r_card,
+                    s,
+                    &hpal,
+                    op,
+                    r_base,
+                    true,
+                    inter.hover_x,
+                    inter.hover_y,
+                    inter.hover_mix,
+                );
+                end_elem_xf_slot(rt, g);
+            }
+
+            // Shared text brushes & shadows
+            let br_htext = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.text_rgb, 0.98), None).ok();
+            let br_hsub = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.subtext_rgb, 0.92), None).ok();
+            let br_hlume = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.96), None).ok();
+            let br_hgold = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.bezel_hi_rgb, 0.96), None).ok();
+            let sh_horo = if hpal.is_light_dial {
+                rt.CreateSolidColorBrush(&rgba_u8(255, 255, 255, 0.45), None).ok()
+            } else {
+                sh_day.clone()
+            };
+            let sec_opt = if cfg.dt_show_seconds { Some(now.second as f32) } else { None };
+            let orb_tr = cfg.dt_elem_transforms[ClockElemId::Orb.idx()];
+            let mut dial_pal = hpal;
+            if let Some(c) = orb_tr.color_rgb {
+                dial_pal.hands_rgb = c;
+            }
+            if let Some(c2) = orb_tr.color2_rgb {
+                dial_pal.dial_rgb = c2;
+                dial_pal.dial_hi_rgb = crate::horology_pbr::lighten_rgb(c2, 0.16);
+                dial_pal.dial_lo_rgb = crate::horology_pbr::darken_rgb(c2, 0.42);
+            }
+            if let Some(bc) = orb_tr.border_rgb {
+                dial_pal.bezel_rgb = bc;
+                dial_pal.bezel_hi_rgb = crate::horology_pbr::lighten_rgb(bc, 0.36);
+                dial_pal.bezel_lo_rgb = crate::horology_pbr::darken_rgb(bc, 0.45);
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // 10 DISTINCT HOROLOGY TIMEPIECE ARCHITECTURES
+            // ═══════════════════════════════════════════════════════════════
+            match ht {
+                // ── 2. PATEK MOONPHASE: Symmetrical Centered Grand Observatory ──
+                crate::horology_pbr::HorologyTheme::PatekMoonphase => {
+                    let w_cx = x + dt_w * 0.5;
+                    let w_cy = y + dt_h * 0.5;
+                    let w_r = 56.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (w_cx - w_r - 5.0 * s, w_cy - w_r - 5.0 * s, w_cx + w_r + 5.0 * s, w_cy + w_r + 5.0 * s), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_watch_dial(rt, d2d.as_ref(), w_cx, w_cy, w_r, s, &dial_pal, (now.hour % 12) as f32, now.minute as f32 + now.second as f32 / 60.0, sec_opt, inter.time_s, lunar);
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 124.0 * s, y + 26.0 * s, x + 262.0 * s, y + 130.0 * s), s, cfg, &mut out_boxes);
+                        if let Ok(gp) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.bezel_hi_rgb, 0.52), None) {
+                            for lx in [x + 125.0 * s, x + 261.0 * s] {
+                                rt.DrawLine(Vector2 { X: lx, Y: y + 28.0 * s }, Vector2 { X: lx, Y: y + dt_h - 28.0 * s }, &gp, 1.0 * s, None);
+                            }
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    // Left Wing: Grand Serif Day Number + Weekday
+                    if cfg.dt_show_weekday {
+                        let tf_day = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Bodoni MT"), w!("Georgia")], 34.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_day, &br_hgold) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 14.0 * s, y + 32.0 * s, x + 120.0 * s, y + 92.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&day_num_str, tf, x + 14.0 * s, y + 32.0 * s, 106.0 * s, 60.0 * s, br, sh_horo.as_ref(), 0.9 * s, false);
+                            end_elem_xf(rt, xf);
+                        }
+                        let tf_wk = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Georgia"), w!("Palatino Linotype")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wk, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Weekday, (x + 14.0 * s, y + 94.0 * s, x + 120.0 * s, y + 116.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&now.weekday_name.to_ascii_uppercase(), tf, x + 14.0 * s, y + 94.0 * s, 106.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    // Right Wing: Open Rose-Gold Dress Time + Perpetual Date
+                    if cfg.dt_show_clock {
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Bodoni MT"), w!("Georgia")], 24.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_htext) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (x + 266.0 * s, y + 40.0 * s, x + 370.0 * s, y + 86.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&time_str, tf, x + 266.0 * s, y + 40.0 * s, 104.0 * s, 46.0 * s, br, sh_horo.as_ref(), 0.9 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + 294.0 * s, top: y + 20.0 * s, right: x + 344.0 * s, bottom: y + 38.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Georgia")], 8.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Palatino Linotype"), w!("Georgia")], 7.5 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 262.0 * s, y + 94.0 * s, x + 372.0 * s, y + 120.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 262.0 * s, y + 94.0 * s, 110.0 * s, 26.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 3. TOURBILLON GOLD: Open-Heart Dual-Gear Exhibition Skeleton ──
+                crate::horology_pbr::HorologyTheme::TourbillonGold => {
+                    if cfg.dt_show_orb {
+                        let t_cx = x + 82.0 * s;
+                        let t_cy = y + 80.0 * s;
+                        let t_r = 49.0 * s;
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (t_cx - t_r - 4.0 * s, t_cy - t_r - 4.0 * s, t_cx + t_r + 58.0 * s, t_cy + t_r + 4.0 * s), s, cfg, &mut out_boxes);
+                        // Giant exposed spinning Tourbillon cage + meshing secondary brass planetary gear!
+                        crate::horology_pbr::draw_horology_gear_wheel(rt, x + 150.0 * s, y + 54.0 * s, 28.0 * s, 14, -inter.time_s * 1.15, s, dial_pal.bezel_hi_rgb, 0.78);
+                        crate::horology_pbr::draw_horology_gear_wheel(rt, x + 144.0 * s, y + 108.0 * s, 20.0 * s, 10, inter.time_s * 1.55, s, dial_pal.hands_rgb, 0.68);
+                        crate::horology_pbr::draw_horology_tourbillon_cage(rt, t_cx, t_cy, t_r, s, &dial_pal, inter.time_s);
+                        // Sweeping skeleton gold hands overlaid on tourbillon!
+                        let h_ang = ((((now.hour % 12) as f32) + now.minute as f32 / 60.0) * 30.0 - 90.0).to_radians();
+                        let m_ang = ((now.minute as f32 + now.second as f32 / 60.0) * 6.0 - 90.0).to_radians();
+                        crate::horology_pbr::draw_horology_needle(rt, t_cx, t_cy, h_ang, t_r * 0.56, t_r * 0.14, 2.8 * s, dial_pal.hands_rgb, dial_pal.show_needle_shadows, s);
+                        crate::horology_pbr::draw_horology_needle(rt, t_cx, t_cy, m_ang, t_r * 0.82, t_r * 0.18, 2.0 * s, dial_pal.hands_rgb, dial_pal.show_needle_shadows, s);
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 174.0 * s, y + 20.0 * s, x + 186.0 * s, y + dt_h - 20.0 * s), s, cfg, &mut out_boxes);
+                        if let Ok(brg) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.bezel_rgb, 0.88), None) {
+                            rt.DrawLine(Vector2 { X: x + 180.0 * s, Y: y + 22.0 * s }, Vector2 { X: x + 180.0 * s, Y: y + dt_h - 22.0 * s }, &brg, 2.4 * s, None);
+                        }
+                        if let Ok(rb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.jewel_rgb, 0.98), None) {
+                            for ry in [y + 32.0 * s, y + dt_h - 32.0 * s] {
+                                rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: x + 180.0 * s, Y: ry }, radiusX: 3.2 * s, radiusY: 3.2 * s }, &rb);
+                            }
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    // Open-worked Floating Gold Numerals over skeleton movement (NO dark box!)
+                    if cfg.dt_show_weekday {
+                        let tag = format!("TOURBILLON  •  {}", now.weekday_name.to_ascii_uppercase());
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Bodoni MT"), w!("Georgia")], 9.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 194.0 * s, y + 18.0 * s, x + dt_w - 18.0 * s, y + 36.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&tag, tf, x + 194.0 * s, y + 18.0 * s, dt_w - 212.0 * s, 18.0 * s, br, sh_horo.as_ref(), 0.7 * s, false);
+                            end_elem_xf(rt, xf);
+                        }
+                        let tf_sc = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Georgia")], 7.5 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_sc, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Weekday, (x + 194.0 * s, y + 36.0 * s, x + dt_w - 18.0 * s, y + 50.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced("21 JEWELS • LIVE ESCAPEMENT", tf, x + 194.0 * s, y + 36.0 * s, dt_w - 212.0 * s, 14.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if cfg.dt_show_clock {
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Bodoni MT"), w!("Georgia")], 32.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_hgold) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (x + 192.0 * s, y + 58.0 * s, x + 332.0 * s, y + 108.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&time_str, tf, x + 192.0 * s, y + 58.0 * s, 142.0 * s, 50.0 * s, br, sh_horo.as_ref(), 1.4 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + 332.0 * s, top: y + 70.0 * s, right: x + dt_w - 16.0 * s, bottom: y + 92.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Georgia")], 8.8 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Georgia")], 9.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 194.0 * s, y + 112.0 * s, x + dt_w - 18.0 * s, y + 134.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 194.0 * s, y + 112.0 * s, dt_w - 212.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 4. DAYTONA CERAMIC: Motorsport Tri-Compax WHITE PANDA Chronograph! ──
+                crate::horology_pbr::HorologyTheme::DaytonaCeramic => {
+                    // Top Motorsport Header: Big Lap Time Left + Crimson Tachymeter Badge Right
+                    if cfg.dt_show_clock {
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Bahnschrift"), w!("Segoe UI")], 28.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_htext) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (x + 24.0 * s, y + 14.0 * s, x + 190.0 * s, y + 58.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&time_str, tf, x + 24.0 * s, y + 14.0 * s, 166.0 * s, 44.0 * s, br, sh_horo.as_ref(), 0.9 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + 178.0 * s, top: y + 24.0 * s, right: x + 216.0 * s, bottom: y + 44.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Bahnschrift")], 8.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_weekday {
+                        let tag = format!("DAYTONA  •  {}", now.weekday_name.to_ascii_uppercase());
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Bahnschrift")], 9.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 214.0 * s, y + 16.0 * s, x + dt_w - 20.0 * s, y + 36.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&tag, tf, x + 214.0 * s, y + 16.0 * s, dt_w - 234.0 * s, 20.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                        if !footer_str.is_empty() {
+                            let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Cascadia Mono"), w!("Bahnschrift")], 8.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                            if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                                let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 214.0 * s, y + 36.0 * s, x + dt_w - 20.0 * s, y + 54.0 * s), s, cfg, &mut out_boxes);
+                                draw_text_spaced(&footer_str, tf, x + 214.0 * s, y + 36.0 * s, dt_w - 234.0 * s, 18.0 * s, br, None, 0.0, false);
+                                end_elem_xf(rt, xf);
+                            }
+                        }
+                    }
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 20.0 * s, y + 58.0 * s, x + dt_w - 20.0 * s, y + 62.0 * s), s, cfg, &mut out_boxes);
+                        if let Ok(rd) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.78), None) {
+                            rt.DrawLine(Vector2 { X: x + 22.0 * s, Y: y + 60.0 * s }, Vector2 { X: x + dt_w - 22.0 * s, Y: y + 60.0 * s }, &rd, 1.3 * s, None);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    // Bottom Tri-Compax: 3 Bright White "Panda" Contrast Sub-Dials (HR / MIN / SEC)!
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (x + 26.0 * s, y + 66.0 * s, x + dt_w - 26.0 * s, y + 144.0 * s), s, cfg, &mut out_boxes);
+                        let sub_r = 32.0 * s;
+                        let sub_y = y + 104.0 * s;
+                        let hr_n = ((now.hour % 12) as f32 + now.minute as f32 / 60.0) / 12.0;
+                        let mn_n = (now.minute as f32 + now.second as f32 / 60.0) / 60.0;
+                        let sc_n = now.second as f32 / 60.0;
+                        let tf_cap = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Bahnschrift")], 6.8 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        let br_dark = rt.CreateSolidColorBrush(&rgba_u8(16, 20, 28, 0.92), None).ok();
+                        for (cx_p, val_n, lbl) in [
+                            (x + 78.0 * s, hr_n, "12H"),
+                            (x + 193.0 * s, mn_n, "60M"),
+                            (x + 308.0 * s, sc_n, "60S"),
+                        ] {
+                            crate::horology_pbr::draw_horology_subdial(rt, d2d.as_ref(), cx_p, sub_y, sub_r, s, &dial_pal, val_n, Some(0.85), None);
+                            if let (Some(tf), Some(br)) = (&tf_cap, &br_dark) {
+                                draw_shadowed_text(rt, lbl, tf, D2D_RECT_F { left: cx_p - 18.0 * s, top: sub_y + 11.0 * s, right: cx_p + 18.0 * s, bottom: sub_y + 24.0 * s }, br, None, 0.0, true);
+                            }
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                }
+
+                // ── 5. SUBMARINER EMERALD: FLIPPED Right Emerald Diver Dial + Left Glossy Cyclops Magnifier! ──
+                crate::horology_pbr::HorologyTheme::SubmarinerEmerald => {
+                    let w_cx = x + dt_w - 78.0 * s;
+                    let w_cy = y + dt_h * 0.5;
+                    let w_r = 55.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (w_cx - w_r - 6.0 * s, w_cy - w_r - 6.0 * s, w_cx + w_r + 6.0 * s, w_cy + w_r + 6.0 * s), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_watch_dial(rt, d2d.as_ref(), w_cx, w_cy, w_r, s, &dial_pal, (now.hour % 12) as f32, now.minute as f32 + now.second as f32 / 60.0, sec_opt, inter.time_s, lunar);
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 234.0 * s, y + 20.0 * s, x + 239.0 * s, y + dt_h - 20.0 * s), s, cfg, &mut out_boxes);
+                        if let Ok(sp) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.72), None) {
+                            rt.DrawLine(Vector2 { X: x + 236.5 * s, Y: y + 22.0 * s }, Vector2 { X: x + 236.5 * s, Y: y + dt_h - 22.0 * s }, &sp, 1.4 * s, None);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_weekday {
+                        let tag = format!("300M / 1000FT  •  {}", now.weekday_name.to_ascii_uppercase());
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Bahnschrift")], 8.8 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 20.0 * s, y + 20.0 * s, x + 226.0 * s, y + 40.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&tag, tf, x + 20.0 * s, y + 20.0 * s, 206.0 * s, 20.0 * s, br, sh_horo.as_ref(), 0.7 * s, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if cfg.dt_show_clock {
+                        // Left Raised Magnifying Cyclops Glass Bubble!
+                        let cyc_r = D2D_RECT_F {
+                            left: x + 20.0 * s,
+                            top: y + 44.0 * s,
+                            right: x + (if !cfg.widgets_24h && cfg.dt_show_ampm { 176.0 } else { 224.0 }) * s,
+                            bottom: y + 106.0 * s,
+                        };
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Bahnschrift"), w!("SF Pro Display")], 31.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_htext) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (cyc_r.left, cyc_r.top, cyc_r.right, cyc_r.bottom), s, cfg, &mut out_boxes);
+                            crate::horology_pbr::draw_horology_aperture(rt, cyc_r, 16.0 * s, s, &hpal, true);
+                            draw_text_spaced(&time_str, tf, cyc_r.left + 4.0 * s, cyc_r.top, (cyc_r.right - cyc_r.left - 8.0 * s).max(12.0), cyc_r.bottom - cyc_r.top, br, sh_horo.as_ref(), 0.9 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + 182.0 * s, top: y + 60.0 * s, right: x + 226.0 * s, bottom: y + 90.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_aperture(rt, ap_r, 8.0 * s, s, &hpal, false);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Bahnschrift")], 8.5 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Bahnschrift"), w!("Segoe UI")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 22.0 * s, y + 114.0 * s, x + 226.0 * s, y + 136.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 22.0 * s, y + 114.0 * s, 204.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 6. IWC PILOT TITANIUM: Bolted Flight Deck Altimeter Drum + Orange Index Pointer ──
+                crate::horology_pbr::HorologyTheme::IwcPilotTitanium => {
+                    let w_cx = x + 76.0 * s;
+                    let w_cy = y + dt_h * 0.5;
+                    let w_r = 51.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (w_cx - w_r - 5.0 * s, w_cy - w_r - 5.0 * s, w_cx + w_r + 5.0 * s, w_cy + w_r + 5.0 * s), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_watch_dial(rt, d2d.as_ref(), w_cx, w_cy, w_r, s, &dial_pal, (now.hour % 12) as f32, now.minute as f32 + now.second as f32 / 60.0, sec_opt, inter.time_s, lunar);
+                        end_elem_xf(rt, xf);
+                    }
+                    // Artificial Horizon vertical pitch ladder spine
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 140.0 * s, y + 24.0 * s, x + 158.0 * s, y + dt_h - 24.0 * s), s, cfg, &mut out_boxes);
+                        if let Ok(gr) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.72), None) {
+                            for k in 0..7 {
+                                let ly = y + 30.0 * s + (k as f32) * 16.0 * s;
+                                let lw = if k == 3 { 14.0 * s } else { 7.0 * s };
+                                rt.DrawLine(Vector2 { X: x + 149.0 * s - lw * 0.5, Y: ly }, Vector2 { X: x + 149.0 * s + lw * 0.5, Y: ly }, &gr, if k == 3 { 1.6 * s } else { 0.9 * s }, None);
+                            }
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_weekday {
+                        let tag = format!("ALT / FLT  •  {}", now.weekday_name.to_ascii_uppercase());
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Cascadia Mono"), w!("Bahnschrift")], 8.8 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 166.0 * s, y + 18.0 * s, x + dt_w - 20.0 * s, y + 36.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&tag, tf, x + 166.0 * s, y + 18.0 * s, dt_w - 186.0 * s, 18.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    // Recessed Stepped Cockpit Altimeter Drum with Bright Orange Pointer Triangle!
+                    if cfg.dt_show_clock {
+                        let drum_r = D2D_RECT_F {
+                            left: x + 166.0 * s,
+                            top: y + 46.0 * s,
+                            right: if !cfg.widgets_24h && cfg.dt_show_ampm { x + 324.0 * s } else { x + dt_w - 22.0 * s },
+                            bottom: y + 104.0 * s,
+                        };
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Cascadia Mono"), w!("Bahnschrift")], 29.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (drum_r.left, drum_r.top, drum_r.right, drum_r.bottom), s, cfg, &mut out_boxes);
+                            crate::horology_pbr::draw_horology_aperture(rt, drum_r, 3.0 * s, s, &hpal, false);
+                            // Bright aviation orange index arrow triangle pointing at the drum!
+                            if let Ok(org) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.jewel_rgb, 0.98), None) {
+                                let mid_y = (drum_r.top + drum_r.bottom) * 0.5;
+                                rt.DrawLine(Vector2 { X: drum_r.left + 4.0 * s, Y: mid_y - 5.0 * s }, Vector2 { X: drum_r.left + 12.0 * s, Y: mid_y }, &org, 2.2 * s, None);
+                                rt.DrawLine(Vector2 { X: drum_r.left + 4.0 * s, Y: mid_y + 5.0 * s }, Vector2 { X: drum_r.left + 12.0 * s, Y: mid_y }, &org, 2.2 * s, None);
+                                rt.DrawLine(Vector2 { X: drum_r.right - 4.0 * s, Y: mid_y - 5.0 * s }, Vector2 { X: drum_r.right - 12.0 * s, Y: mid_y }, &org, 2.2 * s, None);
+                                rt.DrawLine(Vector2 { X: drum_r.right - 4.0 * s, Y: mid_y + 5.0 * s }, Vector2 { X: drum_r.right - 12.0 * s, Y: mid_y }, &org, 2.2 * s, None);
+                            }
+                            draw_text_spaced(&time_str, tf, drum_r.left + 12.0 * s, drum_r.top, (drum_r.right - drum_r.left - 24.0 * s).max(12.0), drum_r.bottom - drum_r.top, br, sh_horo.as_ref(), 0.8 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + 328.0 * s, top: y + 60.0 * s, right: x + dt_w - 18.0 * s, bottom: y + 90.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_aperture(rt, ap_r, 3.0 * s, s, &hpal, false);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Cascadia Mono")], 8.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_htext) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Cascadia Mono"), w!("Bahnschrift")], 8.8 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 166.0 * s, y + 114.0 * s, x + dt_w - 20.0 * s, y + 136.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 166.0 * s, y + 114.0 * s, dt_w - 186.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 7. BREGUET PORCELAIN: Bright Ivory Grand Feu Enamel & Blued-Steel Calligraphy (NO dark box!) ──
+                crate::horology_pbr::HorologyTheme::BreguetPorcelain => {
+                    let w_cx = x + 80.0 * s;
+                    let w_cy = y + dt_h * 0.5;
+                    let w_r = 54.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (w_cx - w_r - 5.0 * s, w_cy - w_r - 5.0 * s, w_cx + w_r + 5.0 * s, w_cy + w_r + 5.0 * s), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_watch_dial(rt, d2d.as_ref(), w_cx, w_cy, w_r, s, &dial_pal, (now.hour % 12) as f32, now.minute as f32 + now.second as f32 / 60.0, sec_opt, inter.time_s, lunar);
+                        end_elem_xf(rt, xf);
+                    }
+                    let br_blue = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.hands_rgb, 0.98), None).ok();
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 156.0 * s, y + 98.0 * s, x + dt_w - 24.0 * s, y + 106.0 * s), s, cfg, &mut out_boxes);
+                        if let Some(ref bl) = br_blue {
+                            rt.DrawLine(Vector2 { X: x + 158.0 * s, Y: y + 102.0 * s }, Vector2 { X: x + dt_w - 26.0 * s, Y: y + 102.0 * s }, bl, 0.9 * s, None);
+                        }
+                        if let Ok(rb) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.jewel_rgb, 0.92), None) {
+                            rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: x + 262.0 * s, Y: y + 102.0 * s }, radiusX: 2.6 * s, radiusY: 2.6 * s }, &rb);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_weekday {
+                        let tf_sc = make_resolved_tf_named(dw, custom_fonts, &font_script, &[w!("Edwardian Script ITC"), w!("Georgia")], 15.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_sc, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Weekday, (x + 152.0 * s, y + 16.0 * s, x + dt_w - 20.0 * s, y + 44.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(now.weekday_name, tf, x + 152.0 * s, y + 16.0 * s, dt_w - 172.0 * s, 28.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if cfg.dt_show_clock {
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Bodoni MT"), w!("Georgia")], 35.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_blue) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (x + 154.0 * s, y + 42.0 * s, x + dt_w - 20.0 * s, y + 98.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&time_str, tf, x + 154.0 * s, y + 42.0 * s, dt_w - 174.0 * s, 56.0 * s, br, sh_horo.as_ref(), 0.7 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + dt_w - 56.0 * s, top: y + 20.0 * s, right: x + dt_w - 20.0 * s, bottom: y + 38.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Georgia")], 8.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_blue) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Palatino Linotype"), w!("Georgia")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 152.0 * s, y + 110.0 * s, x + dt_w - 20.0 * s, y + 134.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 152.0 * s, y + 110.0 * s, dt_w - 172.0 * s, 24.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 8. FORGED CARBON MOTO: Hypercar Sweeping 240° Neon-Orange RPM Arc Cockpit! ──
+                crate::horology_pbr::HorologyTheme::ForgedCarbonMoto => {
+                    let c_cx = x + dt_w * 0.5;
+                    let c_cy = y + 90.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (c_cx - 78.0 * s, y + 14.0 * s, c_cx + 78.0 * s, y + 142.0 * s), s, cfg, &mut out_boxes);
+                        let rpm_norm = (now.second as f32 / 59.0).clamp(0.08, 1.0);
+                        crate::horology_pbr::draw_horology_rpm_arc(rt, c_cx, c_cy, 72.0 * s, 150.0, 240.0, 28, rpm_norm, s, dial_pal.lume_rgb);
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_clock {
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Bahnschrift"), w!("Cascadia Mono")], 34.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_htext) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (c_cx - 88.0 * s, y + 58.0 * s, c_cx + 88.0 * s, y + 110.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&time_str, tf, c_cx - 88.0 * s, y + 58.0 * s, 176.0 * s, 52.0 * s, br, sh_horo.as_ref(), 1.2 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    // Left & Right Carbon Telemetry Wings
+                    if cfg.dt_show_weekday {
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Bahnschrift")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 22.0 * s, y + 26.0 * s, x + 120.0 * s, y + 48.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&now.weekday_name.to_ascii_uppercase(), tf, x + 22.0 * s, y + 26.0 * s, 98.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                        let tf_sc = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Cascadia Mono")], 8.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_sc, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Weekday, (x + 22.0 * s, y + 106.0 * s, x + 116.0 * s, y + 128.0 * s), s, cfg, &mut out_boxes);
+                            let sec_lbl = format!("RPM  {:02}S", now.second);
+                            draw_text_spaced(&sec_lbl, tf, x + 22.0 * s, y + 106.0 * s, 94.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + dt_w - 78.0 * s, top: y + 24.0 * s, right: x + dt_w - 22.0 * s, bottom: y + 48.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_aperture(rt, ap_r, 4.0 * s, s, &hpal, false);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Bahnschrift")], 8.5 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Cascadia Mono")], 8.4 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (c_cx - 90.0 * s, y + 114.0 * s, c_cx + 90.0 * s, y + 136.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, c_cx - 90.0 * s, y + 114.0 * s, 180.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 9. WALNUT REGULATOR: Thick American Walnut Cabinet + Parchment Dial + Brass Pendulum Crest! ──
+                crate::horology_pbr::HorologyTheme::WalnutRegulator => {
+                    let w_cx = x + 78.0 * s;
+                    let w_cy = y + dt_h * 0.5;
+                    let w_r = 50.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (w_cx - w_r - 5.0 * s, w_cy - w_r - 5.0 * s, w_cx + w_r + 5.0 * s, w_cy + w_r + 5.0 * s), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_watch_dial(rt, d2d.as_ref(), w_cx, w_cy, w_r, s, &dial_pal, (now.hour % 12) as f32, now.minute as f32 + now.second as f32 / 60.0, sec_opt, inter.time_s, lunar);
+                        end_elem_xf(rt, xf);
+                    }
+                    // Center Brass Regulator Pendulum Crest (Spine slot)
+                    if cfg.dt_show_spine {
+                        let px = x + 154.0 * s;
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (px - 12.0 * s, y + 24.0 * s, px + 12.0 * s, y + dt_h - 24.0 * s), s, cfg, &mut out_boxes);
+                        if let Ok(brs) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.bezel_rgb, 0.94), None) {
+                            rt.DrawLine(Vector2 { X: px, Y: y + 26.0 * s }, Vector2 { X: px, Y: y + 104.0 * s }, &brs, 2.0 * s, None);
+                            rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: px, Y: y + 110.0 * s }, radiusX: 11.0 * s, radiusY: 11.0 * s }, &brs);
+                        }
+                        if let Ok(hi) = rt.CreateSolidColorBrush(&rgba_u8(255, 246, 212, 0.55), None) {
+                            rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: px - 3.0 * s, Y: y + 107.0 * s }, radiusX: 3.5 * s, radiusY: 3.5 * s }, &hi);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_weekday {
+                        let tag = format!("REGULATOR  •  {}", now.weekday_name.to_ascii_uppercase());
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Bodoni MT"), w!("Georgia")], 9.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 178.0 * s, y + 22.0 * s, x + dt_w - 20.0 * s, y + 40.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&tag, tf, x + 178.0 * s, y + 22.0 * s, dt_w - 198.0 * s, 18.0 * s, br, sh_horo.as_ref(), 0.6 * s, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if cfg.dt_show_clock {
+                        // Antique Brass-Rimmed Nameplate Plaque
+                        let pl_r = D2D_RECT_F {
+                            left: x + 178.0 * s,
+                            top: y + 46.0 * s,
+                            right: if !cfg.widgets_24h && cfg.dt_show_ampm { x + 324.0 * s } else { x + dt_w - 22.0 * s },
+                            bottom: y + 104.0 * s,
+                        };
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Georgia"), w!("Bodoni MT")], 29.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_hgold) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (pl_r.left, pl_r.top, pl_r.right, pl_r.bottom), s, cfg, &mut out_boxes);
+                            crate::horology_pbr::draw_horology_aperture(rt, pl_r, 6.0 * s, s, &hpal, false);
+                            draw_text_spaced(&time_str, tf, pl_r.left + 4.0 * s, pl_r.top, (pl_r.right - pl_r.left - 8.0 * s).max(12.0), pl_r.bottom - pl_r.top, br, sh_horo.as_ref(), 0.9 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + 328.0 * s, top: y + 60.0 * s, right: x + dt_w - 20.0 * s, bottom: y + 88.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_aperture(rt, ap_r, 5.0 * s, s, &hpal, false);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Georgia")], 8.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Palatino Linotype"), w!("Georgia")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 178.0 * s, y + 112.0 * s, x + dt_w - 22.0 * s, y + 134.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 178.0 * s, y + 112.0 * s, dt_w - 200.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 10. SAPPHIRE OBSIDIAN: Frameless Translucent Crystal Monolith (HUGE Left Thin Digits + Right Prism Orbit!) ──
+                crate::horology_pbr::HorologyTheme::SapphireObsidian => {
+                    // Right Floating Frameless Prismatic Orbital Watch Dial
+                    let w_cx = x + dt_w - 76.0 * s;
+                    let w_cy = y + dt_h * 0.5;
+                    let w_r = 50.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (w_cx - w_r - 6.0 * s, w_cy - w_r - 6.0 * s, w_cx + w_r + 6.0 * s, w_cy + w_r + 6.0 * s), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_watch_dial(rt, d2d.as_ref(), w_cx, w_cy, w_r, s, &dial_pal, (now.hour % 12) as f32, now.minute as f32 + now.second as f32 / 60.0, sec_opt, inter.time_s, lunar);
+                        end_elem_xf(rt, xf);
+                    }
+                    // Left HUGE Ultra-Thin Floating Translucent Crystal Numerals (NO opaque box!)
+                    if cfg.dt_show_weekday {
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("SF Pro Display"), w!("Segoe UI Light")], 9.5 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 26.0 * s, y + 20.0 * s, x + 230.0 * s, y + 40.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&now.weekday_name.to_ascii_uppercase(), tf, x + 26.0 * s, y + 20.0 * s, 204.0 * s, 20.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if cfg.dt_show_clock {
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Segoe UI Light"), w!("SF Pro Display")], 42.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_LIGHT, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_htext) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (x + 22.0 * s, y + 36.0 * s, x + 236.0 * s, y + 104.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&time_str, tf, x + 22.0 * s, y + 36.0 * s, 214.0 * s, 68.0 * s, br, sh_horo.as_ref(), 0.8 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 26.0 * s, y + 104.0 * s, x + 224.0 * s, y + 108.0 * s), s, cfg, &mut out_boxes);
+                        if let Ok(cy) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.56), None) {
+                            rt.DrawLine(Vector2 { X: x + 26.0 * s, Y: y + 106.0 * s }, Vector2 { X: x + 220.0 * s, Y: y + 106.0 * s }, &cy, 1.0 * s, None);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_r = D2D_RECT_F { left: x + 190.0 * s, top: y + 20.0 * s, right: x + 234.0 * s, bottom: y + 38.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_r.left, ap_r.top, ap_r.right, ap_r.bottom), s, cfg, &mut out_boxes);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("SF Pro Display")], 8.5 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_r, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("SF Pro Display"), w!("Segoe UI")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 26.0 * s, y + 112.0 * s, x + 230.0 * s, y + 134.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 26.0 * s, y + 112.0 * s, 204.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+
+                // ── 1. ROYAL OAK STEEL: Iconic Octagonal 8-Bolt Steel Left Porthole + Architectural Right Time ──
+                crate::horology_pbr::HorologyTheme::RoyalOakSteel => {
+                    let w_cx = x + 78.0 * s;
+                    let w_cy = y + dt_h * 0.5;
+                    let w_r = 54.0 * s;
+                    if cfg.dt_show_orb {
+                        let xf = begin_elem_xf(rt, ClockElemId::Orb, (w_cx - w_r - 6.0 * s, w_cy - w_r - 6.0 * s, w_cx + w_r + 6.0 * s, w_cy + w_r + 6.0 * s), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_watch_dial(rt, d2d.as_ref(), w_cx, w_cy, w_r, s, &dial_pal, (now.hour % 12) as f32, now.minute as f32 + now.second as f32 / 60.0, sec_opt, inter.time_s, lunar);
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_spine {
+                        let xf = begin_elem_xf(rt, ClockElemId::Spine, (x + 148.0 * s, y + 20.0 * s, x + 153.0 * s, y + dt_h - 20.0 * s), s, cfg, &mut out_boxes);
+                        let sp_tr = cfg.dt_elem_transforms[ClockElemId::Spine.idx()];
+                        let sp_col = elem_col_rgba(sp_tr.color_rgb, 0.85, crate::horology_pbr::rgb_u32(hpal.bezel_hi_rgb, 0.78));
+                        if let Ok(sp) = rt.CreateSolidColorBrush(&sp_col, None) {
+                            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: x + 149.2 * s, top: y + 22.0 * s, right: x + 151.6 * s, bottom: y + dt_h - 22.0 * s }, radiusX: 1.2 * s, radiusY: 1.2 * s }, &sp);
+                        }
+                        if let Ok(jew) = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.jewel_rgb, 0.94), None) {
+                            rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: x + 150.4 * s, Y: y + dt_h * 0.5 }, radiusX: 2.3 * s, radiusY: 2.3 * s }, &jew);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if cfg.dt_show_weekday {
+                        let cal_tag = format!("ROYAL OAK  •  {}", now.weekday_name.to_ascii_uppercase());
+                        let tf_wd = make_resolved_tf_named(dw, custom_fonts, &font_day, &[w!("Bahnschrift"), w!("Segoe UI")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_wd, &br_hlume) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Day, (x + 162.0 * s, y + 20.0 * s, x + dt_w - 18.0 * s, y + 38.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&cal_tag, tf, x + 162.0 * s, y + 20.0 * s, dt_w - 180.0 * s, 18.0 * s, br, sh_horo.as_ref(), 0.7 * s, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if cfg.dt_show_clock {
+                        let time_rect = D2D_RECT_F {
+                            left: x + 160.0 * s,
+                            top: y + 50.0 * s,
+                            right: if !cfg.widgets_24h && cfg.dt_show_ampm { x + 318.0 * s } else { x + dt_w - 20.0 * s },
+                            bottom: y + 104.0 * s,
+                        };
+                        let tf_c = make_resolved_tf_named(dw, custom_fonts, &font_clock, &[w!("Bahnschrift"), w!("Segoe UI")], 29.0 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_c, &br_htext) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Clock, (time_rect.left, time_rect.top, time_rect.right, time_rect.bottom), s, cfg, &mut out_boxes);
+                            crate::horology_pbr::draw_horology_aperture(rt, time_rect, 6.0 * s, s, &hpal, true);
+                            draw_text_spaced(&time_str, tf, time_rect.left + 4.0 * s, time_rect.top, (time_rect.right - time_rect.left - 8.0 * s).max(12.0), time_rect.bottom - time_rect.top, br, sh_horo.as_ref(), 0.9 * s, true);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                    if !cfg.widgets_24h && cfg.dt_show_ampm {
+                        let ap_rect = D2D_RECT_F { left: x + 324.0 * s, top: y + 64.0 * s, right: x + dt_w - 18.0 * s, bottom: y + 90.0 * s };
+                        let xf = begin_elem_xf(rt, ClockElemId::AmPm, (ap_rect.left, ap_rect.top, ap_rect.right, ap_rect.bottom), s, cfg, &mut out_boxes);
+                        crate::horology_pbr::draw_horology_aperture(rt, ap_rect, 5.0 * s, s, &hpal, false);
+                        if let (Some(tf), Some(br)) = (make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("Bahnschrift")], 8.5 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER), &br_hlume) {
+                            draw_shadowed_text(rt, ampm_str, &tf, ap_rect, br, None, 0.0, true);
+                        }
+                        end_elem_xf(rt, xf);
+                    }
+                    if !footer_str.is_empty() {
+                        let tf_f = make_resolved_tf_named(dw, custom_fonts, &font_sub, &[w!("SF Pro Display"), w!("Segoe UI")], 9.2 * PT_TO_PX * s, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        if let (Some(tf), Some(br)) = (&tf_f, &br_hsub) {
+                            let xf = begin_elem_xf(rt, ClockElemId::Date, (x + 162.0 * s, y + 112.0 * s, x + dt_w - 18.0 * s, y + 134.0 * s), s, cfg, &mut out_boxes);
+                            draw_text_spaced(&footer_str, tf, x + 162.0 * s, y + 112.0 * s, dt_w - 180.0 * s, 22.0 * s, br, None, 0.0, false);
+                            end_elem_xf(rt, xf);
+                        }
+                    }
+                }
+            }
+
+            // 8. Curved Sapphire Crystal AR Glare Overlay (scaled by glare_pct)
+            if cfg.dt_show_plate {
+                crate::horology_pbr::draw_sapphire_ar_glare(
+                    rt,
+                    d2d.as_ref(),
+                    main_rect,
+                    r_card,
+                    s,
+                    &hpal,
+                    inter.hover_x,
+                    inter.hover_mix,
+                );
+            }
+        }
     }
     };
 
@@ -8066,33 +8839,35 @@ unsafe fn draw_datetime_widget_inner(
             } else {
                 let flip_anim = cfg.dt_style == ClockStyle::FlipMech && (clock_now.second == 0 && ms < 0.60);
                 let pbr_anim = cfg.widgets_live_material
-                    && fx_viz
-                        .map(|v| {
-                            v.hover_mix > 0.004
-                                || v.hover_active
-                                || v.ripples.iter().any(|r| r.active)
-                                || (v.phase > 0.0001
-                                    && matches!(
-                                        cfg.dt_style,
-                                        ClockStyle::WaterCausticsClock | ClockStyle::RainWindowClock
-                                    ))
-                        })
-                        .unwrap_or(false)
-                    && matches!(
-                        cfg.dt_style,
-                        ClockStyle::SwissChronometer
-                            | ClockStyle::BraunIndustrial
-                            | ClockStyle::WaterCausticsClock
-                            | ClockStyle::ZenMistClock
-                            | ClockStyle::LeatherFieldClock
-                            | ClockStyle::WalnutDeskClock
-                            | ClockStyle::RainWindowClock
-                            | ClockStyle::AbyssalTrenchClock
-                            | ClockStyle::GlacierIceClock
-                            | ClockStyle::CarbonSteelClock
-                            | ClockStyle::GoldenHourClock
-                            | ClockStyle::AlpineMistClock
-                    );
+                    && (cfg.dt_style.has_idle_motion()
+                        || fx_viz
+                            .map(|v| {
+                                v.hover_mix > 0.004
+                                    || v.hover_active
+                                    || v.ripples.iter().any(|r| r.active)
+                                    || (v.phase > 0.0001
+                                        && matches!(
+                                            cfg.dt_style,
+                                            ClockStyle::WaterCausticsClock | ClockStyle::RainWindowClock
+                                        ))
+                            })
+                            .unwrap_or(false))
+                    && (cfg.dt_style.horology_theme().is_some()
+                        || matches!(
+                            cfg.dt_style,
+                            ClockStyle::SwissChronometer
+                                | ClockStyle::BraunIndustrial
+                                | ClockStyle::WaterCausticsClock
+                                | ClockStyle::ZenMistClock
+                                | ClockStyle::LeatherFieldClock
+                                | ClockStyle::WalnutDeskClock
+                                | ClockStyle::RainWindowClock
+                                | ClockStyle::AbyssalTrenchClock
+                                | ClockStyle::GlacierIceClock
+                                | ClockStyle::CarbonSteelClock
+                                | ClockStyle::GoldenHourClock
+                                | ClockStyle::AlpineMistClock
+                        ));
                 if !flip_anim && !pbr_anim {
                     let key = clock_fg_key(
                         s,
@@ -8304,9 +9079,56 @@ pub unsafe fn draw_apps_widget_with_boxes(
             expand_u(&mut labels_rect, (ax - 8.0 * s, ay + 76.0 * s, ax + 72.0 * s, ay + 96.0 * s));
         }
     }
-    let br_cream = rt.CreateSolidColorBrush(&elem_col_rgba(tr_labels.color_rgb, 1.0, pal.text_col(1.0)), None).ok();
-    let br_mono = rt.CreateSolidColorBrush(&elem_col_rgba(tr_tiles.color_rgb, 1.0, pal.text_col(1.0)), None).ok();
-    let sh_br = rt.CreateSolidColorBrush(&rgba_u8(0, 0, 0, 0.72), None).ok();
+    let horo_apps = crate::config::apps_style_horology(cfg.apps_tile_shape);
+    let horo_apps_pal = horo_apps.map(|ht| {
+        let ca = if cfg.apps_use_custom_color || cfg.apps_match_wallpaper {
+            Some(crate::theme::rgb_to_u32(pal.accent))
+        } else {
+            None
+        };
+        let ct = if cfg.apps_use_custom_color {
+            Some(cfg.apps_text_rgb)
+        } else {
+            None
+        };
+        let cb = tr_card.color_rgb.or_else(|| {
+            if cfg.apps_use_custom_color || cfg.apps_match_wallpaper {
+                Some(crate::theme::rgb_to_u32(pal.glass_top))
+            } else {
+                None
+            }
+        });
+        let mut hp = cfg.apps_horology.resolve(ht, ca, ct, cb);
+        if let Some(bc) = tr_card.border_rgb {
+            hp.bezel_rgb = bc;
+            hp.bezel_hi_rgb = crate::horology_pbr::lighten_rgb(bc, 0.36);
+            hp.bezel_lo_rgb = crate::horology_pbr::darken_rgb(bc, 0.45);
+        }
+        hp
+    });
+    let br_cream = if let Some(ref hp) = horo_apps_pal {
+        rt.CreateSolidColorBrush(
+            &elem_col_rgba(tr_labels.color_rgb, 1.0, crate::horology_pbr::rgb_u32(hp.text_rgb, 0.98)),
+            None,
+        )
+        .ok()
+    } else {
+        rt.CreateSolidColorBrush(&elem_col_rgba(tr_labels.color_rgb, 1.0, pal.text_col(1.0)), None).ok()
+    };
+    let br_mono = if let Some(ref hp) = horo_apps_pal {
+        rt.CreateSolidColorBrush(
+            &elem_col_rgba(tr_tiles.color_rgb, 1.0, crate::horology_pbr::rgb_u32(hp.hands_rgb, 0.98)),
+            None,
+        )
+        .ok()
+    } else {
+        rt.CreateSolidColorBrush(&elem_col_rgba(tr_tiles.color_rgb, 1.0, pal.text_col(1.0)), None).ok()
+    };
+    let sh_br = if horo_apps_pal.map(|p| p.is_light_dial).unwrap_or(false) {
+        rt.CreateSolidColorBrush(&rgba_u8(255, 255, 255, 0.42), None).ok()
+    } else {
+        rt.CreateSolidColorBrush(&rgba_u8(0, 0, 0, 0.72), None).ok()
+    };
 
     let card_pad_x = 12.0 * s;
     let card_pad_top = 10.0 * s;
@@ -8331,29 +9153,60 @@ pub unsafe fn draw_apps_widget_with_boxes(
         let mut nb: Option<&mut [ClockElemBox]> = None;
         let g_card = begin_elem_xf_slot(rt, 4, tr_card, apps_card_rect, s, &mut nb);
         let c_rad = ((cfg.apps_corner_radius as f32) + 4.0).clamp(4.0, 32.0) * s;
-        let c_rr = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F {
-                left: apps_card_rect.0,
-                top: apps_card_rect.1,
-                right: apps_card_rect.2,
-                bottom: apps_card_rect.3,
-            },
-            radiusX: c_rad,
-            radiusY: c_rad,
+        let c_rect = D2D_RECT_F {
+            left: apps_card_rect.0,
+            top: apps_card_rect.1,
+            right: apps_card_rect.2,
+            bottom: apps_card_rect.3,
         };
-        let ga_raw = (cfg.apps_glass_alpha as f32 / 255.0).clamp(0.18, 0.88);
-        let ra = (cfg.apps_rim_alpha as f32 / 255.0).clamp(0.18, 0.95);
-        let (top_col, bot_col, rim_col, ang) = resolve_card_plate_colors(&tr_card, &pal, ga_raw, (ga_raw * 0.72).min(0.80), ra);
-        let bg_stops = [
-            D2D1_GRADIENT_STOP { position: 0.0, color: top_col },
-            D2D1_GRADIENT_STOP { position: 1.0, color: bot_col },
-        ];
-        let (gp0, gp1) = grad_endpoints_for_rect(apps_card_rect, ang);
-        if let Some(bg_br) = create_linear_grad(rt, gp0, gp1, &bg_stops) {
-            rt.FillRoundedRectangle(&c_rr, &bg_br);
-        }
-        if let Ok(rb) = rt.CreateSolidColorBrush(&rim_col, None) {
-            rt.DrawRoundedRectangle(&c_rr, &rb, 1.1 * s, None);
+        if let Some(ref hp) = horo_apps_pal {
+            let inter = crate::realistic_pbr::pbr_input_from_viz(fx_viz, 0.0, tiles.iter().any(|t| t.hovered));
+            let op = (0.62 + cfg.apps_glass_alpha as f32 / 260.0).clamp(0.58, 0.99);
+            let ra = (cfg.apps_rim_alpha as f32 / 255.0).clamp(0.25, 1.0);
+            crate::horology_pbr::draw_horology_case_plate(
+                rt,
+                d2d.as_ref(),
+                c_rect,
+                c_rad,
+                s,
+                hp,
+                op,
+                ra,
+                true,
+                inter.hover_x,
+                inter.hover_y,
+                inter.hover_mix,
+            );
+            crate::horology_pbr::draw_sapphire_ar_glare(
+                rt,
+                d2d.as_ref(),
+                c_rect,
+                c_rad,
+                s,
+                hp,
+                inter.hover_x,
+                inter.hover_mix,
+            );
+        } else {
+            let c_rr = D2D1_ROUNDED_RECT {
+                rect: c_rect,
+                radiusX: c_rad,
+                radiusY: c_rad,
+            };
+            let ga_raw = (cfg.apps_glass_alpha as f32 / 255.0).clamp(0.18, 0.88);
+            let ra = (cfg.apps_rim_alpha as f32 / 255.0).clamp(0.18, 0.95);
+            let (top_col, bot_col, rim_col, ang) = resolve_card_plate_colors(&tr_card, &pal, ga_raw, (ga_raw * 0.72).min(0.80), ra);
+            let bg_stops = [
+                D2D1_GRADIENT_STOP { position: 0.0, color: top_col },
+                D2D1_GRADIENT_STOP { position: 1.0, color: bot_col },
+            ];
+            let (gp0, gp1) = grad_endpoints_for_rect(apps_card_rect, ang);
+            if let Some(bg_br) = create_linear_grad(rt, gp0, gp1, &bg_stops) {
+                rt.FillRoundedRectangle(&c_rr, &bg_br);
+            }
+            if let Ok(rb) = rt.CreateSolidColorBrush(&rim_col, None) {
+                rt.DrawRoundedRectangle(&c_rr, &rb, 1.1 * s, None);
+            }
         }
         end_elem_xf_slot(rt, g_card);
     }
@@ -8429,29 +9282,70 @@ pub unsafe fn draw_apps_widget_with_boxes(
         let g_tile = begin_elem_xf_slot(rt, elem_idx, tr_this, grp_rect, s, &mut slice_opt);
 
         if cfg.apps_show_plate {
-            let bg_a = if item.is_add_tile {
-                if item.hovered { 0.28 } else { 0.14 }
-            } else if item.hovered {
-                ((cfg.apps_glass_alpha as f32 + 43.0) / 255.0).clamp(0.1, 0.85)
+            if let Some(ref hp) = horo_apps_pal {
+                // Machined Horology archetype jewel well around each app icon
+                let well_rad = match hp.theme {
+                    crate::horology_pbr::HorologyTheme::SubmarinerEmerald
+                    | crate::horology_pbr::HorologyTheme::PatekMoonphase
+                    | crate::horology_pbr::HorologyTheme::BreguetPorcelain => 32.0 * s,
+                    crate::horology_pbr::HorologyTheme::IwcPilotTitanium => 4.0 * s,
+                    crate::horology_pbr::HorologyTheme::ForgedCarbonMoto => 6.0 * s,
+                    crate::horology_pbr::HorologyTheme::RoyalOakSteel => 11.0 * s,
+                    crate::horology_pbr::HorologyTheme::WalnutRegulator => 8.0 * s,
+                    _ => tile_rad.clamp(10.0 * s, 24.0 * s),
+                };
+                crate::horology_pbr::draw_horology_pusher(
+                    rt,
+                    tile_rr.rect,
+                    well_rad,
+                    s,
+                    hp,
+                    false,
+                    item.hovered,
+                    !item.is_add_tile && item.hovered,
+                );
+                if hp.theme != crate::horology_pbr::HorologyTheme::SapphireObsidian
+                    && hp.theme != crate::horology_pbr::HorologyTheme::BreguetPorcelain
+                {
+                    crate::horology_pbr::draw_horology_aperture(
+                        rt,
+                        D2D_RECT_F {
+                            left: ax + 4.0 * s,
+                            top: ay + 4.0 * s,
+                            right: ax + tile_w - 4.0 * s,
+                            bottom: ay + tile_h - 4.0 * s,
+                        },
+                        (well_rad - 3.0 * s).max(4.0 * s),
+                        s,
+                        hp,
+                        hp.theme == crate::horology_pbr::HorologyTheme::SubmarinerEmerald,
+                    );
+                }
             } else {
-                (cfg.apps_glass_alpha as f32 / 255.0).clamp(0.0, 0.85)
-            };
-            let tile_bg_a = if tr_this.color_rgb.is_some() && !item.is_add_tile {
-                bg_a.max(0.36)
-            } else {
-                bg_a
-            };
-            let bg_color = if item.is_add_tile {
-                elem_col_rgba(tr_this.color_rgb, tile_bg_a, pal.accent_col(tile_bg_a))
-            } else {
-                elem_col_rgba(tr_this.color_rgb, tile_bg_a, pal.glass_top_col(tile_bg_a))
-            };
-            if let Ok(bg_br) = rt.CreateSolidColorBrush(&bg_color, None) {
-                if let Some(ref pts) = poly_pts {
-                    let fb: ID2D1Brush = bg_br.cast().unwrap();
-                    draw_clock_poly(rt, d2d.as_ref(), pts, Some(&fb), None, 0.0, true);
+                let bg_a = if item.is_add_tile {
+                    if item.hovered { 0.28 } else { 0.14 }
+                } else if item.hovered {
+                    ((cfg.apps_glass_alpha as f32 + 43.0) / 255.0).clamp(0.1, 0.85)
                 } else {
-                    rt.FillRoundedRectangle(&tile_rr, &bg_br);
+                    (cfg.apps_glass_alpha as f32 / 255.0).clamp(0.0, 0.85)
+                };
+                let tile_bg_a = if tr_this.color_rgb.is_some() && !item.is_add_tile {
+                    bg_a.max(0.36)
+                } else {
+                    bg_a
+                };
+                let bg_color = if item.is_add_tile {
+                    elem_col_rgba(tr_this.color_rgb, tile_bg_a, pal.accent_col(tile_bg_a))
+                } else {
+                    elem_col_rgba(tr_this.color_rgb, tile_bg_a, pal.glass_top_col(tile_bg_a))
+                };
+                if let Ok(bg_br) = rt.CreateSolidColorBrush(&bg_color, None) {
+                    if let Some(ref pts) = poly_pts {
+                        let fb: ID2D1Brush = bg_br.cast().unwrap();
+                        draw_clock_poly(rt, d2d.as_ref(), pts, Some(&fb), None, 0.0, true);
+                    } else {
+                        rt.FillRoundedRectangle(&tile_rr, &bg_br);
+                    }
                 }
             }
         }
@@ -8473,7 +9367,7 @@ pub unsafe fn draw_apps_widget_with_boxes(
             fx_viz,
         );
 
-        if cfg.apps_show_plate && rim_a > 0.01 {
+        if cfg.apps_show_plate && rim_a > 0.01 && horo_apps_pal.is_none() {
             let rim_c = elem_col_rgba(tr_this.border_rgb.or(tr_this.color_rgb), rim_a, pal.accent_col(rim_a));
             if let Ok(rim_br) = rt.CreateSolidColorBrush(&rim_c, None) {
                 if let Some(ref pts) = poly_pts {
@@ -8571,7 +9465,11 @@ pub unsafe fn draw_apps_widget_with_boxes(
             let g_dot = begin_elem_xf_slot(rt, 2, tr_dots, d_rect, s, &mut slice_opt);
             let dot_x = ax + 32.0 * s;
             let dot_y = ay + 70.0 * s;
-            let dot_c = elem_col_rgba(tr_dots.color_rgb, rim_a.max(0.55), pal.accent_col(rim_a.max(0.55)));
+            let dot_c = if let Some(ref hp) = horo_apps_pal {
+                elem_col_rgba(tr_dots.color_rgb, 0.96, crate::horology_pbr::rgb_u32(hp.jewel_rgb, 0.96))
+            } else {
+                elem_col_rgba(tr_dots.color_rgb, rim_a.max(0.55), pal.accent_col(rim_a.max(0.55)))
+            };
             if let Ok(dot_br) = rt.CreateSolidColorBrush(&dot_c, None) {
                 rt.FillEllipse(
                     &D2D1_ELLIPSE {
@@ -8605,7 +9503,9 @@ pub unsafe fn draw_apps_widget_with_boxes(
 }
 
 pub fn vitals_logical_height(cfg: &AppConfig) -> f32 {
-    if cfg.vitals_style == 4 {
+    if crate::config::vitals_style_horology(cfg.vitals_style).is_some() {
+        78.0
+    } else if cfg.vitals_style == 4 {
         64.0
     } else {
         54.0
@@ -8678,7 +9578,7 @@ fn ring_pill_layout(cfg: &AppConfig) -> ([RingPillBay; 4], usize, f32) {
 
 /// Computes dynamic width of the Vitals card (in unscaled 1280px units) based on active meters/buttons.
 pub fn vitals_logical_width(cfg: &AppConfig) -> f32 {
-    if cfg.vitals_style == 4 {
+    if crate::config::vitals_uses_quad_telemetry(cfg.vitals_style) {
         let (_, _, end_x) = ring_pill_layout(cfg);
         return if cfg.vitals_show_buttons {
             end_x + 92.0
@@ -8750,6 +9650,13 @@ pub unsafe fn draw_vitals_widget_with_telemetry_and_boxes(
         *boxes = [ClockElemBox::default(); 6];
     }
     if cfg.is_vitals_all_elements_off() {
+        return;
+    }
+    if let Some(ht) = crate::config::vitals_style_horology(cfg.vitals_style) {
+        draw_horology_vitals_cluster(
+            rt, dw, d2d, custom_fonts, x, y, s, cfg, ht, cpu_pct, gpu_pct, ram_pct, temp_c, hover,
+            fx_viz, out_boxes,
+        );
         return;
     }
     if cfg.vitals_style == 4 {
@@ -9345,6 +10252,315 @@ pub unsafe fn draw_vitals_widget_with_telemetry_and_boxes(
             );
         }
         end_elem_xf_slot(rt, g_sht);
+    }
+}
+
+/// Photorealistic Haute Horlogerie Quad Chronograph Vitals Cluster (`vitals_style == 5..=14`):
+/// Recessed azurage sub-dials for CPU, GPU, RAM, and TEMP with sweeping cast-shadow needles,
+/// redline thermal zones, and machined metallic crown pushers for Sleep & Shutdown.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_horology_vitals_cluster(
+    rt: &ID2D1RenderTarget,
+    dw: &IDWriteFactory,
+    d2d: Option<&ID2D1Factory>,
+    custom_fonts: Option<&IDWriteFontCollection>,
+    x: f32,
+    y: f32,
+    s: f32,
+    cfg: &AppConfig,
+    ht: crate::horology_pbr::HorologyTheme,
+    cpu_pct: f32,
+    gpu_pct: f32,
+    ram_pct: f32,
+    temp_c: f32,
+    hover: WidgetHitZone,
+    fx_viz: Option<&VizSnapshot>,
+    mut out_boxes: Option<&mut [ClockElemBox; 6]>,
+) {
+    let (bays, count, end_x) = ring_pill_layout(cfg);
+    let lw = vitals_logical_width(cfg);
+    let lh = vitals_logical_height(cfg);
+    let w = lw * s;
+    let h = lh * s;
+    let tr_card = cfg.vitals_elem_transforms[5];
+    let card_tuple = (x, y, x + w, y + h);
+    {
+        let mut slice_opt = out_boxes.as_deref_mut().map(|b| &mut b[..]);
+        record_elem_box_slot(&mut slice_opt, 5, tr_card, card_tuple, s);
+    }
+    let pal = resolve_palette_for(cfg, cfg.vitals_match_wallpaper);
+    let ca = if cfg.vitals_use_custom_color || cfg.vitals_match_wallpaper {
+        Some(crate::theme::rgb_to_u32(pal.accent))
+    } else {
+        None
+    };
+    let ct = if cfg.vitals_use_custom_color {
+        Some(cfg.vitals_text_rgb)
+    } else {
+        None
+    };
+    let cb = tr_card.color_rgb.or_else(|| {
+        if cfg.vitals_use_custom_color || cfg.vitals_match_wallpaper {
+            Some(crate::theme::rgb_to_u32(pal.glass_top))
+        } else {
+            None
+        }
+    });
+    let mut hpal = cfg.vitals_horology.resolve(ht, ca, ct, cb);
+    if let Some(bc) = tr_card.border_rgb {
+        hpal.bezel_rgb = bc;
+        hpal.bezel_hi_rgb = crate::horology_pbr::lighten_rgb(bc, 0.36);
+        hpal.bezel_lo_rgb = crate::horology_pbr::darken_rgb(bc, 0.45);
+    }
+    let card_rect = D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + h };
+    let rad = ((cfg.vitals_corner_radius as f32).clamp(6.0, 36.0)) * s;
+    let is_hov = matches!(
+        hover,
+        WidgetHitZone::VitalsBar
+            | WidgetHitZone::VitalsCpu
+            | WidgetHitZone::VitalsGpu
+            | WidgetHitZone::VitalsRam
+            | WidgetHitZone::VitalsTemp
+            | WidgetHitZone::VitalsSleep
+            | WidgetHitZone::VitalsShutdown
+    );
+    let inter = crate::realistic_pbr::pbr_input_from_viz(fx_viz, 0.0, is_hov);
+
+    if cfg.vitals_show_plate && tr_card.visible {
+        let mut nb: Option<&mut [ClockElemBox]> = None;
+        let g = begin_elem_xf_slot(rt, 5, tr_card, card_tuple, s, &mut nb);
+        let op = (0.62 + cfg.vitals_glass_alpha as f32 / 240.0).clamp(0.58, 0.99);
+        let ra = (cfg.vitals_rim_alpha as f32 / 255.0).clamp(0.25, 1.0);
+        crate::horology_pbr::draw_horology_case_plate(
+            rt,
+            d2d,
+            card_rect,
+            rad,
+            s,
+            &hpal,
+            op,
+            ra,
+            true,
+            inter.hover_x,
+            inter.hover_y,
+            inter.hover_mix,
+        );
+        paint_widget_elemental_fx(
+            rt,
+            d2d,
+            x,
+            y,
+            x + w,
+            y + h,
+            (x, y, w, h),
+            rad,
+            s,
+            cfg.vitals_hover_fx,
+            82,
+            &pal,
+            !cfg.vitals_match_wallpaper && !cfg.vitals_use_custom_color,
+            fx_viz,
+        );
+        end_elem_xf_slot(rt, g);
+    }
+
+    let fs = (cfg.vitals_font_scale_pct.clamp(75, 135) as f32) / 100.0;
+    let tf_val = make_resolved_tf_named(
+        dw,
+        custom_fonts,
+        &cfg.vitals_font_val,
+        &[w!("Bahnschrift"), w!("SF Pro Display"), w!("Segoe UI")],
+        8.2 * PT_TO_PX * s * fs,
+        DWRITE_FONT_WEIGHT_BOLD,
+        DWRITE_TEXT_ALIGNMENT_CENTER,
+        DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    );
+    let tf_lbl = make_resolved_tf_named(
+        dw,
+        custom_fonts,
+        &cfg.vitals_font_lbl,
+        &[w!("Bahnschrift"), w!("Segoe UI")],
+        6.2 * PT_TO_PX * s * fs,
+        DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_TEXT_ALIGNMENT_CENTER,
+        DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    );
+    let br_txt = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.text_rgb, 0.98), None).ok();
+    let br_sub = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.subtext_rgb, 0.94), None).ok();
+    let br_lume = rt.CreateSolidColorBrush(&crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.98), None).ok();
+    let br_dark_ink = rt.CreateSolidColorBrush(&rgba_u8(16, 18, 22, 0.98), None).ok();
+
+    for bay in bays.iter().take(count) {
+        let tr = cfg.vitals_elem_transforms[bay.elem_idx];
+        let bx0 = x + bay.x_left * s;
+        let bx1 = bx0 + bay.bay_w * s;
+        let mut slice_opt = out_boxes.as_deref_mut().map(|b| &mut b[..]);
+        let g = begin_elem_xf_slot(rt, bay.elem_idx, tr, (bx0, y + 6.0 * s, bx1, y + h - 6.0 * s), s, &mut slice_opt);
+        if tr.visible {
+            let cx = (bx0 + bx1) * 0.5;
+            let cy = y + 36.0 * s;
+            let r = 24.5 * s;
+            let (norm, lbl, val_s, redline) = match bay.hit_zone {
+                WidgetHitZone::VitalsCpu => ((cpu_pct / 100.0).clamp(0.0, 1.0), "CPU", format!("{:.0}%", cpu_pct), Some(0.82)),
+                WidgetHitZone::VitalsGpu => ((gpu_pct / 100.0).clamp(0.0, 1.0), "GPU", format!("{:.0}%", gpu_pct), Some(0.85)),
+                WidgetHitZone::VitalsRam => ((ram_pct / 100.0).clamp(0.0, 1.0), "RAM", format!("{:.0}%", ram_pct), Some(0.85)),
+                _ => (((temp_c - 20.0) / 80.0).clamp(0.0, 1.0), "TEMP", format!("{:.0}°", temp_c), Some(0.75)),
+            };
+
+            match ht {
+                crate::horology_pbr::HorologyTheme::ForgedCarbonMoto => {
+                    // Hypercar blazing segmented neon-orange 240° RPM arc with open center readout
+                    crate::horology_pbr::draw_horology_rpm_arc(
+                        rt,
+                        cx,
+                        cy,
+                        r,
+                        150.0,
+                        240.0,
+                        18,
+                        norm,
+                        s,
+                        tr.color_rgb.unwrap_or(0xFF5E1A),
+                    );
+                    if let (Some(tf), Some(br)) = (&tf_val, &br_txt) {
+                        draw_shadowed_text(rt, &val_s, tf, D2D_RECT_F { left: cx - 22.0 * s, top: cy - 8.0 * s, right: cx + 22.0 * s, bottom: cy + 9.0 * s }, br, None, 0.0, true);
+                    }
+                    if let (Some(tf), Some(br)) = (&tf_lbl, &br_lume) {
+                        draw_shadowed_text(rt, lbl, tf, D2D_RECT_F { left: bx0, top: y + 57.0 * s, right: bx1, bottom: y + 71.0 * s }, br, None, 0.0, true);
+                    }
+                }
+                crate::horology_pbr::HorologyTheme::SapphireObsidian => {
+                    // Frameless translucent optical sapphire sub-ring + floating ice-cyan center readout (no dark box)
+                    crate::horology_pbr::draw_horology_subdial(rt, d2d, cx, cy, r, s, &hpal, norm, redline, tr.color_rgb);
+                    if let (Some(tf), Some(br)) = (&tf_val, &br_lume) {
+                        draw_shadowed_text(rt, &val_s, tf, D2D_RECT_F { left: cx - 22.0 * s, top: cy + 5.0 * s, right: cx + 22.0 * s, bottom: cy + 20.0 * s }, br, None, 0.0, true);
+                    }
+                    if let (Some(tf), Some(br)) = (&tf_lbl, &br_sub) {
+                        draw_shadowed_text(rt, lbl, tf, D2D_RECT_F { left: bx0, top: y + 57.0 * s, right: bx1, bottom: y + 71.0 * s }, br, None, 0.0, true);
+                    }
+                }
+                crate::horology_pbr::HorologyTheme::BreguetPorcelain => {
+                    // Open Grand Feu cream enamel gauge + open navy ink value directly on porcelain
+                    crate::horology_pbr::draw_horology_subdial(rt, d2d, cx, cy, r, s, &hpal, norm, redline, tr.color_rgb);
+                    if let (Some(tf), Some(br)) = (&tf_val, &br_txt) {
+                        draw_shadowed_text(rt, &val_s, tf, D2D_RECT_F { left: cx - 20.0 * s, top: cy + 6.0 * s, right: cx + 20.0 * s, bottom: cy + 20.0 * s }, br, None, 0.0, true);
+                    }
+                    if let (Some(tf), Some(br)) = (&tf_lbl, &br_sub) {
+                        draw_shadowed_text(rt, lbl, tf, D2D_RECT_F { left: bx0, top: y + 57.0 * s, right: bx1, bottom: y + 71.0 * s }, br, None, 0.0, true);
+                    }
+                }
+                crate::horology_pbr::HorologyTheme::DaytonaCeramic => {
+                    // Bright silver-white Panda sub-dial + dark espresso/black high-contrast numeral directly on white Panda face
+                    crate::horology_pbr::draw_horology_subdial(rt, d2d, cx, cy, r, s, &hpal, norm, redline, tr.color_rgb);
+                    if let (Some(tf), Some(br)) = (&tf_val, &br_dark_ink) {
+                        draw_shadowed_text(rt, &val_s, tf, D2D_RECT_F { left: cx - 20.0 * s, top: cy + 7.0 * s, right: cx + 20.0 * s, bottom: cy + 20.5 * s }, br, None, 0.0, true);
+                    }
+                    if let (Some(tf), Some(br)) = (&tf_lbl, &br_lume) {
+                        draw_shadowed_text(rt, lbl, tf, D2D_RECT_F { left: bx0, top: y + 57.0 * s, right: bx1, bottom: y + 71.0 * s }, br, None, 0.0, true);
+                    }
+                }
+                crate::horology_pbr::HorologyTheme::WalnutRegulator => {
+                    // Warm antique cream parchment gauge + dark sepia numeral + warm brass label on walnut
+                    crate::horology_pbr::draw_horology_subdial(rt, d2d, cx, cy, r, s, &hpal, norm, redline, tr.color_rgb);
+                    if let (Some(tf), Some(br)) = (&tf_val, &br_dark_ink) {
+                        draw_shadowed_text(rt, &val_s, tf, D2D_RECT_F { left: cx - 20.0 * s, top: cy + 7.0 * s, right: cx + 20.0 * s, bottom: cy + 20.5 * s }, br, None, 0.0, true);
+                    }
+                    if let (Some(tf), Some(br)) = (&tf_lbl, &br_lume) {
+                        draw_shadowed_text(rt, lbl, tf, D2D_RECT_F { left: bx0, top: y + 57.0 * s, right: bx1, bottom: y + 71.0 * s }, br, None, 0.0, true);
+                    }
+                }
+                _ => {
+                    crate::horology_pbr::draw_horology_subdial(rt, d2d, cx, cy, r, s, &hpal, norm, redline, tr.color_rgb);
+                    if let (Some(tf), Some(br)) = (&tf_lbl, &br_sub) {
+                        draw_shadowed_text(
+                            rt,
+                            lbl,
+                            tf,
+                            D2D_RECT_F { left: bx0, top: y + 57.0 * s, right: bx1, bottom: y + 71.0 * s },
+                            br,
+                            None,
+                            0.0,
+                            true,
+                        );
+                    }
+                    if let (Some(tf), Some(br)) = (&tf_val, &br_txt) {
+                        let ap = D2D_RECT_F {
+                            left: cx - 17.0 * s,
+                            top: cy + 8.0 * s,
+                            right: cx + 17.0 * s,
+                            bottom: cy + 20.5 * s,
+                        };
+                        crate::horology_pbr::draw_horology_aperture(
+                            rt,
+                            ap,
+                            3.0 * s,
+                            s,
+                            &hpal,
+                            ht == crate::horology_pbr::HorologyTheme::SubmarinerEmerald,
+                        );
+                        draw_shadowed_text(rt, &val_s, tf, ap, br, None, 0.0, true);
+                    }
+                }
+            }
+        }
+        end_elem_xf_slot(rt, g);
+    }
+
+    if cfg.vitals_show_buttons {
+        let btn_cy = y + h * 0.5;
+        let r_btn = 14.5 * s;
+        for (idx, cx_off, zone, glyph) in [
+            (3usize, end_x + 26.0, WidgetHitZone::VitalsSleep, "☾"),
+            (4usize, end_x + 62.0, WidgetHitZone::VitalsShutdown, "⏻"),
+        ] {
+            let tr = cfg.vitals_elem_transforms[idx];
+            let cx = x + cx_off * s;
+            let br_rect = D2D_RECT_F {
+                left: cx - r_btn,
+                top: btn_cy - r_btn,
+                right: cx + r_btn,
+                bottom: btn_cy + r_btn,
+            };
+            let mut slice_opt = out_boxes.as_deref_mut().map(|b| &mut b[..]);
+            let g = begin_elem_xf_slot(rt, idx, tr, (br_rect.left, br_rect.top, br_rect.right, br_rect.bottom), s, &mut slice_opt);
+            if tr.visible {
+                let hov = hover == zone;
+                crate::horology_pbr::draw_horology_pusher(rt, br_rect, r_btn, s, &hpal, false, hov, hov);
+                let gcol = if idx == 4 {
+                    crate::horology_pbr::rgb_u32(hpal.jewel_rgb, 0.96)
+                } else {
+                    crate::horology_pbr::rgb_u32(hpal.lume_rgb, 0.96)
+                };
+                if let (Some(tf), Ok(gb)) = (
+                    make_resolved_tf(
+                        dw,
+                        custom_fonts,
+                        &[w!("Segoe UI Symbol"), w!("Segoe UI")],
+                        10.5 * PT_TO_PX * s,
+                        DWRITE_FONT_WEIGHT_BOLD,
+                        DWRITE_TEXT_ALIGNMENT_CENTER,
+                        DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                    ),
+                    rt.CreateSolidColorBrush(&gcol, None),
+                ) {
+                    draw_shadowed_text(rt, glyph, &tf, br_rect, &gb, None, 0.0, true);
+                }
+            }
+            end_elem_xf_slot(rt, g);
+        }
+    }
+
+    if cfg.vitals_show_plate && tr_card.visible {
+        crate::horology_pbr::draw_sapphire_ar_glare(
+            rt,
+            d2d,
+            card_rect,
+            rad,
+            s,
+            &hpal,
+            inter.hover_x,
+            inter.hover_mix,
+        );
     }
 }
 
@@ -11153,7 +12369,7 @@ impl DesktopWidgets {
 
     pub fn is_ring_pill_interpolating(&self) -> bool {
         self.cfg.show_vitals
-            && self.cfg.vitals_style == 4
+            && crate::config::vitals_uses_quad_telemetry(self.cfg.vitals_style)
             && ((self.hud_smooth[0] - self.cpu_pct).abs() > 0.12
                 || (self.hud_smooth[1] - self.gpu_pct).abs() > 0.12
                 || (self.hud_smooth[2] - self.ram_pct).abs() > 0.12
@@ -11590,7 +12806,7 @@ impl DesktopWidgets {
         let dt60 = self.last_anim60_tick.elapsed().as_secs_f32().clamp(0.004, 0.065);
         self.last_anim60_tick = Instant::now();
 
-        if self.cfg.show_vitals && self.cfg.vitals_style == 4 {
+        if self.cfg.show_vitals && crate::config::vitals_uses_quad_telemetry(self.cfg.vitals_style) {
             let targets = [self.cpu_pct, self.gpu_pct, self.ram_pct, self.temp_c];
             let k = 1.0 - (-dt60 * 11.0).exp();
             for i in 0..4 {
@@ -11995,11 +13211,13 @@ impl DesktopWidgets {
         self.fg_bmp_cache.clear();
         if let Some(ref dcomp) = self.dcomp {
             crate::realistic_pbr::evict_rt(dcomp.render_target());
+            crate::horology_pbr::evict_rt(dcomp.render_target());
             crate::taskbar_styler::evict_styler_rt(dcomp.render_target());
             crate::dock_themes::evict_luxury_hud_rt(dcomp.render_target());
         }
         if let Some(ref rt) = self.dc_rt {
             crate::realistic_pbr::evict_rt(rt);
+            crate::horology_pbr::evict_rt(rt);
             crate::taskbar_styler::evict_styler_rt(rt);
             crate::dock_themes::evict_luxury_hud_rt(rt);
         }
@@ -12049,6 +13267,7 @@ impl DesktopWidgets {
         self.fg_bmp_cache.clear();
         if let Some(ref mut dcomp) = self.dcomp {
             crate::realistic_pbr::evict_rt(dcomp.render_target());
+            crate::horology_pbr::evict_rt(dcomp.render_target());
             crate::taskbar_styler::evict_styler_rt(dcomp.render_target());
             crate::dock_themes::evict_luxury_hud_rt(dcomp.render_target());
             dcomp.release_buffers();
@@ -12056,6 +13275,7 @@ impl DesktopWidgets {
         self.dcomp_win_rect = None;
         if let Some(ref rt) = self.dc_rt {
             crate::realistic_pbr::evict_rt(rt);
+            crate::horology_pbr::evict_rt(rt);
             crate::taskbar_styler::evict_styler_rt(rt);
             crate::dock_themes::evict_luxury_hud_rt(rt);
         }
@@ -12103,7 +13323,10 @@ impl DesktopWidgets {
             if tel_due {
                 self.query_telemetry();
             }
-        } else if !self.cfg.widgets_enabled || !self.cfg.show_vitals || self.cfg.vitals_style != 4 {
+        } else if !self.cfg.widgets_enabled
+            || !self.cfg.show_vitals
+            || !crate::config::vitals_uses_quad_telemetry(self.cfg.vitals_style)
+        {
             self.dxgi_cached_adapter = None;
         }
         if self.visible {
@@ -12279,9 +13502,13 @@ impl DesktopWidgets {
             }
         }
 
-        // GPU utilization for Telemetry Ring-Pill HUD (`vitals_style == 4`):
+        // GPU utilization for Telemetry Ring-Pill HUD & Horology Chronograph Vitals:
         // Poll ONLY cached single IDXGIAdapter3::QueryVideoMemoryInfo (~every 1.2s) — never PDH wildcards.
-        if self.cfg.show_vitals && self.cfg.vitals_style == 4 && !self.covered_by_maximized && self.visible {
+        if self.cfg.show_vitals
+            && crate::config::vitals_uses_quad_telemetry(self.cfg.vitals_style)
+            && !self.covered_by_maximized
+            && self.visible
+        {
             self.dxgi_probe_tick = self.dxgi_probe_tick.wrapping_add(1);
             if self.dxgi_probe_tick % 3 == 1 || self.dxgi_cached_adapter.is_none() {
                 unsafe {
@@ -12707,7 +13934,7 @@ impl DesktopWidgets {
                 if self.cfg.show_vitals {
                     let s = u * (self.cfg.vitals_scale_pct as f32 / 100.0);
                     let (vx, vy) = vitals_pos;
-                    let (v_cpu, v_gpu, v_ram, v_temp) = if self.cfg.vitals_style == 4 {
+                    let (v_cpu, v_gpu, v_ram, v_temp) = if crate::config::vitals_uses_quad_telemetry(self.cfg.vitals_style) {
                         (self.hud_smooth[0], self.hud_smooth[1], self.hud_smooth[2], self.hud_smooth[3])
                     } else {
                         (self.cpu_pct, self.gpu_pct, self.ram_pct, self.temp_c)
@@ -12830,6 +14057,7 @@ impl DesktopWidgets {
                     self.fg_bmp_cache.clear();
                     if let Some(ref dc) = self.dcomp {
                         crate::realistic_pbr::evict_rt(dc.render_target());
+                        crate::horology_pbr::evict_rt(dc.render_target());
                         crate::taskbar_styler::evict_styler_rt(dc.render_target());
                         crate::dock_themes::evict_luxury_hud_rt(dc.render_target());
                     }
@@ -13143,7 +14371,7 @@ impl DesktopWidgets {
             let vw = vw_log * s;
             let vh = vh_log * s;
             if x >= vx && x <= vx + vw && y >= vy && y <= vy + vh {
-                if self.cfg.vitals_style == 4 {
+                if crate::config::vitals_uses_quad_telemetry(self.cfg.vitals_style) {
                     let (bays, count, end_x) = ring_pill_layout(&self.cfg);
                     for bay in bays.iter().take(count) {
                         let lx0 = vx + bay.x_left * s;
@@ -13153,7 +14381,7 @@ impl DesktopWidgets {
                         }
                     }
                     if self.cfg.vitals_show_buttons {
-                        let btn_cy = vy + 32.0 * s;
+                        let btn_cy = vy + (vh_log * 0.5) * s;
                         let r_btn = 15.0 * s;
                         let slp_cx = vx + (end_x + 26.0) * s;
                         let sht_cx = vx + (end_x + 62.0) * s;

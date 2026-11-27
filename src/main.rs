@@ -5,6 +5,8 @@ mod dcomp_surface;
 mod desktop_widgets;
 mod diagnostics;
 mod dock_themes;
+mod horology_pbr;
+mod horology_widgets;
 mod liquid_backdrop;
 mod mac_dock;
 mod realistic_pbr;
@@ -3118,6 +3120,7 @@ fn fast_os_session_shutdown(state: &mut AppState) {
     state.mac_dock.cleanup();
     state.widgets.cleanup();
     crate::realistic_pbr::evict_all();
+    crate::horology_pbr::evict_all();
 }
 
 fn restore_on_exit(state: &mut AppState) {
@@ -3160,6 +3163,7 @@ fn restore_on_exit(state: &mut AppState) {
     state.widgets.cleanup();
     state.wallpaper.cleanup();
     crate::realistic_pbr::evict_all();
+    crate::horology_pbr::evict_all();
     if !state.clean_exit_event.0.is_null() {
         unsafe {
             let _ = SetEvent(state.clean_exit_event);

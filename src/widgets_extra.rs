@@ -246,6 +246,7 @@ impl ExtWidgetId {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExtThemeFolder {
+    Horology,
     RealisticMaterials,
     InteractiveElements,
     GlassMinimal,
@@ -256,17 +257,29 @@ pub enum ExtThemeFolder {
 impl ExtThemeFolder {
     pub fn label(self) -> &'static str {
         match self {
+            ExtThemeFolder::Horology => "Photorealistic Horology (10)",
             ExtThemeFolder::RealisticMaterials => "Realistic (12)",
             ExtThemeFolder::InteractiveElements => "Interactive Physics (6)",
             ExtThemeFolder::GlassMinimal => "Glass & Minimal (4)",
             ExtThemeFolder::CyberEditorial => "Cyber & Editorial (3)",
-            ExtThemeFolder::All => "All Themes (25)",
+            ExtThemeFolder::All => "All Themes (35)",
         }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExtWidgetTheme {
+    // 10 Photorealistic Haute Horlogerie Bespoke Instrument Themes
+    HoroRoyalOak,
+    HoroPatekMoon,
+    HoroTourbillonGold,
+    HoroDaytonaCeramic,
+    HoroSubmarinerEmerald,
+    HoroIwcTitanium,
+    HoroBreguetPorcelain,
+    HoroForgedCarbon,
+    HoroWalnutRegulator,
+    HoroSapphireObsidian,
     // 12 Realistic Materials, Water & Calm PBR Themes
     CrystalWater,
     RainWindowGlass,
@@ -298,7 +311,17 @@ pub enum ExtWidgetTheme {
 }
 
 impl ExtWidgetTheme {
-    pub const ALL: [ExtWidgetTheme; 25] = [
+    pub const ALL: [ExtWidgetTheme; 35] = [
+        ExtWidgetTheme::HoroRoyalOak,
+        ExtWidgetTheme::HoroPatekMoon,
+        ExtWidgetTheme::HoroTourbillonGold,
+        ExtWidgetTheme::HoroDaytonaCeramic,
+        ExtWidgetTheme::HoroSubmarinerEmerald,
+        ExtWidgetTheme::HoroIwcTitanium,
+        ExtWidgetTheme::HoroBreguetPorcelain,
+        ExtWidgetTheme::HoroForgedCarbon,
+        ExtWidgetTheme::HoroWalnutRegulator,
+        ExtWidgetTheme::HoroSapphireObsidian,
         ExtWidgetTheme::CrystalWater,
         ExtWidgetTheme::RainWindowGlass,
         ExtWidgetTheme::BrushedTitanium,
@@ -326,6 +349,19 @@ impl ExtWidgetTheme {
         ExtWidgetTheme::NeonMatrix,
     ];
 
+    pub const HOROLOGY_FOLDER: [ExtWidgetTheme; 10] = [
+        ExtWidgetTheme::HoroRoyalOak,
+        ExtWidgetTheme::HoroPatekMoon,
+        ExtWidgetTheme::HoroTourbillonGold,
+        ExtWidgetTheme::HoroDaytonaCeramic,
+        ExtWidgetTheme::HoroSubmarinerEmerald,
+        ExtWidgetTheme::HoroIwcTitanium,
+        ExtWidgetTheme::HoroBreguetPorcelain,
+        ExtWidgetTheme::HoroForgedCarbon,
+        ExtWidgetTheme::HoroWalnutRegulator,
+        ExtWidgetTheme::HoroSapphireObsidian,
+    ];
+
     pub const REALISTIC_FOLDER: [ExtWidgetTheme; 12] = [
         ExtWidgetTheme::CrystalWater,
         ExtWidgetTheme::RainWindowGlass,
@@ -340,6 +376,23 @@ impl ExtWidgetTheme {
         ExtWidgetTheme::SwissChronograph,
         ExtWidgetTheme::CarraraMarble,
     ];
+
+    pub fn horology_theme(self) -> Option<crate::horology_pbr::HorologyTheme> {
+        use crate::horology_pbr::HorologyTheme;
+        match self {
+            ExtWidgetTheme::HoroRoyalOak => Some(HorologyTheme::RoyalOakSteel),
+            ExtWidgetTheme::HoroPatekMoon => Some(HorologyTheme::PatekMoonphase),
+            ExtWidgetTheme::HoroTourbillonGold => Some(HorologyTheme::TourbillonGold),
+            ExtWidgetTheme::HoroDaytonaCeramic => Some(HorologyTheme::DaytonaCeramic),
+            ExtWidgetTheme::HoroSubmarinerEmerald => Some(HorologyTheme::SubmarinerEmerald),
+            ExtWidgetTheme::HoroIwcTitanium => Some(HorologyTheme::IwcPilotTitanium),
+            ExtWidgetTheme::HoroBreguetPorcelain => Some(HorologyTheme::BreguetPorcelain),
+            ExtWidgetTheme::HoroForgedCarbon => Some(HorologyTheme::ForgedCarbonMoto),
+            ExtWidgetTheme::HoroWalnutRegulator => Some(HorologyTheme::WalnutRegulator),
+            ExtWidgetTheme::HoroSapphireObsidian => Some(HorologyTheme::SapphireObsidian),
+            _ => None,
+        }
+    }
 
     pub fn pbr_material(self) -> Option<crate::realistic_pbr::PbrMaterial> {
         use crate::realistic_pbr::PbrMaterial;
@@ -362,7 +415,7 @@ impl ExtWidgetTheme {
     }
 
     pub fn is_realistic_interactive(self) -> bool {
-        self.pbr_material().is_some()
+        self.horology_theme().is_some() || self.pbr_material().is_some()
     }
 
     pub fn has_idle_motion(self) -> bool {
@@ -375,9 +428,13 @@ impl ExtWidgetTheme {
                 | ExtWidgetTheme::CosmicLens
                 | ExtWidgetTheme::TeslaPlasma
         ) || self
-            .pbr_material()
-            .map(|m| m.has_ambient_idle_motion())
+            .horology_theme()
+            .map(|h| h.has_idle_motion())
             .unwrap_or(false)
+            || self
+                .pbr_material()
+                .map(|m| m.has_ambient_idle_motion())
+                .unwrap_or(false)
     }
 
     pub const INTERACTIVE_FOLDER: [ExtWidgetTheme; 6] = [
@@ -404,6 +461,7 @@ impl ExtWidgetTheme {
 
     pub fn in_folder(folder: ExtThemeFolder) -> &'static [ExtWidgetTheme] {
         match folder {
+            ExtThemeFolder::Horology => &Self::HOROLOGY_FOLDER,
             ExtThemeFolder::RealisticMaterials => &Self::REALISTIC_FOLDER,
             ExtThemeFolder::InteractiveElements => &Self::INTERACTIVE_FOLDER,
             ExtThemeFolder::GlassMinimal => &Self::GLASS_FOLDER,
@@ -413,6 +471,9 @@ impl ExtWidgetTheme {
     }
 
     pub fn as_str(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.as_str();
+        }
         match self {
             ExtWidgetTheme::CrystalWater => "crystal_water",
             ExtWidgetTheme::RainWindowGlass => "rain_window",
@@ -439,10 +500,14 @@ impl ExtWidgetTheme {
             ExtWidgetTheme::EditorialSerif => "editorial_serif",
             ExtWidgetTheme::CyberHud => "cyber_hud",
             ExtWidgetTheme::NeonMatrix => "neon_matrix",
+            _ => "horo_royal_oak",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
+        if let Some(ht) = crate::horology_pbr::HorologyTheme::from_str(s) {
+            return Self::HOROLOGY_FOLDER[ht.idx()];
+        }
         match s.trim().to_ascii_lowercase().as_str() {
             "crystal_water" | "real_water" => ExtWidgetTheme::CrystalWater,
             "rain_window" | "rainy_windowpane" => ExtWidgetTheme::RainWindowGlass,
@@ -473,6 +538,9 @@ impl ExtWidgetTheme {
     }
 
     pub fn label(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.label();
+        }
         match self {
             ExtWidgetTheme::CrystalWater => "Calm Ocean Lagoon",
             ExtWidgetTheme::RainWindowGlass => "Rainy Windowpane",
@@ -499,10 +567,14 @@ impl ExtWidgetTheme {
             ExtWidgetTheme::EditorialSerif => "Editorial Serif",
             ExtWidgetTheme::CyberHud => "Cyber HUD Deck",
             ExtWidgetTheme::NeonMatrix => "Neon Glass Matrix",
+            _ => "Royal Oak Guilloché Steel",
         }
     }
 
     pub fn subtitle(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.subtitle();
+        }
         match self {
             ExtWidgetTheme::CrystalWater => "Voronoi water caustics • Interactive click & hover ripples",
             ExtWidgetTheme::RainWindowGlass => "Wet condensation glass • Interactive cursor wiper & droplets",
@@ -529,10 +601,14 @@ impl ExtWidgetTheme {
             ExtWidgetTheme::EditorialSerif => "Classic serif headings • Script accents & warm tint",
             ExtWidgetTheme::CyberHud => "Tech corner brackets • Segmented LED bars & mono font",
             ExtWidgetTheme::NeonMatrix => "Carbon matrix backdrop • Dual-tone neon gradient rim",
+            _ => "Bespoke machined horology instrument • Cast needle shadows & sapphire AR",
         }
     }
 
     pub fn badge(self) -> &'static str {
+        if let Some(ht) = self.horology_theme() {
+            return ht.badge();
+        }
         match self {
             ExtWidgetTheme::CrystalWater => "Lagoon",
             ExtWidgetTheme::RainWindowGlass => "Rain",
@@ -559,6 +635,7 @@ impl ExtWidgetTheme {
             ExtWidgetTheme::EditorialSerif => "Serif",
             ExtWidgetTheme::CyberHud => "Cyber HUD",
             ExtWidgetTheme::NeonMatrix => "Neon",
+            _ => "Horology",
         }
     }
 
@@ -624,6 +701,7 @@ pub enum ExtSubTab {
     Layout,
     Features,
     Appearance,
+    Materials,
     NotesText,
     WorldClockCities,
 }
@@ -784,6 +862,7 @@ pub struct ExtWidgetConfig {
     pub hover_fx: TaskbarVizStyle,
     pub elem_transforms: [ClockElemTransform; 6],
     pub elem_fonts: [String; 6],
+    pub horology: crate::horology_pbr::HorologyPartConfig,
 }
 
 impl ExtWidgetConfig {
@@ -825,6 +904,7 @@ impl ExtWidgetConfig {
             hover_fx: TaskbarVizStyle::Off,
             elem_transforms: [ClockElemTransform::default(); 6],
             elem_fonts: std::array::from_fn(|_| String::new()),
+            horology: crate::horology_pbr::HorologyPartConfig::default(),
         }
     }
 
@@ -1213,11 +1293,41 @@ impl ExtWidgetConfig {
                 self.show_shadow = true;
                 self.show_dividers = true;
             }
+            t if t.horology_theme().is_some() => {
+                let ht = t.horology_theme().unwrap();
+                let (_bez, dial, hands, lume, _jewel) = ht.default_colors();
+                self.show_plate = true;
+                self.glass_alpha = 175;
+                self.rim_alpha = 215;
+                self.rim_width_tenths = 14;
+                self.corner_radius = 16;
+                self.font_style = if ht.is_light_dial()
+                    || matches!(
+                        ht,
+                        crate::horology_pbr::HorologyTheme::PatekMoonphase
+                            | crate::horology_pbr::HorologyTheme::TourbillonGold
+                            | crate::horology_pbr::HorologyTheme::WalnutRegulator
+                    ) {
+                    ExtFontStyle::EditorialSerif
+                } else {
+                    ExtFontStyle::GeometricBold
+                };
+                self.use_custom_color = false;
+                self.accent_rgb = lume;
+                self.text_rgb = hands;
+                self.bg_rgb = dial;
+                self.show_shadow = true;
+                self.show_dividers = true;
+                self.horology = crate::horology_pbr::HorologyPartConfig::default();
+            }
+            _ => {}
         }
     }
 
     pub fn logical_size(&self, id: ExtWidgetId) -> (f32, f32) {
-        let (bw, bh) = if id == ExtWidgetId::Weather && self.theme == ExtWidgetTheme::CelestialSunDial
+        let (bw, bh) = if id == ExtWidgetId::Weather
+            && (self.theme == ExtWidgetTheme::CelestialSunDial
+                || self.theme.horology_theme().is_some())
         {
             if self.compact_mode {
                 (336.0, 178.0)
@@ -2993,6 +3103,36 @@ impl ExtRuntimeState {
     }
 }
 
+pub(crate) fn month_name_to_num_pub(name: &str) -> u32 {
+    month_name_to_num(name)
+}
+
+pub(crate) fn month_num_to_name_pub(m: u32) -> &'static str {
+    month_num_to_name(m)
+}
+
+pub(crate) fn days_in_month_pub(year: i32, month: u32) -> u32 {
+    days_in_month(year, month)
+}
+
+pub(crate) fn first_weekday_of_month_pub(year: i32, month: u32) -> u32 {
+    first_weekday_of_month(year, month)
+}
+
+pub(crate) fn format_speed_pub(bps: f32, mode_idx: u8) -> String {
+    format_speed(bps, mode_idx)
+}
+
+pub(crate) fn quote_for_category(mode_idx: u8, quote_idx: usize) -> (&'static str, &'static str) {
+    let pool = match mode_idx {
+        1 => &QUOTES_TECH,
+        2 => &QUOTES_ZEN,
+        3 => &QUOTES_LIT,
+        _ => &QUOTES_STOIC,
+    };
+    pool[quote_idx % pool.len()]
+}
+
 fn month_name_to_num(name: &str) -> u32 {
     match name {
         "January" => 1,
@@ -3645,6 +3785,7 @@ unsafe fn ext_widget_fg_key(
     for f in &wcfg.elem_fonts {
         h.mix_str(f);
     }
+    h.mix_horology(&wcfg.horology);
 
     // Per-widget runtime state
     match id {
@@ -3887,6 +4028,73 @@ unsafe fn draw_ext_widget_with_boxes_inner(
     }
     let wcfg = &cfg.ext_widgets[id.idx()];
     if wcfg.is_all_elements_off() {
+        return;
+    }
+    if let Some(ht) = wcfg.theme.horology_theme() {
+        let (lw, lh) = wcfg.logical_size(id);
+        let w = lw * s;
+        let h = lh * s;
+        let card_hov = matches!(hover_zone, WidgetHitZone::ExtCard(hid) if hid == id)
+            || matches!(hover_zone, WidgetHitZone::ExtBtn(hid, _) if hid == id);
+        let anim_active = ht.has_idle_motion()
+            || card_hov
+            || wcfg.hover_fx != TaskbarVizStyle::Off
+            || fx_viz.map(|v| v.hover_mix > 0.004 || v.hover_active).unwrap_or(false);
+        if out_boxes.is_none() && !anim_active {
+            if let Some((slot, cache_gen)) = fg_cache {
+                let pal = resolve_palette_for(cfg, wcfg.match_wallpaper);
+                let key = ext_widget_fg_key(
+                    id,
+                    s,
+                    w,
+                    h,
+                    wcfg,
+                    cfg,
+                    state,
+                    cc_snap,
+                    &pal,
+                    hover_zone,
+                    custom_fonts.is_some(),
+                );
+                slot.draw_cached(rt, cache_gen, key, x, y, w, h, 14.0 * s, |fg_rt| {
+                    crate::horology_widgets::draw_ext_horology_widget(
+                        fg_rt,
+                        dw,
+                        d2d,
+                        custom_fonts,
+                        x,
+                        y,
+                        s,
+                        id,
+                        ht,
+                        cfg,
+                        state,
+                        cc_snap,
+                        hover_zone,
+                        fx_viz,
+                        None,
+                    );
+                });
+                return;
+            }
+        }
+        crate::horology_widgets::draw_ext_horology_widget(
+            rt,
+            dw,
+            d2d,
+            custom_fonts,
+            x,
+            y,
+            s,
+            id,
+            ht,
+            cfg,
+            state,
+            cc_snap,
+            hover_zone,
+            fx_viz,
+            out_boxes,
+        );
         return;
     }
     let (lw, lh) = wcfg.logical_size(id);
@@ -4329,7 +4537,17 @@ unsafe fn draw_ext_widget_with_boxes_inner(
             ExtWidgetTheme::RainWindowGlass
             | ExtWidgetTheme::AbyssalTrench
             | ExtWidgetTheme::GlacierIce
-            | ExtWidgetTheme::GoldenHourHorizon => {}
+            | ExtWidgetTheme::GoldenHourHorizon
+            | ExtWidgetTheme::HoroRoyalOak
+            | ExtWidgetTheme::HoroPatekMoon
+            | ExtWidgetTheme::HoroTourbillonGold
+            | ExtWidgetTheme::HoroDaytonaCeramic
+            | ExtWidgetTheme::HoroSubmarinerEmerald
+            | ExtWidgetTheme::HoroIwcTitanium
+            | ExtWidgetTheme::HoroBreguetPorcelain
+            | ExtWidgetTheme::HoroForgedCarbon
+            | ExtWidgetTheme::HoroWalnutRegulator
+            | ExtWidgetTheme::HoroSapphireObsidian => {}
         }
 
         let ra = (wcfg.rim_alpha as f32 / 255.0).clamp(0.0, 1.0);

@@ -611,6 +611,7 @@ pub fn apply_suite_to_config(suite: &SuitePreset, cfg: &mut AppConfig) {
 
     // 1. Taskbar & Virtual Dock architecture
     cfg.reset_dock_widget_overrides();
+    cfg.mac_dock_icon_size = 36;
     cfg.apply_taskbar_theme_preset(suite.tb_theme);
     cfg.mode = suite.tb_mode;
     cfg.mac_dock_edge = suite.dock_edge;
@@ -2293,7 +2294,7 @@ pub const SUITES: [SuitePreset; 72] = [
         rim_alpha: 145,
         match_wallpaper: false,
         plasma_fx: TaskbarVizStyle::HoverMacWave,
-        tb_theme: TaskbarTheme::FrutigerAquaDock,
+        tb_theme: TaskbarTheme::QuartzShellDock,
         tb_mode: TaskbarMode::AlwaysVisible,
         dock_edge: MacDockEdge::Bottom,
         dock_hide: MacDockHideMode::AlwaysVisible,

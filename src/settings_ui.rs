@@ -517,6 +517,7 @@ enum SliderKind {
     WallpaperVolume,
     MacDockIconSize,
     MacDockMagPct,
+    MacDockCardOpacity,
     MacDockLabelFontSize,
 }
 
@@ -730,7 +731,7 @@ impl DockCustomTab {
         match self {
             Self::LayoutHide => "1. Position & Hide",
             Self::SizeGlass => "2. Size & Glass",
-            Self::TopBar => "3. Top Menu Bar",
+            Self::TopBar => "3. Top Bar",
             Self::Modules => "4. Dock Modules",
         }
     }
@@ -1101,6 +1102,7 @@ enum HitZone {
     SetDockLabelMode(DockRunningLabelMode),
     ToggleMacDockBounce,
     ToggleMacDockDots,
+    ToggleDockBar,
     ToggleCleanTopBar,
     CycleCleanTopBarEdge,
     ToggleCleanTopBarDesktopOnly,
@@ -1594,6 +1596,7 @@ pub struct SettingsController {
     tb_theme_page: usize,
     tb_fx_page: usize,
     pub dock_custom_tab: DockCustomTab,
+    last_visible_dock_hide: MacDockHideMode,
     tb_widget_tab: TaskbarWidgetTab,
     tb_anim_phase: f32,
     tb_mouse_logic: Option<(f32, f32)>,
@@ -1862,6 +1865,7 @@ impl SettingsController {
             tb_theme_page: 0,
             tb_fx_page: 0,
             dock_custom_tab: DockCustomTab::LayoutHide,
+            last_visible_dock_hide: MacDockHideMode::AlwaysVisible,
             tb_widget_tab: TaskbarWidgetTab::ShelfFrame,
             tb_anim_phase: 0.0,
             tb_mouse_logic: None,
@@ -3048,6 +3052,9 @@ impl SettingsController {
     pub fn sync_from_config(&mut self, cfg: &AppConfig) {
         self.draft_cfg = cfg.clone();
         self.draft_initialized = true;
+        if cfg.mac_dock_hide != MacDockHideMode::StealthHide {
+            self.last_visible_dock_hide = cfg.mac_dock_hide;
+        }
         if self.is_in_customize_editor() {
             self.customize_baseline = self.current_widget_canvas_target().map(|t| (t, cfg.clone()));
         } else {
@@ -3980,6 +3987,7 @@ impl SettingsController {
                         kind,
                         SliderKind::MacDockIconSize
                             | SliderKind::MacDockMagPct
+                            | SliderKind::MacDockCardOpacity
                             | SliderKind::MacDockLabelFontSize
                     ) {
                         SettingsCommand::MacDockUpdated
@@ -4914,6 +4922,7 @@ impl SettingsController {
             SliderKind::TaskbarOpacity => (232.0, 640.0),
             SliderKind::MacDockIconSize
             | SliderKind::MacDockMagPct
+            | SliderKind::MacDockCardOpacity
             | SliderKind::MacDockLabelFontSize => (232.0, 640.0),
             SliderKind::TbVizOpacity => (154.0, 314.0),
             SliderKind::TbVizHue => (154.0, 628.0),
@@ -4996,10 +5005,19 @@ impl SettingsController {
             return None;
         }
         if kind == SliderKind::MacDockIconSize {
-            let new_sz = (32.0 + t * 32.0).round() as u8;
+            let new_sz = (24.0 + t * 24.0).round() as u8;
             if new_sz != cfg.mac_dock_icon_size {
                 cfg.mac_dock_icon_size = new_sz;
                 self.draft_cfg.mac_dock_icon_size = new_sz;
+                return Some(SettingsCommand::MacDockPreview);
+            }
+            return None;
+        }
+        if kind == SliderKind::MacDockCardOpacity {
+            let new_op = (t * 100.0).round() as u8;
+            if new_op != cfg.w_apps.card_opacity_pct {
+                cfg.w_apps.card_opacity_pct = new_op;
+                self.draft_cfg.w_apps.card_opacity_pct = new_op;
                 return Some(SettingsCommand::MacDockPreview);
             }
             return None;
@@ -5306,6 +5324,7 @@ impl SettingsController {
             | SliderKind::TbVizHue
             | SliderKind::MacDockIconSize
             | SliderKind::MacDockMagPct
+            | SliderKind::MacDockCardOpacity
             | SliderKind::MacDockLabelFontSize => {}
         }
         None
@@ -5840,17 +5859,26 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::SetCleanTopBarEdge(edge) => {
+                if !cfg.is_dock_bar_on() {
+                    return SettingsCommand::None;
+                }
                 cfg.set_clean_top_bar_edge(edge);
                 self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
                 self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::SetCleanTopBarDesktopOnly(desk_only) => {
+                if !cfg.is_dock_bar_on() {
+                    return SettingsCommand::None;
+                }
                 cfg.clean_top_bar_desktop_only = desk_only;
                 self.draft_cfg.clean_top_bar_desktop_only = desk_only;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::SetCleanTopBarStyle(style) => {
+                if !cfg.is_dock_bar_on() {
+                    return SettingsCommand::None;
+                }
                 cfg.clean_top_bar_style = style;
                 self.draft_cfg.clean_top_bar_style = style;
                 SettingsCommand::MacDockUpdated
@@ -5861,7 +5889,31 @@ impl SettingsController {
                 self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
                 SettingsCommand::MacDockUpdated
             }
+            HitZone::ToggleDockBar => {
+                if cfg.is_dock_bar_on() {
+                    if cfg.mac_dock_hide != MacDockHideMode::StealthHide {
+                        self.last_visible_dock_hide = cfg.mac_dock_hide;
+                    }
+                    cfg.mac_dock_hide = MacDockHideMode::StealthHide;
+                } else {
+                    cfg.mac_dock_enabled = true;
+                    cfg.mac_dock_hide = if self.last_visible_dock_hide == MacDockHideMode::StealthHide
+                    {
+                        MacDockHideMode::AlwaysVisible
+                    } else {
+                        self.last_visible_dock_hide
+                    };
+                }
+                cfg.sync_hide_mode_from_dock();
+                self.draft_cfg.mac_dock_enabled = cfg.mac_dock_enabled;
+                self.draft_cfg.mac_dock_hide = cfg.mac_dock_hide;
+                self.draft_cfg.mode = cfg.mode;
+                SettingsCommand::MacDockUpdated
+            }
             HitZone::ToggleCleanTopBar => {
+                if !cfg.is_dock_bar_on() {
+                    return SettingsCommand::None;
+                }
                 cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
                 if cfg.clean_top_bar_enabled {
                     cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
@@ -5872,17 +5924,26 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::CycleCleanTopBarEdge => {
+                if !cfg.is_dock_bar_on() {
+                    return SettingsCommand::None;
+                }
                 cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge.toggle());
                 self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
                 self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::ToggleCleanTopBarDesktopOnly => {
+                if !cfg.is_dock_bar_on() {
+                    return SettingsCommand::None;
+                }
                 cfg.clean_top_bar_desktop_only = !cfg.clean_top_bar_desktop_only;
                 self.draft_cfg.clean_top_bar_desktop_only = cfg.clean_top_bar_desktop_only;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::MacDockHideBtn(hm) => {
+                if hm != MacDockHideMode::StealthHide {
+                    self.last_visible_dock_hide = hm;
+                }
                 cfg.mac_dock_hide = hm;
                 cfg.sync_hide_mode_from_dock();
                 self.draft_cfg.mac_dock_hide = hm;
@@ -8633,7 +8694,7 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 584.0, 186.0, 622.0) {
                         return HitZone::BtnExportDiagnostics;
                     }
-                    if self.draft_cfg.tb_theme.uses_virtual_dock() {
+                    if self.draft_cfg.tb_theme.uses_virtual_dock() && self.draft_cfg.is_dock_bar_on() {
                         if in_rect(x, y, 194.0, 584.0, 266.0, 622.0) {
                             return HitZone::ToggleCleanTopBar;
                         }
@@ -8666,7 +8727,10 @@ impl SettingsController {
                     }
                     if in_rect(x, y, 428.0, 94.0, 594.0, 124.0) {
                         if self.draft_cfg.tb_theme.uses_virtual_dock() {
-                            return HitZone::ToggleCleanTopBar;
+                            if self.draft_cfg.is_dock_bar_on() {
+                                return HitZone::ToggleCleanTopBar;
+                            }
+                            return HitZone::None;
                         }
                         return HitZone::ToggleWallpaperQuick;
                     }
@@ -8687,8 +8751,9 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 584.0, 186.0, 622.0) {
                         return HitZone::BtnExportDiagnostics;
                     }
-                    if self.tb_folder == TaskbarThemeFolder::CleanMinimal
-                        || self.draft_cfg.tb_theme.uses_virtual_dock()
+                    if (self.tb_folder == TaskbarThemeFolder::CleanMinimal
+                        || self.draft_cfg.tb_theme.uses_virtual_dock())
+                        && self.draft_cfg.is_dock_bar_on()
                     {
                         if in_rect(x, y, 194.0, 584.0, 266.0, 622.0) {
                             return HitZone::ToggleCleanTopBar;
@@ -8713,7 +8778,7 @@ impl SettingsController {
                             return HitZone::BtnBackTaskbarThemes;
                         }
                         if in_rect(x, y, 504.0, 96.0, 626.0, 124.0) {
-                            return HitZone::ToggleCleanTopBar;
+                            return HitZone::ToggleDockBar;
                         }
                         if in_rect(x, y, 634.0, 96.0, 734.0, 124.0) {
                             return HitZone::BtnResetDockStyle;
@@ -8768,16 +8833,19 @@ impl SettingsController {
                                 }
                             }
                             DockCustomTab::SizeGlass => {
-                                if in_rect(x, y, 222.0, 296.0, 650.0, 328.0) {
+                                if in_rect(x, y, 222.0, 290.0, 650.0, 319.0) {
                                     return HitZone::Slider(SliderKind::MacDockIconSize);
                                 }
-                                if in_rect(x, y, 222.0, 332.0, 650.0, 364.0) {
+                                if in_rect(x, y, 222.0, 321.0, 650.0, 350.0) {
                                     return HitZone::Slider(SliderKind::MacDockMagPct);
                                 }
-                                if in_rect(x, y, 222.0, 368.0, 650.0, 400.0) {
+                                if in_rect(x, y, 222.0, 352.0, 650.0, 381.0) {
                                     return HitZone::Slider(SliderKind::TaskbarOpacity);
                                 }
-                                if in_rect(x, y, 222.0, 404.0, 650.0, 436.0) {
+                                if in_rect(x, y, 222.0, 383.0, 650.0, 412.0) {
+                                    return HitZone::Slider(SliderKind::MacDockCardOpacity);
+                                }
+                                if in_rect(x, y, 222.0, 414.0, 650.0, 443.0) {
                                     return HitZone::Slider(SliderKind::MacDockLabelFontSize);
                                 }
                                 for (i, mode) in [
@@ -8790,7 +8858,7 @@ impl SettingsController {
                                 .enumerate()
                                 {
                                     let px0 = 164.0 + (i as f32) * 141.0;
-                                    if in_rect(x, y, px0, 450.0, px0 + 133.0, 484.0) {
+                                    if in_rect(x, y, px0, 456.0, px0 + 133.0, 488.0) {
                                         return HitZone::SetDockLabelMode(mode);
                                     }
                                 }
@@ -8802,32 +8870,34 @@ impl SettingsController {
                                 }
                             }
                             DockCustomTab::TopBar => {
-                                if in_rect(x, y, 26.0, 266.0, 734.0, 336.0) {
-                                    return HitZone::ToggleCleanTopBar;
-                                }
-                                if in_rect(x, y, 26.0, 366.0, 197.0, 436.0) {
-                                    return HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Top);
-                                }
-                                if in_rect(x, y, 205.0, 366.0, 376.0, 436.0) {
-                                    return HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Bottom);
-                                }
-                                if in_rect(x, y, 384.0, 366.0, 555.0, 436.0) {
-                                    return HitZone::SetCleanTopBarDesktopOnly(false);
-                                }
-                                if in_rect(x, y, 563.0, 366.0, 734.0, 436.0) {
-                                    return HitZone::SetCleanTopBarDesktopOnly(true);
-                                }
-                                for (i, sty) in [
-                                    CleanTopBarStyle::Auto,
-                                    CleanTopBarStyle::FullWidth,
-                                    CleanTopBarStyle::Floating,
-                                ]
-                                .into_iter()
-                                .enumerate()
-                                {
-                                    let sx0 = 26.0 + (i as f32) * 239.0;
-                                    if in_rect(x, y, sx0, 468.0, sx0 + 230.0, 548.0) {
-                                        return HitZone::SetCleanTopBarStyle(sty);
+                                if self.draft_cfg.is_dock_bar_on() {
+                                    if in_rect(x, y, 26.0, 266.0, 734.0, 336.0) {
+                                        return HitZone::ToggleCleanTopBar;
+                                    }
+                                    if in_rect(x, y, 26.0, 366.0, 197.0, 436.0) {
+                                        return HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Top);
+                                    }
+                                    if in_rect(x, y, 205.0, 366.0, 376.0, 436.0) {
+                                        return HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Bottom);
+                                    }
+                                    if in_rect(x, y, 384.0, 366.0, 555.0, 436.0) {
+                                        return HitZone::SetCleanTopBarDesktopOnly(false);
+                                    }
+                                    if in_rect(x, y, 563.0, 366.0, 734.0, 436.0) {
+                                        return HitZone::SetCleanTopBarDesktopOnly(true);
+                                    }
+                                    for (i, sty) in [
+                                        CleanTopBarStyle::Auto,
+                                        CleanTopBarStyle::FullWidth,
+                                        CleanTopBarStyle::Floating,
+                                    ]
+                                    .into_iter()
+                                    .enumerate()
+                                    {
+                                        let sx0 = 26.0 + (i as f32) * 239.0;
+                                        if in_rect(x, y, sx0, 468.0, sx0 + 230.0, 548.0) {
+                                            return HitZone::SetCleanTopBarStyle(sty);
+                                        }
                                     }
                                 }
                             }
@@ -12197,8 +12267,9 @@ impl SettingsController {
                 || cfg.tb_theme.uses_virtual_dock()))
             || (self.taskbar_page == TaskbarPage::Folders && cfg.tb_theme.uses_virtual_dock())
         {
-            let tb_on = cfg.clean_top_bar_enabled;
-            let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
+            let bar_on = cfg.is_dock_bar_on();
+            let tb_on = bar_on && cfg.clean_top_bar_enabled;
+            let tb_hov = bar_on && self.hovered == HitZone::ToggleCleanTopBar;
             let tb_rr = rrect(194.0, 584.0, 266.0, 622.0, 9.0, u);
             rt.FillRoundedRectangle(
                 &tb_rr,
@@ -12236,7 +12307,13 @@ impl SettingsController {
                 if tb_on { "Top: ON" } else { "Top: OFF" },
                 &r.tf_badge,
                 rect_f(208.0, 584.0, 264.0, 622.0, u),
-                if tb_on { &r.sun_gold } else { &r.warm_sub },
+                if tb_on {
+                    &r.sun_gold
+                } else if bar_on {
+                    &r.warm_sub
+                } else {
+                    &r.muted_txt
+                },
             );
 
             let pos_hov = self.hovered == HitZone::CycleCleanTopBarEdge;
@@ -12495,8 +12572,9 @@ impl SettingsController {
 
                 let wp_rr = rrect(428.0, 94.0, 594.0, 124.0, 8.0, u);
                 if cfg.tb_theme.uses_virtual_dock() {
-                    let tb_on = cfg.clean_top_bar_enabled;
-                    let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
+                    let bar_on = cfg.is_dock_bar_on();
+                    let tb_on = bar_on && cfg.clean_top_bar_enabled;
+                    let tb_hov = bar_on && self.hovered == HitZone::ToggleCleanTopBar;
                     rt.FillRoundedRectangle(
                         &wp_rr,
                         if tb_hov {
@@ -12530,14 +12608,22 @@ impl SettingsController {
                     }
                     draw_txt(
                         rt,
-                        if tb_on {
-                            "Top Menu Bar: ON"
+                        if !bar_on {
+                            "Top Bar (Bar OFF)"
+                        } else if tb_on {
+                            "Top Bar: ON"
                         } else {
-                            "Top Menu Bar: OFF"
+                            "Top Bar: OFF"
                         },
                         &r.tf_badge,
                         rect_f(446.0, 94.0, 590.0, 124.0, u),
-                        if tb_on { &r.sun_gold } else { &r.cream },
+                        if tb_on {
+                            &r.sun_gold
+                        } else if bar_on {
+                            &r.cream
+                        } else {
+                            &r.muted_txt
+                        },
                     );
                 } else {
                     let wp_on = cfg.wallpaper_enabled;
@@ -12636,14 +12722,14 @@ impl SettingsController {
                         &r.cream,
                     );
 
-                    let tb_on = cfg.clean_top_bar_enabled;
-                    let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
+                    let bar_on = cfg.is_dock_bar_on();
+                    let bar_hov = self.hovered == HitZone::ToggleDockBar;
                     let tb_rr = rrect(504.0, 96.0, 626.0, 124.0, 8.0, u);
                     rt.FillRoundedRectangle(
                         &tb_rr,
-                        if tb_hov {
+                        if bar_hov {
                             &r.card_hover
-                        } else if tb_on {
+                        } else if bar_on {
                             &r.card_active
                         } else {
                             &r.card_bg
@@ -12651,11 +12737,11 @@ impl SettingsController {
                     );
                     rt.DrawRoundedRectangle(
                         &tb_rr,
-                        if tb_on || tb_hov { &r.sun_gold } else { &r.card_border },
-                        if tb_on { 1.15 * u } else { 0.95 * u },
+                        if bar_on || bar_hov { &r.sun_gold } else { &r.card_border },
+                        if bar_on { 1.15 * u } else { 0.95 * u },
                         None,
                     );
-                    let dot_c = if tb_on {
+                    let dot_c = if bar_on {
                         rgb_u8(102, 232, 146, 0.96)
                     } else {
                         rgb_u8(152, 124, 98, 0.45)
@@ -12672,10 +12758,10 @@ impl SettingsController {
                     }
                     draw_txt(
                         rt,
-                        if tb_on { "Top Bar: ON" } else { "Top Bar: OFF" },
+                        if bar_on { "Bar: ON" } else { "Bar: OFF" },
                         &r.tf_badge,
                         rect_f(523.0, 96.0, 622.0, 124.0, u),
-                        if tb_on { &r.sun_gold } else { &r.warm_sub },
+                        if bar_on { &r.sun_gold } else { &r.warm_sub },
                     );
 
                     let rst_hov = self.hovered == HitZone::BtnResetDockStyle;
@@ -12898,12 +12984,12 @@ impl SettingsController {
                                 rt,
                                 "ICON SCALE, MAGNIFICATION & GLASS MATERIAL",
                                 &r.tf_sec,
-                                rect_f(44.0, 276.0, 520.0, 292.0, u),
+                                rect_f(44.0, 274.0, 520.0, 289.0, u),
                                 &r.sun_gold,
                             );
 
-                            let cur_ico = cfg.mac_dock_icon_size.clamp(32, 64);
-                            let t_sz = ((cur_ico as f32 - 32.0) / 32.0).clamp(0.0, 1.0);
+                            let cur_ico = cfg.mac_dock_icon_size.clamp(24, 48);
+                            let t_sz = ((cur_ico as f32 - 24.0) / 24.0).clamp(0.0, 1.0);
                             draw_slider_row(
                                 rt,
                                 r,
@@ -12912,7 +12998,7 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                312.0,
+                                304.0,
                                 t_sz,
                                 &format!("{} px", cur_ico),
                                 self.dragging_slider == Some(SliderKind::MacDockIconSize)
@@ -12928,7 +13014,7 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                348.0,
+                                335.0,
                                 t_mag,
                                 &if cfg.mac_dock_mag_pct <= 102 {
                                     "Off".to_string()
@@ -12948,11 +13034,28 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                384.0,
+                                366.0,
                                 pct,
                                 &format!("{}%", (pct * 100.0).round() as i32),
                                 self.dragging_slider == Some(SliderKind::TaskbarOpacity)
                                     || self.hovered == HitZone::Slider(SliderKind::TaskbarOpacity),
+                            );
+
+                            let card_pct = cfg.w_apps.card_opacity_pct.min(100);
+                            let t_card = (card_pct as f32 / 100.0).clamp(0.0, 1.0);
+                            draw_slider_row(
+                                rt,
+                                r,
+                                u,
+                                "Icon Box / Card Opacity",
+                                44.0,
+                                232.0,
+                                640.0,
+                                397.0,
+                                t_card,
+                                &format!("{}%", card_pct),
+                                self.dragging_slider == Some(SliderKind::MacDockCardOpacity)
+                                    || self.hovered == HitZone::Slider(SliderKind::MacDockCardOpacity),
                             );
 
                             let t_fs = ((cfg.w_apps.label_font_size_px.clamp(10, 20) as f32 - 10.0) / 10.0)
@@ -12965,7 +13068,7 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                420.0,
+                                428.0,
                                 t_fs,
                                 &format!("{} px", cfg.w_apps.label_font_size_px.clamp(10, 20)),
                                 self.dragging_slider == Some(SliderKind::MacDockLabelFontSize)
@@ -12976,7 +13079,7 @@ impl SettingsController {
                                 rt,
                                 "App Name Display",
                                 &r.tf_title,
-                                rect_f(44.0, 450.0, 160.0, 484.0, u),
+                                rect_f(44.0, 456.0, 160.0, 488.0, u),
                                 &r.cream,
                             );
                             let label_modes = [
@@ -12987,7 +13090,7 @@ impl SettingsController {
                             ];
                             for (i, (mode, lbl)) in label_modes.into_iter().enumerate() {
                                 let px0 = 164.0 + (i as f32) * 141.0;
-                                let prr = rrect(px0, 450.0, px0 + 133.0, 484.0, 8.0, u);
+                                let prr = rrect(px0, 456.0, px0 + 133.0, 488.0, 8.0, u);
                                 let act = cfg.w_apps.label_mode == mode
                                     || (mode == DockRunningLabelMode::InheritTheme
                                         && cfg.w_apps.label_mode == DockRunningLabelMode::IconOnly);
@@ -13043,8 +13146,9 @@ impl SettingsController {
                         }
 
                         DockCustomTab::TopBar => {
-                            let tb_on = cfg.clean_top_bar_enabled;
-                            let hero_hov = self.hovered == HitZone::ToggleCleanTopBar;
+                            let bar_on = cfg.is_dock_bar_on();
+                            let tb_on = bar_on && cfg.clean_top_bar_enabled;
+                            let hero_hov = bar_on && self.hovered == HitZone::ToggleCleanTopBar;
                             let hero_rr = rrect(26.0, 266.0, 734.0, 336.0, 12.0, u);
                             rt.FillRoundedRectangle(
                                 &hero_rr,
@@ -13064,21 +13168,29 @@ impl SettingsController {
                             );
                             draw_txt(
                                 rt,
-                                "Dedicated Status Menu Bar (Top Bar)",
+                                "Top Bar",
                                 &r.tf_title,
                                 rect_f(44.0, 276.0, 620.0, 300.0, u),
-                                if tb_on { &r.sun_gold } else { &r.cream },
+                                if tb_on {
+                                    &r.sun_gold
+                                } else if bar_on {
+                                    &r.cream
+                                } else {
+                                    &r.muted_txt
+                                },
                             );
                             draw_txt(
                                 rt,
-                                if tb_on {
+                                if !bar_on {
+                                    "Locked (Bar is OFF) • Turn Bar ON in the header first to enable or toggle the Top Bar"
+                                } else if tb_on {
                                     "Enabled • Moves clock & system tray from the dock into a clean macOS-style menu bar"
                                 } else {
                                     "Disabled (Dock Only) • Keeps clock, Wi-Fi, audio, battery & hidden icons inside the dock"
                                 },
                                 &r.tf_sub,
                                 rect_f(44.0, 302.0, 646.0, 326.0, u),
-                                &r.warm_sub,
+                                if bar_on { &r.warm_sub } else { &r.muted_txt },
                             );
                             draw_switch_r(rt, r, 666.0, 290.0, u, tb_on);
 
@@ -13087,14 +13199,14 @@ impl SettingsController {
                                 "MENU BAR POSITION",
                                 &r.tf_sec,
                                 rect_f(28.0, 346.0, 360.0, 362.0, u),
-                                &r.sun_gold,
+                                if bar_on { &r.sun_gold } else { &r.muted_txt },
                             );
                             draw_txt(
                                 rt,
                                 "WINDOW VISIBILITY",
                                 &r.tf_sec,
                                 rect_f(386.0, 346.0, 720.0, 362.0, u),
-                                &r.sun_gold,
+                                if bar_on { &r.sun_gold } else { &r.muted_txt },
                             );
 
                             let pos_vis_cards = [
@@ -13129,7 +13241,7 @@ impl SettingsController {
                             ];
                             for (cx0, title, desc, act, hz) in pos_vis_cards {
                                 let crr = rrect(cx0, 366.0, cx0 + 171.0, 436.0, 10.0, u);
-                                let hov = self.hovered == hz;
+                                let hov = bar_on && self.hovered == hz;
                                 rt.FillRoundedRectangle(
                                     &crr,
                                     if act && tb_on {
@@ -13144,12 +13256,12 @@ impl SettingsController {
                                     &crr,
                                     if (act && tb_on) || hov {
                                         &r.sun_gold
-                                    } else if act {
+                                    } else if act && bar_on {
                                         &r.warm_sub
                                     } else {
                                         &r.card_border
                                     },
-                                    if act { 1.3 * u } else { 1.0 * u },
+                                    if act && bar_on { 1.3 * u } else { 1.0 * u },
                                     None,
                                 );
                                 draw_txt(
@@ -13170,7 +13282,7 @@ impl SettingsController {
                                     desc,
                                     &r.tf_sub,
                                     rect_f(cx0 + 12.0, 401.0, cx0 + 160.0, 424.0, u),
-                                    &r.warm_sub,
+                                    if bar_on { &r.warm_sub } else { &r.muted_txt },
                                 );
                             }
 
@@ -13179,7 +13291,7 @@ impl SettingsController {
                                 "MENU BAR SILHOUETTE STYLE",
                                 &r.tf_sec,
                                 rect_f(28.0, 448.0, 420.0, 464.0, u),
-                                &r.sun_gold,
+                                if bar_on { &r.sun_gold } else { &r.muted_txt },
                             );
                             let styles = [
                                 (
@@ -13202,7 +13314,7 @@ impl SettingsController {
                                 let sx0 = 26.0 + (i as f32) * 239.0;
                                 let srr = rrect(sx0, 468.0, sx0 + 230.0, 548.0, 10.0, u);
                                 let act = cfg.clean_top_bar_style == sty;
-                                let hov = self.hovered == HitZone::SetCleanTopBarStyle(sty);
+                                let hov = bar_on && self.hovered == HitZone::SetCleanTopBarStyle(sty);
                                 rt.FillRoundedRectangle(
                                     &srr,
                                     if act && tb_on {
@@ -13217,12 +13329,12 @@ impl SettingsController {
                                     &srr,
                                     if (act && tb_on) || hov {
                                         &r.sun_gold
-                                    } else if act {
+                                    } else if act && bar_on {
                                         &r.warm_sub
                                     } else {
                                         &r.card_border
                                     },
-                                    if act { 1.35 * u } else { 1.0 * u },
+                                    if act && bar_on { 1.35 * u } else { 1.0 * u },
                                     None,
                                 );
                                 draw_txt(
@@ -13243,7 +13355,7 @@ impl SettingsController {
                                     desc,
                                     &r.tf_sub,
                                     rect_f(sx0 + 14.0, 509.0, sx0 + 216.0, 534.0, u),
-                                    &r.warm_sub,
+                                    if bar_on { &r.warm_sub } else { &r.muted_txt },
                                 );
                             }
                         }
@@ -27658,8 +27770,9 @@ mod tests {
         assert!(!sc.draft_cfg.clean_top_bar_enabled);
         assert!(sc.render_d2d(&cfg), "All Themes view with Top Menu Bar OFF pill must render cleanly");
 
-        // 2. Upgraded 4-Tab Dock Customize UI: Preview Stage + Size & Glass (32..=64px macOS max, mag, opacity, label font + mode) + Dedicated Top Menu Bar tab + Reset Style
+        // 2. Upgraded 4-Tab Dock Customize UI: Bar ON/OFF header pill, 5 Size & Glass sliders (24..=48px macOS max, mag, glass opacity, icon box/card opacity, label font + mode), Top Bar tab locked when Bar is OFF, & Reset Style
         sc.taskbar_page = TaskbarPage::Customize;
+        assert_eq!(sc.hit_test(565.0, 110.0), HitZone::ToggleDockBar);
         assert_eq!(sc.hit_test(110.0, 240.0), HitZone::DockCustomTabBtn(DockCustomTab::LayoutHide));
         assert_eq!(sc.hit_test(290.0, 240.0), HitZone::DockCustomTabBtn(DockCustomTab::SizeGlass));
         assert_eq!(sc.hit_test(470.0, 240.0), HitZone::DockCustomTabBtn(DockCustomTab::TopBar));
@@ -27668,24 +27781,34 @@ mod tests {
 
         let _ = sc.activate_zone(HitZone::DockCustomTabBtn(DockCustomTab::SizeGlass), &mut cfg);
         assert_eq!(sc.dock_custom_tab, DockCustomTab::SizeGlass);
-        assert_eq!(sc.hit_test(400.0, 312.0), HitZone::Slider(SliderKind::MacDockIconSize));
-        assert_eq!(sc.hit_test(400.0, 348.0), HitZone::Slider(SliderKind::MacDockMagPct));
-        assert_eq!(sc.hit_test(400.0, 384.0), HitZone::Slider(SliderKind::TaskbarOpacity));
-        assert_eq!(sc.hit_test(400.0, 420.0), HitZone::Slider(SliderKind::MacDockLabelFontSize));
-        assert_eq!(sc.hit_test(512.0, 467.0), HitZone::SetDockLabelMode(DockRunningLabelMode::AllRunningApps));
+        assert_eq!(sc.hit_test(400.0, 304.0), HitZone::Slider(SliderKind::MacDockIconSize));
+        assert_eq!(sc.hit_test(400.0, 335.0), HitZone::Slider(SliderKind::MacDockMagPct));
+        assert_eq!(sc.hit_test(400.0, 366.0), HitZone::Slider(SliderKind::TaskbarOpacity));
+        assert_eq!(sc.hit_test(400.0, 397.0), HitZone::Slider(SliderKind::MacDockCardOpacity));
+        assert_eq!(sc.hit_test(400.0, 428.0), HitZone::Slider(SliderKind::MacDockLabelFontSize));
+        assert_eq!(sc.hit_test(512.0, 472.0), HitZone::SetDockLabelMode(DockRunningLabelMode::AllRunningApps));
 
-        // Drag Icon Size to right end -> strictly capped at macOS max 64 px!
+        // Drag Icon Size to ends -> strictly capped at authentic macOS 24..=48 px!
         let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 640.0, &mut cfg);
-        assert_eq!(cfg.mac_dock_icon_size, 64);
+        assert_eq!(cfg.mac_dock_icon_size, 48);
         let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 232.0, &mut cfg);
-        assert_eq!(cfg.mac_dock_icon_size, 32);
-        let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 538.0, &mut cfg);
-        assert!((55..=57).contains(&cfg.mac_dock_icon_size), "Expected ~56px, got {}", cfg.mac_dock_icon_size);
+        assert_eq!(cfg.mac_dock_icon_size, 24);
+        let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 436.0, &mut cfg);
+        assert!((35..=37).contains(&cfg.mac_dock_icon_size), "Expected ~36px, got {}", cfg.mac_dock_icon_size);
 
         // Drag Dock Glass Opacity -> emits MacDockPreview for Virtual Dock!
         let cmd_op = sc.update_slider_from_x(SliderKind::TaskbarOpacity, 640.0, &mut cfg);
         assert!(matches!(cmd_op, Some(SettingsCommand::MacDockPreview)));
         assert_eq!(cfg.tint_alpha, 255);
+
+        // Drag Icon Box / Card Opacity -> 0% (transparent) and back to 65% emitting MacDockPreview!
+        let cmd_card0 = sc.update_slider_from_x(SliderKind::MacDockCardOpacity, 232.0, &mut cfg);
+        assert!(matches!(cmd_card0, Some(SettingsCommand::MacDockPreview)));
+        assert_eq!(cfg.w_apps.card_opacity_pct, 0);
+        assert_eq!(sc.draft_cfg.w_apps.card_opacity_pct, 0);
+        let cmd_card65 = sc.update_slider_from_x(SliderKind::MacDockCardOpacity, 232.0 + 408.0 * 0.65, &mut cfg);
+        assert!(matches!(cmd_card65, Some(SettingsCommand::MacDockPreview)));
+        assert_eq!(cfg.w_apps.card_opacity_pct, 65);
 
         // Drag App Name Font Size -> 18 px + select All Open Apps label mode
         let cmd_fs = sc.update_slider_from_x(SliderKind::MacDockLabelFontSize, 558.4, &mut cfg);
@@ -27696,9 +27819,10 @@ mod tests {
         assert_eq!(cfg.w_apps.label_mode, DockRunningLabelMode::AllRunningApps);
         assert!(sc.render_d2d(&cfg), "Dock Customize Tab 2 (Size & Glass) must render cleanly");
 
-        // Dedicated Top Menu Bar tab works on ANY Virtual Dock theme (e.g. QuartzShellDock)
+        // Top Bar tab works when Bar is ON, and locks cleanly when Bar is toggled OFF!
         cfg.apply_taskbar_theme_preset(TaskbarTheme::QuartzShellDock);
         sc.draft_cfg = cfg.clone();
+        assert!(cfg.is_dock_bar_on());
         assert!(!cfg.clean_top_bar_enabled);
         let _ = sc.activate_zone(HitZone::DockCustomTabBtn(DockCustomTab::TopBar), &mut cfg);
         assert_eq!(sc.hit_test(380.0, 300.0), HitZone::ToggleCleanTopBar);
@@ -27707,13 +27831,34 @@ mod tests {
         assert_eq!(sc.hit_test(600.0, 505.0), HitZone::SetCleanTopBarStyle(CleanTopBarStyle::Floating));
         let _ = sc.activate_zone(HitZone::SetCleanTopBarStyle(CleanTopBarStyle::Floating), &mut cfg);
         assert_eq!(cfg.clean_top_bar_style, CleanTopBarStyle::Floating);
-        assert!(sc.render_d2d(&cfg), "Dock Customize Tab 3 (Top Menu Bar) must render cleanly");
+        assert!(sc.render_d2d(&cfg), "Dock Customize Tab 3 (Top Bar ON) must render cleanly");
 
-        // Reset Style button resets dock size/mag/opacity/top-bar while keeping QuartzShellDock!
+        // Toggle Bar OFF via header pill -> StealthHide, Top Bar hides & Tab 3 locks!
+        let cmd_bar_off = sc.activate_zone(HitZone::ToggleDockBar, &mut cfg);
+        assert!(matches!(cmd_bar_off, SettingsCommand::MacDockUpdated));
+        assert!(!cfg.is_dock_bar_on());
+        assert_eq!(cfg.mac_dock_hide, MacDockHideMode::StealthHide);
+        assert!(!cfg.is_clean_top_bar_active(), "Top Bar must be inactive while Bar is OFF");
+        assert_eq!(sc.hit_test(380.0, 300.0), HitZone::None, "Top Bar switch must be locked while Bar is OFF");
+        let cmd_locked = sc.activate_zone(HitZone::ToggleCleanTopBar, &mut cfg);
+        assert!(matches!(cmd_locked, SettingsCommand::None), "ToggleCleanTopBar must no-op when Bar is OFF");
+        assert!(cfg.clean_top_bar_enabled, "Saved clean_top_bar_enabled preference must remain intact while locked");
+        assert!(sc.render_d2d(&cfg), "Dock Customize Tab 3 (Bar OFF locked state) must render cleanly");
+
+        // Toggle Bar back ON via header pill -> restores AlwaysVisible & unlocks Top Bar!
+        let cmd_bar_on = sc.activate_zone(HitZone::ToggleDockBar, &mut cfg);
+        assert!(matches!(cmd_bar_on, SettingsCommand::MacDockUpdated));
+        assert!(cfg.is_dock_bar_on());
+        assert_eq!(cfg.mac_dock_hide, MacDockHideMode::AlwaysVisible);
+        assert!(cfg.is_clean_top_bar_active());
+        assert_eq!(sc.hit_test(380.0, 300.0), HitZone::ToggleCleanTopBar);
+
+        // Reset Style button resets dock size (36px), card opacity (100%), mag, opacity & top-bar while keeping QuartzShellDock!
         assert_eq!(sc.hit_test(684.0, 110.0), HitZone::BtnResetDockStyle);
         let _ = sc.activate_zone(HitZone::BtnResetDockStyle, &mut cfg);
         assert_eq!(cfg.tb_theme, TaskbarTheme::QuartzShellDock);
-        assert_eq!(cfg.mac_dock_icon_size, 44);
+        assert_eq!(cfg.mac_dock_icon_size, 36);
+        assert_eq!(cfg.w_apps.card_opacity_pct, 100);
         assert!(!cfg.clean_top_bar_enabled);
 
         // 3. Settings tab exposes Portable Mode status + Convert to Portable pill without disturbing (140, 445)

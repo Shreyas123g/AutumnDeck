@@ -114,7 +114,7 @@ use crate::config::{
 };
 use crate::desktop_widgets::{launch_app_path, load_app_bitmap_for_path, wic_src_to_d2d};
 use crate::dock_themes::{
-    bind_active_dock_backdrop_with_alpha, chamfer_geo, clean_acrylic_tint_abgr_with_alpha,
+    bind_active_dock_backdrop_full, chamfer_geo, clean_acrylic_tint_abgr_with_alpha,
     dock_spec, draw_clean_top_bar, draw_d2d_text, draw_dock_clock_module,
     draw_dock_divider_styled, draw_dock_indicator_styled, draw_dock_shelf_and_art_with_ripple,
     draw_dock_slot_fx_styled, draw_dock_tooltip, draw_top_bar_popover,
@@ -177,7 +177,7 @@ const IDM_CLEAN_TOPBAR_FULL: usize = 4174;
 const IDM_CLEAN_TOPBAR_FLOAT: usize = 4175;
 const IDM_CLEAN_TOPBAR_DESK_ONLY: usize = 4176;
 const IDM_DOCK_ICON_SIZE_BASE: usize = 4180;
-const DOCK_ICON_SIZE_PRESETS: [u8; 6] = [32, 40, 44, 48, 56, 64];
+const DOCK_ICON_SIZE_PRESETS: [u8; 6] = [24, 30, 36, 40, 44, 48];
 const IDM_DOCK_SYNC_WIN_PINS: usize = 4133;
 
 const IDM_WINX_APPS: usize = 4140;
@@ -3924,14 +3924,7 @@ impl MacDockEngine {
                     if is_vertical {
                         (base_sz, false, false)
                     } else {
-                        let base_clk = match cfg.w_clock.engine {
-                            DockClockEngine::SingleLinePill => 118.0 * u,
-                            DockClockEngine::AnalogChronograph => 98.0 * u,
-                            DockClockEngine::TerminalMatrix => 88.0 * u,
-                            _ => 82.0 * u,
-                        };
-                        let sec_extra = if cfg.w_clock.show_seconds { 14.0 * u } else { 0.0 };
-                        (base_clk + sec_extra, false, false)
+                        (dock_clock_slot_span(cfg, u), false, false)
                     }
                 }
                 DockSlotKind::ShowDesktopSliver => {
@@ -4387,6 +4380,15 @@ impl MacDockEngine {
         } else {
             mon_span - 16.0 * u
         };
+        if dock_span > max_mon_span {
+            dock_span = compress_wide_app_slots_for_span(
+                &self.slots,
+                &mut slot_widths,
+                base_sz,
+                dock_span,
+                max_mon_span,
+            );
+        }
         let fit_k = if dock_span > max_mon_span && dock_span > 1.0 {
             max_mon_span / dock_span
         } else {
@@ -4395,7 +4397,7 @@ impl MacDockEngine {
         dock_span *= fit_k;
         pane.last_dock_span = dock_span;
         let eff_shelf_cross = if fit_k < 0.96 {
-            ((shelf_cross - base_sz) + base_sz * fit_k.max(0.45)).max(46.0 * u)
+            ((shelf_cross - base_sz) + base_sz * fit_k.max(0.45)).max(36.0 * u)
         } else {
             shelf_cross
         };
@@ -7235,7 +7237,7 @@ impl MacDockEngine {
             .contains(&cmd)
         {
             let px = DOCK_ICON_SIZE_PRESETS[cmd - IDM_DOCK_ICON_SIZE_BASE];
-            cfg.mac_dock_icon_size = px.clamp(32, 64);
+            cfg.mac_dock_icon_size = px.clamp(24, 48);
             save_config(cfg);
             self.dirty_windows = true;
             self.mark_dirty_paint();
@@ -8116,7 +8118,7 @@ impl MacDockEngine {
                     canvas_top: self.top_popover.win_rect.top as f32,
                 })
             });
-            let _guard = bind_active_dock_backdrop_with_alpha(fallback_ctx, live_hw, cfg.tint_alpha);
+            let _guard = bind_active_dock_backdrop_full(fallback_ctx, live_hw, cfg.tint_alpha, 100);
             if let (Some(br), Some(tf_b), Some(tf_r), Some(tf_l)) = (
                 self.solid_brush.clone(),
                 self.tf_top_bold.as_ref().or(self.tf_tip.as_ref()),
@@ -8206,7 +8208,7 @@ impl MacDockEngine {
             canvas_left: pane.top_win_rect.left as f32,
             canvas_top: pane.top_win_rect.top as f32,
         });
-        let _guard = bind_active_dock_backdrop_with_alpha(backdrop_ctx, live_hw_blur, cfg.tint_alpha);
+        let _guard = bind_active_dock_backdrop_full(backdrop_ctx, live_hw_blur, cfg.tint_alpha, 100);
 
         let br_opt = self
             .solid_brush
@@ -8340,7 +8342,8 @@ impl MacDockEngine {
         // Clean & Minimal glass shelf/islands (100% click-through, never black, never oversized!)
         let u = pane.dpi_u;
         let acrylic_pills = collect_dock_acrylic_pills(pane, cfg, u);
-        let live_hw_blur = if !acrylic_pills.is_empty() && !cfg.is_dock_all_elements_off() {
+        let live_hw_blur =
+            if !acrylic_pills.is_empty() && !cfg.is_dock_all_elements_off() && cfg.tint_alpha > 0 {
             let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, false, cfg.tint_alpha);
             pane.liquid_backdrop.sync_pills(
                 self.hinst,
@@ -8494,8 +8497,12 @@ impl MacDockEngine {
             canvas_left: pane.canvas_rect.left as f32,
             canvas_top: pane.canvas_rect.top as f32,
         });
-        let _backdrop_guard =
-            bind_active_dock_backdrop_with_alpha(backdrop_ctx, live_hw_blur, cfg.tint_alpha);
+        let _backdrop_guard = bind_active_dock_backdrop_full(
+            backdrop_ctx,
+            live_hw_blur,
+            cfg.tint_alpha,
+            cfg.w_apps.card_opacity_pct,
+        );
 
         let br_opt = self
             .solid_brush
@@ -10535,26 +10542,85 @@ fn dock_safe_max_scale(
             (1.0 + delta * 0.35).clamp(1.0, 1.30)
         }
     };
-    let max_visual_ico = (mon_cross * 0.24).min(118.0 * u).max(base_sz);
+    let max_visual_ico = (mon_cross * 0.20).min(88.0 * u).max(base_sz);
     let cross_cap = (max_visual_ico / base_sz.max(1.0)).clamp(1.0, 1.85);
     raw_scale.min(cross_cap)
+}
+
+fn dock_clock_slot_span(cfg: &AppConfig, u: f32) -> f32 {
+    let use_24h = cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h);
+    let base_clk = match cfg.w_clock.engine {
+        DockClockEngine::SingleLinePill => {
+            if use_24h {
+                134.0 * u
+            } else {
+                152.0 * u
+            }
+        }
+        DockClockEngine::AnalogChronograph => 98.0 * u,
+        DockClockEngine::TerminalMatrix => 88.0 * u,
+        _ => 82.0 * u,
+    };
+    let sec_extra = if cfg.w_clock.show_seconds { 14.0 * u } else { 0.0 };
+    base_clk + sec_extra
+}
+
+fn compress_wide_app_slots_for_span(
+    slots: &[DockSlotKind],
+    slot_widths: &mut [f32],
+    base_sz: f32,
+    dock_span: f32,
+    max_mon_span: f32,
+) -> f32 {
+    if dock_span <= max_mon_span {
+        return dock_span;
+    }
+    let excess = dock_span - max_mon_span;
+    let min_w = base_sz.max(16.0);
+    let mut total_slack = 0.0f32;
+    for (slot, &w) in slots.iter().zip(slot_widths.iter()) {
+        if matches!(
+            slot,
+            DockSlotKind::PinnedApp { .. } | DockSlotKind::RunningApp { .. }
+        ) && w > min_w + 0.5
+        {
+            total_slack += w - min_w;
+        }
+    }
+    if total_slack <= 0.5 {
+        return dock_span;
+    }
+    let trim_ratio = (excess / total_slack).clamp(0.0, 1.0);
+    let mut saved = 0.0f32;
+    for (slot, w) in slots.iter().zip(slot_widths.iter_mut()) {
+        if matches!(
+            slot,
+            DockSlotKind::PinnedApp { .. } | DockSlotKind::RunningApp { .. }
+        ) && *w > min_w + 0.5
+        {
+            let cut = (*w - min_w) * trim_ratio;
+            *w -= cut;
+            saved += cut;
+        }
+    }
+    (dock_span - saved).max(0.0)
 }
 
 fn dock_cross_metrics(cfg: &AppConfig, u: f32) -> (DockVisualSpec, bool, f32, f32, f32, f32) {
     let spec = resolve_shelf_spec(cfg);
     let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
-    let base_sz = (cfg.mac_dock_icon_size as f32).clamp(32.0, 64.0) * u;
+    let base_sz = (cfg.mac_dock_icon_size as f32).clamp(24.0, 48.0) * u;
     let shelf_cross = if matches!(
         cfg.tb_theme,
         TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark
     ) {
-        base_sz + (base_sz * 0.28).max(13.0 * u)
+        base_sz + (base_sz * 0.22).max(10.0 * u)
     } else {
         match spec.layout {
-            DockLayoutKind::FullEdgeTaskbar => (base_sz + 14.0 * u).max(46.0 * u),
-            DockLayoutKind::HudConsoleDeck => base_sz + 22.0 * u,
+            DockLayoutKind::FullEdgeTaskbar => (base_sz + 10.0 * u).max(40.0 * u),
+            DockLayoutKind::HudConsoleDeck => base_sz + 18.0 * u,
             DockLayoutKind::IndependentOrbs => base_sz + 20.0 * u,
-            _ => base_sz + 18.0 * u,
+            _ => base_sz + 14.0 * u,
         }
     };
     let edge_gap = match spec.layout {
@@ -11963,15 +12029,15 @@ unsafe fn append_dock_icon_size_submenu(parent: HMENU, cfg: &AppConfig) {
     let Ok(sub) = CreatePopupMenu() else {
         return;
     };
-    let cur = cfg.mac_dock_icon_size.clamp(32, 64);
+    let cur = cfg.mac_dock_icon_size.clamp(24, 48);
     for (idx, &px) in DOCK_ICON_SIZE_PRESETS.iter().enumerate() {
         let label = match px {
-            32 => "Compact (32 px)",
-            40 => "Small (40 px)",
-            44 => "Default (44 px)",
-            48 => "Medium (48 px)",
-            56 => "Large (56 px)",
-            64 => "macOS Max (64 px)",
+            24 => "Mini (24 px)",
+            30 => "Compact (30 px)",
+            36 => "Medium (36 px)",
+            40 => "Standard (40 px)",
+            44 => "Large (44 px)",
+            48 => "macOS Max (48 px)",
             _ => "Custom",
         };
         add_checked_item(sub, IDM_DOCK_ICON_SIZE_BASE + idx, label, cur == px);
@@ -15257,30 +15323,32 @@ mod tests {
     }
 
     #[test]
-    fn dock_64px_macos_max_icons_sliders_dpi_fonts_and_opacity() {
+    fn dock_48px_macos_max_icons_sliders_card_opacity_and_no_clip_clock() {
         let mut cfg = AppConfig::default();
+        assert_eq!(cfg.mac_dock_icon_size, 36, "Default startup dock icon size must be medium 36 px");
+        assert_eq!(cfg.w_apps.card_opacity_pct, 100);
         cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassLight);
-        cfg.mac_dock_icon_size = 64;
+        cfg.mac_dock_icon_size = 48;
         cfg.mac_dock_mag_pct = 155;
         cfg.w_apps.label_font_size_px = 18;
 
-        // Oversized legacy values clamp strictly to macOS 64px max in dock_cross_metrics
+        // Oversized legacy values clamp strictly to authentic macOS 48px max in dock_cross_metrics
         let mut over_cfg = cfg.clone();
         over_cfg.mac_dock_icon_size = 96;
         let (_, _, over_base, _, _, _) = dock_cross_metrics(&over_cfg, 1.0);
-        assert!((over_base - 64.0).abs() < 0.01);
+        assert!((over_base - 48.0).abs() < 0.01);
 
         let (spec, is_vert, base_sz, shelf_cross, edge_gap, _wing) = dock_cross_metrics(&cfg, 1.0);
         assert!(!is_vert);
-        assert!((base_sz - 64.0).abs() < 0.01);
+        assert!((base_sz - 48.0).abs() < 0.01);
         assert!(
-            shelf_cross >= base_sz + 16.0 && shelf_cross <= 92.0,
-            "OS26 64px shelf_cross must leave balanced glass margin: {}",
+            shelf_cross >= base_sz + 10.0 && shelf_cross <= 64.0,
+            "OS26 48px shelf_cross must match sleek macOS proportions: {}",
             shelf_cross
         );
         assert!(edge_gap >= 0.0);
 
-        // Magnification slider: 100..=102% turns magnification OFF (1.0) on ALL themes; 116% and 155% scale smoothly even at 64px on 720p/1080p!
+        // Magnification slider: 100..=102% turns magnification OFF (1.0) on ALL themes; 116% and 155% scale smoothly even at 48px on 720p/1080p!
         let mut off_cfg = cfg.clone();
         off_cfg.mac_dock_mag_pct = 100;
         assert!((dock_safe_max_scale(&off_cfg, &spec, base_sz, 1080.0, 1.0) - 1.0).abs() < 0.001);
@@ -15296,9 +15364,21 @@ mod tests {
         isl_cfg.apply_taskbar_theme_preset(TaskbarTheme::LiquidGlassClear);
         let isl_spec = resolve_shelf_spec(&isl_cfg);
         isl_cfg.mac_dock_mag_pct = 100;
-        assert!((dock_safe_max_scale(&isl_cfg, &isl_spec, 44.0, 1080.0, 1.0) - 1.0).abs() < 0.001);
+        assert!((dock_safe_max_scale(&isl_cfg, &isl_spec, 36.0, 1080.0, 1.0) - 1.0).abs() < 0.001);
         isl_cfg.mac_dock_mag_pct = 160;
-        assert!(dock_safe_max_scale(&isl_cfg, &isl_spec, 44.0, 1080.0, 1.0) > 1.40);
+        assert!(dock_safe_max_scale(&isl_cfg, &isl_spec, 36.0, 1080.0, 1.0) > 1.40);
+
+        // Independent Icon Box / Card Opacity thread-local binding (0% transparent .. 100% opaque)
+        assert!((crate::dock_themes::active_dock_card_alpha() - 1.0).abs() < 0.001);
+        {
+            let _g0 = bind_active_dock_backdrop_full(None, false, 128, 0);
+            assert!(crate::dock_themes::active_dock_card_alpha() <= 0.001);
+        }
+        assert!((crate::dock_themes::active_dock_card_alpha() - 1.0).abs() < 0.001);
+        {
+            let _g40 = bind_active_dock_backdrop_full(None, false, 128, 40);
+            assert!((crate::dock_themes::active_dock_card_alpha() - 0.40).abs() < 0.001);
+        }
 
         // Dock Glass Opacity scaling: exact preset at default, near-transparent at 0, rich frost at 255
         let preset_tint = TaskbarTheme::Os26LiquidGlassLight.preview_preset().2;
@@ -15330,6 +15410,53 @@ mod tests {
         let abgr_hi = clean_acrylic_tint_abgr_with_alpha(TaskbarTheme::Os26LiquidGlassLight, false, 255);
         assert!((abgr_lo >> 24) < (abgr_hi >> 24));
 
+        // SingleLinePill clock gives generous width in both 12h and 24h modes so date never clips!
+        let mut clk_cfg = AppConfig::default();
+        clk_cfg.w_clock.engine = DockClockEngine::SingleLinePill;
+        clk_cfg.set_clock_24h(false);
+        assert!((dock_clock_slot_span(&clk_cfg, 1.0) - 152.0).abs() < 0.01);
+        clk_cfg.set_clock_24h(true);
+        assert!((dock_clock_slot_span(&clk_cfg, 1.0) - 134.0).abs() < 0.01);
+
+        // Wide-app-first overflow compression shrinks labeled open-app pills before touching Clock or Tray!
+        let mut ov_slots = vec![DockSlotKind::StartLauncher];
+        let mut ov_widths = vec![36.0f32];
+        for i in 0..8 {
+            ov_slots.push(DockSlotKind::RunningApp {
+                key: format!("app_{}", i),
+                name: format!("App {}", i),
+                exe_path: format!(r"C:\Apps\a{}.exe", i),
+                windows: Vec::new(),
+            });
+            ov_widths.push(164.0);
+        }
+        ov_slots.push(DockSlotKind::TrayStatusCluster);
+        ov_widths.push(110.0);
+        ov_slots.push(DockSlotKind::ClockModule {
+            time_str: "2:51 AM".into(),
+            date_str: "Sat 11/28".into(),
+            hour24: 2,
+            minute: 51,
+            second: 0,
+        });
+        ov_widths.push(152.0);
+        let raw_span: f32 = ov_widths.iter().sum();
+        assert!(raw_span > 1280.0);
+        let new_span = compress_wide_app_slots_for_span(&ov_slots, &mut ov_widths, 36.0, raw_span, 1280.0);
+        assert!((new_span - 1280.0).abs() < 0.5, "Overflow must fit cleanly inside 1280px: {}", new_span);
+        assert!((ov_widths[ov_widths.len() - 1] - 152.0).abs() < 0.01, "ClockModule must keep full 152px width!");
+        assert!((ov_widths[ov_widths.len() - 2] - 110.0).abs() < 0.01, "TrayStatusCluster must keep full 110px width!");
+        assert!(ov_widths[1] < 164.0 && ov_widths[1] >= 36.0, "Wide app pills must absorb overflow cleanly");
+
+        // Bar OFF (StealthHide) disables Top Bar automatically; turning Bar back ON restores it
+        cfg.clean_top_bar_enabled = true;
+        cfg.mac_dock_hide = MacDockHideMode::StealthHide;
+        assert!(!cfg.is_dock_bar_on());
+        assert!(!cfg.is_clean_top_bar_active());
+        cfg.mac_dock_hide = MacDockHideMode::AlwaysVisible;
+        assert!(cfg.is_dock_bar_on());
+        assert!(cfg.is_clean_top_bar_active());
+
         // Dynamic inline window pill width & truncation + DPI-aware tf_tip & tf_left font sizes
         let (pw10, tc10, sc10) = dock_inline_label_metrics(10, 1.0);
         let (pw18, tc18, sc18) = dock_inline_label_metrics(18, 1.0);
@@ -15338,7 +15465,7 @@ mod tests {
         assert!(pw18 > 195.0 && pw18 < 220.0 && tc18 >= 24 && sc18 >= 19);
         assert!((pw20 - 220.0).abs() < 0.01 && tc20 == 28 && sc20 == 22);
 
-        // Context menu command handler toggles Top Bar and sets quick Icon Size preset (64 px)
+        // Context menu command handler toggles Top Bar and sets quick Icon Size preset (48 px)
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
@@ -15354,14 +15481,14 @@ mod tests {
         let act_tb = eng.handle_widget_menu_cmd(IDM_CLEAN_TOPBAR_TOGGLE, &mut cfg);
         assert!(matches!(act_tb, Some(MacDockAction::ConfigUpdated)));
         assert!(!cfg.clean_top_bar_enabled);
-        let idx_64 = DOCK_ICON_SIZE_PRESETS
+        let idx_48 = DOCK_ICON_SIZE_PRESETS
             .iter()
-            .position(|&p| p == 64)
-            .expect("64px macOS max preset must exist");
-        cfg.mac_dock_icon_size = 44;
-        let act_sz = eng.handle_widget_menu_cmd(IDM_DOCK_ICON_SIZE_BASE + idx_64, &mut cfg);
+            .position(|&p| p == 48)
+            .expect("48px macOS max preset must exist");
+        cfg.mac_dock_icon_size = 36;
+        let act_sz = eng.handle_widget_menu_cmd(IDM_DOCK_ICON_SIZE_BASE + idx_48, &mut cfg);
         assert!(matches!(act_sz, Some(MacDockAction::ConfigUpdated)));
-        assert_eq!(cfg.mac_dock_icon_size, 64);
+        assert_eq!(cfg.mac_dock_icon_size, 48);
         unsafe {
             CoUninitialize();
         }

@@ -5457,6 +5457,8 @@ pub struct DockAppWidgetConfig {
     pub show_window_count_badge: bool,
     pub middle_click_action: u8,
     pub wheel_action: u8,
+    /// Opacity of the per-icon box / keycap / tile card (`0..=100`, `0` = completely transparent, default `100`).
+    pub card_opacity_pct: u8,
     pub show_icons: bool,
     pub show_cards: bool,
     pub show_indicators: bool,
@@ -5477,6 +5479,7 @@ impl Default for DockAppWidgetConfig {
             show_window_count_badge: false,
             middle_click_action: 0,
             wheel_action: 0,
+            card_opacity_pct: 100,
             show_icons: true,
             show_cards: true,
             show_indicators: true,
@@ -5861,7 +5864,7 @@ impl Default for AppConfig {
             mac_dock_enabled: false,
             mac_dock_edge: MacDockEdge::Bottom,
             mac_dock_hide: MacDockHideMode::AlwaysVisible,
-            mac_dock_icon_size: 44,
+            mac_dock_icon_size: 36,
             mac_dock_mag_pct: 155,
             mac_dock_bounce: true,
             mac_dock_dots: true,
@@ -5901,9 +5904,15 @@ impl AppConfig {
         Self::anim_frame_ms_for(self.anim_fps)
     }
 
+    /// True when the Virtual Dock Bar itself is ON (enabled and not in Full Stealth Hide).
+    pub fn is_dock_bar_on(&self) -> bool {
+        self.mac_dock_enabled && self.mac_dock_hide != MacDockHideMode::StealthHide
+    }
+
     /// True when the macOS / Windhawk Status Menu Bar should render for the active Virtual Dock.
+    /// Locked OFF whenever the Dock Bar itself is turned OFF.
     pub fn is_clean_top_bar_active(&self) -> bool {
-        self.mac_dock_enabled && self.clean_top_bar_enabled
+        self.is_dock_bar_on() && self.clean_top_bar_enabled
     }
 
     /// Resolves whether the Clean & Minimal Top Bar uses Floating Glass Pill silhouette vs Full-Width macOS band.
@@ -5932,7 +5941,7 @@ impl AppConfig {
     /// to the opposite horizontal edge if they would otherwise collide on the same edge.
     pub fn set_clean_top_bar_edge(&mut self, edge: CleanTopBarEdge) {
         self.clean_top_bar_edge = edge;
-        if self.mac_dock_enabled && self.clean_top_bar_enabled {
+        if self.is_dock_bar_on() && self.clean_top_bar_enabled {
             match (edge, self.mac_dock_edge) {
                 (CleanTopBarEdge::Top, MacDockEdge::Top) => {
                     self.mac_dock_edge = MacDockEdge::Bottom;
@@ -5953,7 +5962,7 @@ impl AppConfig {
         let cur_edge = self.mac_dock_edge;
         let cur_hide = self.mac_dock_hide;
         self.reset_dock_widget_overrides();
-        self.mac_dock_icon_size = 44;
+        self.mac_dock_icon_size = 36;
         self.mac_dock_mag_pct = 155;
         self.mac_dock_bounce = true;
         self.mac_dock_dots = true;
@@ -7940,7 +7949,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "mac_dock_enabled" => cfg.mac_dock_enabled = parse_bool(val),
                 "mac_dock_edge" => cfg.mac_dock_edge = MacDockEdge::from_str(val),
                 "mac_dock_hide" => cfg.mac_dock_hide = MacDockHideMode::from_str(val),
-                "mac_dock_icon_size" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_icon_size = v.clamp(32, 64); },
+                "mac_dock_icon_size" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_icon_size = v.clamp(24, 48); },
                 "mac_dock_mag_pct" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_mag_pct = v.clamp(100, 185); },
                 "mac_dock_bounce" => cfg.mac_dock_bounce = parse_bool(val),
                 "mac_dock_dots" => cfg.mac_dock_dots = parse_bool(val),
@@ -7979,6 +7988,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "w_apps_count_badge" => cfg.w_apps.show_window_count_badge = parse_bool(val),
                 "w_apps_mclick" => if let Ok(v) = val.parse::<u8>() { cfg.w_apps.middle_click_action = v.min(2); },
                 "w_apps_wheel" => if let Ok(v) = val.parse::<u8>() { cfg.w_apps.wheel_action = v.min(1); },
+                "w_apps_card_opacity" => if let Ok(v) = val.parse::<u8>() { cfg.w_apps.card_opacity_pct = v.min(100); },
                 "w_apps_show_icons" => cfg.w_apps.show_icons = parse_bool(val),
                 "w_apps_show_cards" => cfg.w_apps.show_cards = parse_bool(val),
                 "w_apps_show_indicators" => cfg.w_apps.show_indicators = parse_bool(val),
@@ -8662,6 +8672,7 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("w_apps_count_badge={}\n", b(cfg.w_apps.show_window_count_badge)));
     out.push_str(&format!("w_apps_mclick={}\n", cfg.w_apps.middle_click_action));
     out.push_str(&format!("w_apps_wheel={}\n", cfg.w_apps.wheel_action));
+    out.push_str(&format!("w_apps_card_opacity={}\n", cfg.w_apps.card_opacity_pct.min(100)));
     out.push_str(&format!("w_apps_show_icons={}\n", b(cfg.w_apps.show_icons)));
     out.push_str(&format!("w_apps_show_cards={}\n", b(cfg.w_apps.show_cards)));
     out.push_str(&format!("w_apps_show_indicators={}\n", b(cfg.w_apps.show_indicators)));
@@ -9660,7 +9671,7 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         let mut cfg = AppConfig::default();
         for i in 0..20u8 {
             cfg.tint_alpha = 50 + i * 5;
-            cfg.mac_dock_icon_size = 36 + (i % 16);
+            cfg.mac_dock_icon_size = 28 + (i % 16);
             save_config_to_path_async(&cfg, &path);
         }
 
@@ -9815,10 +9826,13 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(cli_port);
         assert_eq!(cli_dir, exe_dir.join("Data"));
 
-        // Convert to Portable creates portable.txt, copies subdirs, rewrites wallpaper path, and persists 32 pins + 64px macOS max icons + 18px label font
+        // Convert to Portable creates portable.txt, copies subdirs, rewrites wallpaper path, and persists 32 pins + 48px macOS max icons + 18px label font + card opacity
         let mut cfg = AppConfig::default();
-        cfg.mac_dock_icon_size = 64;
+        assert_eq!(cfg.mac_dock_icon_size, 36);
+        assert_eq!(cfg.w_apps.card_opacity_pct, 100);
+        cfg.mac_dock_icon_size = 48;
         cfg.w_apps.label_font_size_px = 18;
+        cfg.w_apps.card_opacity_pct = 0;
         cfg.wallpaper_path = src_data
             .join("wallpapers")
             .join("sample.mp4")
@@ -9850,11 +9864,12 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(auto_port);
         assert_eq!(auto_dir, dst_dir);
 
-        // Verify saved portable config.ini roundtrips all 32 pins, 64px icon size, 18px label font, and rewritten wallpaper path
+        // Verify saved portable config.ini roundtrips all 32 pins, 48px icon size, 18px label font, 0% card opacity, and rewritten wallpaper path
         let raw_ini = fs::read_to_string(dst_dir.join("config.ini")).unwrap();
         let parsed = parse_config_ini(&raw_ini).expect("portable config.ini must parse");
-        assert_eq!(parsed.mac_dock_icon_size, 64);
+        assert_eq!(parsed.mac_dock_icon_size, 48);
         assert_eq!(parsed.w_apps.label_font_size_px, 18);
+        assert_eq!(parsed.w_apps.card_opacity_pct, 0);
         assert_eq!(parsed.mac_dock_pinned.len(), 32);
         assert_eq!(parsed.mac_dock_pinned[31].name, "App 31");
         assert!(
@@ -9865,21 +9880,30 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
             parsed.wallpaper_path
         );
 
-        // Clamp guard verification for macOS icon size (32..=64) and label font size (10..=20)
-        let clamp_ini = "[Taskbar]\nmac_dock_icon_size=140\nw_apps_label_font_size=28\n";
+        // Clamp guard verification for macOS icon size (24..=48), card opacity (0..=100), and label font size (10..=20)
+        let clamp_ini = "[Taskbar]\nmac_dock_icon_size=140\nw_apps_label_font_size=28\nw_apps_card_opacity=220\n";
         let (clamped_hi, _, _, _) = parse_config_body(clamp_ini, true);
-        assert_eq!(clamped_hi.mac_dock_icon_size, 64);
+        assert_eq!(clamped_hi.mac_dock_icon_size, 48);
         assert_eq!(clamped_hi.w_apps.label_font_size_px, 20);
-        let clamp_lo_ini = "[Taskbar]\nmac_dock_icon_size=16\nw_apps_label_font_size=4\n";
+        assert_eq!(clamped_hi.w_apps.card_opacity_pct, 100);
+        let clamp_lo_ini = "[Taskbar]\nmac_dock_icon_size=12\nw_apps_label_font_size=4\nw_apps_card_opacity=45\n";
         let (clamped_lo, _, _, _) = parse_config_body(clamp_lo_ini, true);
-        assert_eq!(clamped_lo.mac_dock_icon_size, 32);
+        assert_eq!(clamped_lo.mac_dock_icon_size, 24);
         assert_eq!(clamped_lo.w_apps.label_font_size_px, 10);
+        assert_eq!(clamped_lo.w_apps.card_opacity_pct, 45);
 
-        // Universal Top Bar support: defaults OFF on non-CleanMinimal docks (e.g. QuartzShellDock), but user can enable it explicitly!
+        // Universal Top Bar support & Bar OFF gating: Top Bar stays locked OFF when Bar is OFF (StealthHide)
         let mut u_cfg = AppConfig::default();
         u_cfg.apply_taskbar_theme_preset(TaskbarTheme::QuartzShellDock);
+        assert!(u_cfg.is_dock_bar_on());
         assert!(!u_cfg.is_clean_top_bar_active());
         u_cfg.clean_top_bar_enabled = true;
+        assert!(u_cfg.is_clean_top_bar_active());
+        u_cfg.mac_dock_hide = MacDockHideMode::StealthHide;
+        assert!(!u_cfg.is_dock_bar_on());
+        assert!(!u_cfg.is_clean_top_bar_active());
+        u_cfg.mac_dock_hide = MacDockHideMode::AlwaysVisible;
+        assert!(u_cfg.is_dock_bar_on());
         assert!(u_cfg.is_clean_top_bar_active());
         u_cfg.mac_dock_edge = MacDockEdge::Bottom;
         u_cfg.set_clean_top_bar_edge(CleanTopBarEdge::Bottom);

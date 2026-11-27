@@ -2384,6 +2384,7 @@ thread_local! {
     static ACTIVE_DOCK_BACKDROP: RefCell<Option<DockBackdropCtx>> = const { RefCell::new(None) };
     static ACTIVE_LIVE_HW_BLUR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ACTIVE_DOCK_TINT_ALPHA: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+    static ACTIVE_DOCK_CARD_ALPHA: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
 }
 
 pub struct DockBackdropGuard;
@@ -2395,6 +2396,7 @@ impl Drop for DockBackdropGuard {
         });
         ACTIVE_LIVE_HW_BLUR.with(|c| c.set(false));
         ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(None));
+        ACTIVE_DOCK_CARD_ALPHA.with(|c| c.set(1.0));
     }
 }
 
@@ -2403,6 +2405,7 @@ pub fn bind_active_dock_backdrop(ctx: Option<DockBackdropCtx>) -> DockBackdropGu
     bind_active_dock_backdrop_ex(ctx, false)
 }
 
+#[allow(dead_code)]
 pub fn bind_active_dock_backdrop_ex(
     ctx: Option<DockBackdropCtx>,
     live_hw_blur: bool,
@@ -2412,19 +2415,31 @@ pub fn bind_active_dock_backdrop_ex(
     });
     ACTIVE_LIVE_HW_BLUR.with(|c| c.set(live_hw_blur));
     ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(None));
+    ACTIVE_DOCK_CARD_ALPHA.with(|c| c.set(1.0));
     DockBackdropGuard
 }
 
+#[allow(dead_code)]
 pub fn bind_active_dock_backdrop_with_alpha(
     ctx: Option<DockBackdropCtx>,
     live_hw_blur: bool,
     tint_alpha: u8,
+) -> DockBackdropGuard {
+    bind_active_dock_backdrop_full(ctx, live_hw_blur, tint_alpha, 100)
+}
+
+pub fn bind_active_dock_backdrop_full(
+    ctx: Option<DockBackdropCtx>,
+    live_hw_blur: bool,
+    tint_alpha: u8,
+    card_opacity_pct: u8,
 ) -> DockBackdropGuard {
     ACTIVE_DOCK_BACKDROP.with(|c| {
         *c.borrow_mut() = ctx;
     });
     ACTIVE_LIVE_HW_BLUR.with(|c| c.set(live_hw_blur));
     ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(Some(tint_alpha)));
+    ACTIVE_DOCK_CARD_ALPHA.with(|c| c.set((card_opacity_pct.min(100) as f32) / 100.0));
     DockBackdropGuard
 }
 
@@ -2438,6 +2453,11 @@ pub fn active_dock_tint_alpha_for(theme: TaskbarTheme) -> u8 {
     ACTIVE_DOCK_TINT_ALPHA
         .with(|c| c.get())
         .unwrap_or_else(|| theme.preview_preset().2)
+}
+
+#[inline]
+pub fn active_dock_card_alpha() -> f32 {
+    ACTIVE_DOCK_CARD_ALPHA.with(|c| c.get()).clamp(0.0, 1.0)
 }
 
 /// Scales a dock glass/plate/keycap alpha smoothly across `0..=255` `tint_alpha` while
@@ -2628,6 +2648,7 @@ pub unsafe fn draw_backdrop_blurred_ellipse(
 }
 
 /// Smooth 4-pass macOS Sequoia ambient + key + contact drop shadow beneath floating glass/tiles.
+#[allow(dead_code)]
 pub unsafe fn draw_macos_soft_shadow(
     rt: &ID2D1DCRenderTarget,
     br: &ID2D1SolidColorBrush,
@@ -2637,7 +2658,25 @@ pub unsafe fn draw_macos_soft_shadow(
     is_light: bool,
     u: f32,
 ) {
-    let k = if is_light { 0.62 } else { 1.0 };
+    draw_macos_soft_shadow_alpha(rt, br, r, rad, is_circle, is_light, u, 1.0);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_macos_soft_shadow_alpha(
+    rt: &ID2D1DCRenderTarget,
+    br: &ID2D1SolidColorBrush,
+    r: D2D_RECT_F,
+    rad: f32,
+    is_circle: bool,
+    is_light: bool,
+    u: f32,
+    alpha_mul: f32,
+) {
+    let am = alpha_mul.clamp(0.0, 1.0);
+    if am <= 0.01 {
+        return;
+    }
+    let k = (if is_light { 0.62 } else { 1.0 }) * am;
     let passes = [
         (5.5 * u, 4.2 * u, 0.055 * k),
         (3.4 * u, 2.8 * u, 0.085 * k),
@@ -2677,6 +2716,7 @@ pub unsafe fn draw_macos_soft_shadow(
 
 /// Photorealistic 5-stop vertical Fresnel optical glass rim (bright curved top catchlight,
 /// translucent crystal sides, crisp secondary bottom bounce + subtle outer ambient edge).
+#[allow(dead_code, clippy::too_many_arguments)]
 pub unsafe fn draw_fresnel_glass_rim(
     rt: &ID2D1DCRenderTarget,
     br: &ID2D1SolidColorBrush,
@@ -2687,8 +2727,27 @@ pub unsafe fn draw_fresnel_glass_rim(
     boost: f32,
     u: f32,
 ) {
+    draw_fresnel_glass_rim_alpha(rt, br, r, rad, is_circle, is_light, boost, u, 1.0);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_fresnel_glass_rim_alpha(
+    rt: &ID2D1DCRenderTarget,
+    br: &ID2D1SolidColorBrush,
+    r: D2D_RECT_F,
+    rad: f32,
+    is_circle: bool,
+    is_light: bool,
+    boost: f32,
+    u: f32,
+    alpha_mul: f32,
+) {
+    let am = alpha_mul.clamp(0.0, 1.0);
+    if am <= 0.01 {
+        return;
+    }
     // Delicate outer 0.8u ambient dark contour so glass stays crisp over bright daylight wallpapers
-    let outer_a = if is_light { 0.14 } else { 0.24 };
+    let outer_a = (if is_light { 0.14 } else { 0.24 }) * am;
     br.SetColor(&rgba(0, 0, 0, outer_a));
     if is_circle {
         let cx = (r.left + r.right) * 0.5;
@@ -2729,17 +2788,17 @@ pub unsafe fn draw_fresnel_glass_rim(
     };
     let prism_stops = if is_light {
         [
-            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(152, 224, 255, (0.34 * b).min(0.65)) },
+            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(152, 224, 255, (0.34 * b).min(0.65) * am) },
             D2D1_GRADIENT_STOP { position: 0.36, color: rgba(255, 255, 255, 0.0) },
             D2D1_GRADIENT_STOP { position: 0.68, color: rgba(255, 255, 255, 0.0) },
-            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 212, 238, (0.28 * b).min(0.55)) },
+            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 212, 238, (0.28 * b).min(0.55) * am) },
         ]
     } else {
         [
-            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(138, 218, 255, (0.32 * b).min(0.58)) },
+            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(138, 218, 255, (0.32 * b).min(0.58) * am) },
             D2D1_GRADIENT_STOP { position: 0.34, color: rgba(255, 255, 255, 0.0) },
             D2D1_GRADIENT_STOP { position: 0.66, color: rgba(255, 255, 255, 0.0) },
-            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(245, 198, 232, (0.24 * b).min(0.48)) },
+            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(245, 198, 232, (0.24 * b).min(0.48) * am) },
         ]
     };
     if let Some(pg) = create_grad(
@@ -2773,19 +2832,19 @@ pub unsafe fn draw_fresnel_glass_rim(
 
     let stops = if is_light {
         [
-            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(255, 255, 255, (0.98 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 0.20, color: rgba(255, 255, 255, (0.68 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 0.50, color: rgba(224, 240, 255, (0.34 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 0.80, color: rgba(242, 248, 255, (0.66 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 255, 255, (0.92 * b).min(1.0)) },
+            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(255, 255, 255, (0.98 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 0.20, color: rgba(255, 255, 255, (0.68 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 0.50, color: rgba(224, 240, 255, (0.34 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 0.80, color: rgba(242, 248, 255, (0.66 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 255, 255, (0.92 * b).min(1.0) * am) },
         ]
     } else {
         [
-            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(255, 255, 255, (0.92 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 0.20, color: rgba(232, 246, 255, (0.38 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 0.50, color: rgba(196, 224, 248, (0.14 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 0.80, color: rgba(220, 238, 255, (0.34 * b).min(1.0)) },
-            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(248, 253, 255, (0.74 * b).min(1.0)) },
+            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(255, 255, 255, (0.92 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 0.20, color: rgba(232, 246, 255, (0.38 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 0.50, color: rgba(196, 224, 248, (0.14 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 0.80, color: rgba(220, 238, 255, (0.34 * b).min(1.0) * am) },
+            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(248, 253, 255, (0.74 * b).min(1.0) * am) },
         ]
     };
     let cx = (r.left + r.right) * 0.5;
@@ -2825,18 +2884,22 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
     is_active: bool,
     u: f32,
 ) {
+    let card_k = active_dock_card_alpha();
+    if card_k <= 0.01 {
+        return;
+    }
     let w = (k_r.right - k_r.left).max(4.0);
     let h = (k_r.bottom - k_r.top).max(4.0);
     let cx = (k_r.left + k_r.right) * 0.5;
     let k_rr = D2D1_ROUNDED_RECT { rect: k_r, radiusX: rad, radiusY: rad };
 
     // 1. Soft multi-pass macOS elevation drop shadow
-    draw_macos_soft_shadow(rt, br, k_r, rad, false, is_light, u);
+    draw_macos_soft_shadow_alpha(rt, br, k_r, rad, false, is_light, u, card_k);
 
     // 2. Real Gaussian-blurred + 0.84x convex-lens-refracted desktop wallpaper clipped inside keycap!
-    let has_blur = draw_backdrop_blurred_rrect(rt, d2d, k_r, rad, 0.84, 0.96);
+    let has_blur = draw_backdrop_blurred_rrect(rt, d2d, k_r, rad, 0.84, 0.96 * card_k);
 
-    // 3. Ultra-clear MacBook Liquid Glass optical body glaze (scales smoothly with Dock Glass Opacity)
+    // 3. Ultra-clear MacBook Liquid Glass optical body glaze (scales smoothly with Dock Glass Opacity & Icon Card Opacity)
     let live_hw = is_live_hw_blur_active();
     let k_theme = if is_light {
         TaskbarTheme::Os26LiquidGlassLight
@@ -2863,8 +2926,8 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         } else {
             0.58
         };
-        let a_hi = scale_dock_theme_alpha(k_theme, raw_hi, u_tint, 0.04, 0.96);
-        let a_lo = scale_dock_theme_alpha(k_theme, raw_lo, u_tint, 0.02, 0.92);
+        let a_hi = scale_dock_theme_alpha(k_theme, raw_hi, u_tint, 0.04, 0.96) * card_k;
+        let a_lo = scale_dock_theme_alpha(k_theme, raw_lo, u_tint, 0.02, 0.92) * card_k;
         [
             D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, a_hi) },
             D2D1_GRADIENT_STOP { position: 0.52, color: rgba(238, 248, 255, a_lo) },
@@ -2898,9 +2961,9 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         } else {
             0.42
         };
-        let a_top = scale_dock_theme_alpha(k_theme, raw_top, u_tint, 0.03, 0.92);
-        let a_mid = scale_dock_theme_alpha(k_theme, raw_mid, u_tint, 0.02, 0.90);
-        let a_bot = scale_dock_theme_alpha(k_theme, raw_bot, u_tint, 0.03, 0.94);
+        let a_top = scale_dock_theme_alpha(k_theme, raw_top, u_tint, 0.03, 0.92) * card_k;
+        let a_mid = scale_dock_theme_alpha(k_theme, raw_mid, u_tint, 0.02, 0.90) * card_k;
+        let a_bot = scale_dock_theme_alpha(k_theme, raw_bot, u_tint, 0.03, 0.94) * card_k;
         [
             D2D1_GRADIENT_STOP { position: 0.0, color: rgba(196, 224, 248, a_top) },
             D2D1_GRADIENT_STOP { position: 0.45, color: rgba(16, 30, 48, a_mid) },
@@ -2919,7 +2982,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
     } else {
         0.34
     };
-    let dome_a = scale_dock_theme_alpha(k_theme, raw_dome, u_tint, 0.06, 0.92);
+    let dome_a = scale_dock_theme_alpha(k_theme, raw_dome, u_tint, 0.06, 0.92) * card_k;
     let dome_stops = [
         D2D1_GRADIENT_STOP { position: 0.00, color: rgba(255, 255, 255, dome_a) },
         D2D1_GRADIENT_STOP { position: 0.45, color: rgba(232, 244, 255, dome_a * 0.38) },
@@ -2937,7 +3000,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
     }
 
     // 5. Lower internal optical glass bounce glow (subtle bright curve near bottom rim)
-    let bot_a = if is_light { 0.34 } else if is_hovered { 0.24 } else { 0.16 };
+    let bot_a = (if is_light { 0.34 } else if is_hovered { 0.24 } else { 0.16 }) * card_k;
     let bot_stops = [
         D2D1_GRADIENT_STOP { position: 0.00, color: rgba(232, 246, 255, bot_a) },
         D2D1_GRADIENT_STOP { position: 0.55, color: rgba(210, 232, 255, bot_a * 0.28) },
@@ -2956,7 +3019,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
 
     // 6. Curved 5-stop pure-white Fresnel specular rim
     let boost = if is_hovered { 1.24 } else if is_active { 1.12 } else { 1.0 };
-    draw_fresnel_glass_rim(rt, br, k_r, rad, false, is_light, boost, u);
+    draw_fresnel_glass_rim_alpha(rt, br, k_r, rad, false, is_light, boost, u, card_k);
 }
 
 /// Renders ONE sleek unified photorealistic floating tray+clock capsule for barless
@@ -3182,6 +3245,10 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
     if !show_plate && !show_art && !show_rim {
         return;
     }
+    let shelf_vis = (cfg.tint_alpha as f32 / 24.0).clamp(0.0, 1.0);
+    if shelf_vis <= 0.01 {
+        return;
+    }
     let spec = if is_preview {
         dock_spec(cfg.tb_theme)
     } else {
@@ -3347,7 +3414,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
         if spec.layout != DockLayoutKind::FullEdgeTaskbar {
             if is_os26_rail {
                 // OS26 Liquid Glass outer outline rail is razor-thin & airy (keycaps cast the 3D shadows)
-                br.SetColor(&rgba(0, 0, 0, if spec.light_mode_paper { 0.05 } else { 0.12 }));
+                br.SetColor(&rgba(0, 0, 0, (if spec.light_mode_paper { 0.05 } else { 0.12 }) * shelf_vis));
                 let sh_rr = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
                         left: shelf_r.left - 1.5 * u,
@@ -3360,7 +3427,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                 };
                 rt.FillRoundedRectangle(&sh_rr, br);
             } else if is_clean_glass_art {
-                draw_macos_soft_shadow(rt, br, shelf_r, rad, false, spec.light_mode_paper, u);
+                draw_macos_soft_shadow_alpha(rt, br, shelf_r, rad, false, spec.light_mode_paper, u, shelf_vis);
             } else {
                 let shadow_col = if spec.light_mode_paper { 0.22 } else { 0.14 };
                 for (expand, a) in [(5.0 * u, shadow_col), (2.2 * u, shadow_col + 0.11)] {
@@ -3374,7 +3441,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                         radiusX: rad + expand * 0.45,
                         radiusY: rad + expand * 0.45,
                     };
-                    br.SetColor(&rgba(0, 0, 0, a));
+                    br.SetColor(&rgba(0, 0, 0, a * shelf_vis));
                     rt.FillRoundedRectangle(&sh_rr, br);
                 }
             }
@@ -3384,9 +3451,9 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
         let mut has_live_blur = false;
         if is_clean_glass_art && !is_os26_rail && !is_preview {
             let (lens_z, blur_op) = if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
-                (0.88, 0.96)
+                (0.88, 0.96 * shelf_vis)
             } else {
-                (0.97, 0.92)
+                (0.97, 0.92 * shelf_vis)
             };
             has_live_blur = draw_backdrop_blurred_rrect(rt, d2d, shelf_r, rad, lens_z, blur_op);
         }
@@ -3422,7 +3489,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
         } else {
             (spec.bg_alpha_bias.clamp(0.42, 0.94), 0.08, 0.98)
         };
-        let base_a = scale_dock_theme_alpha(cfg.tb_theme, def_a, cfg.tint_alpha, min_a, max_a);
+        let base_a = scale_dock_theme_alpha(cfg.tb_theme, def_a, cfg.tint_alpha, min_a, max_a) * shelf_vis;
         let (gt, gm, gb) = if cfg.tb_match_wallpaper {
             (
                 pal.glass_top,
@@ -3439,7 +3506,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
         let stops = [
             D2D1_GRADIENT_STOP {
                 position: 0.0,
-                color: rgba(gt.0, gt.1, gt.2, (base_a + 0.06).min(0.97)),
+                color: rgba(gt.0, gt.1, gt.2, (base_a + 0.06 * shelf_vis).min(0.97)),
             },
             D2D1_GRADIENT_STOP {
                 position: 0.52,
@@ -3447,7 +3514,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
             },
             D2D1_GRADIENT_STOP {
                 position: 1.0,
-                color: rgba(gb.0, gb.1, gb.2, (base_a + 0.04).min(0.97)),
+                color: rgba(gb.0, gb.1, gb.2, (base_a + 0.04 * shelf_vis).min(0.97)),
             },
         ];
 
@@ -3559,7 +3626,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
             } else {
                 0.96
             };
-            draw_fresnel_glass_rim(rt, br, shelf_r, rad, false, spec.light_mode_paper, boost, u);
+            draw_fresnel_glass_rim_alpha(rt, br, shelf_r, rad, false, spec.light_mode_paper, boost, u, shelf_vis);
         } else {
             draw_shelf_rims(
                 rt,
@@ -3591,6 +3658,10 @@ pub unsafe fn draw_standalone_orb_node(
     idx: usize,
     u: f32,
 ) {
+    let card_k = active_dock_card_alpha();
+    if card_k <= 0.01 {
+        return;
+    }
     let spec = dock_spec(theme);
     let u_tint = active_dock_tint_alpha_for(theme);
     let node_r = sz * 0.58;
@@ -3612,7 +3683,7 @@ pub unsafe fn draw_standalone_orb_node(
                 right: cx + tr,
                 bottom: cy + tr,
             };
-            draw_macos_soft_shadow(rt, br, tile_r, rad, false, true, u);
+            draw_macos_soft_shadow_alpha(rt, br, tile_r, rad, false, true, u, card_k);
             if is_hovered {
                 let glow_rr = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
@@ -3624,13 +3695,13 @@ pub unsafe fn draw_standalone_orb_node(
                     radiusX: rad + 1.8 * u,
                     radiusY: rad + 1.8 * u,
                 };
-                br.SetColor(&rgba(224, 72, 132, 0.22));
+                br.SetColor(&rgba(224, 72, 132, 0.22 * card_k));
                 rt.FillRoundedRectangle(&glow_rr, br);
             }
             let rr = D2D1_ROUNDED_RECT { rect: tile_r, radiusX: rad, radiusY: rad };
-            let a_m = scale_dock_theme_alpha(theme, 0.97, u_tint, 0.14, 0.99);
+            let a_m = scale_dock_theme_alpha(theme, 0.97, u_tint, 0.14, 0.99) * card_k;
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (a_m + 0.02).min(0.99)) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (a_m + 0.02 * card_k).min(0.99)) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba(242, 239, 249, a_m) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: tile_r.top }, Vector2 { X: cx, Y: tile_r.bottom }, &stops) {
@@ -3640,9 +3711,9 @@ pub unsafe fn draw_standalone_orb_node(
                 rt.FillRoundedRectangle(&rr, br);
             }
             br.SetColor(&if is_hovered {
-                rgba(224, 72, 132, 0.65)
+                rgba(224, 72, 132, 0.65 * card_k)
             } else {
-                rgba(196, 188, 218, 0.40)
+                rgba(196, 188, 218, 0.40 * card_k)
             });
             rt.DrawRoundedRectangle(&rr, br, if is_hovered { 1.3 * u } else { 0.9 * u }, None);
         }
@@ -3656,7 +3727,7 @@ pub unsafe fn draw_standalone_orb_node(
                 right: cx + tr,
                 bottom: cy + tr,
             };
-            draw_macos_soft_shadow(rt, br, tile_r, rad, false, false, u);
+            draw_macos_soft_shadow_alpha(rt, br, tile_r, rad, false, false, u, card_k);
             if is_hovered {
                 let glow_rr = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
@@ -3668,14 +3739,14 @@ pub unsafe fn draw_standalone_orb_node(
                     radiusX: rad + 1.8 * u,
                     radiusY: rad + 1.8 * u,
                 };
-                br.SetColor(&rgba(236, 108, 214, 0.22));
+                br.SetColor(&rgba(236, 108, 214, 0.22 * card_k));
                 rt.FillRoundedRectangle(&glow_rr, br);
             }
             let rr = D2D1_ROUNDED_RECT { rect: tile_r, radiusX: rad, radiusY: rad };
-            let a_m = scale_dock_theme_alpha(theme, 0.97, u_tint, 0.14, 0.99);
+            let a_m = scale_dock_theme_alpha(theme, 0.97, u_tint, 0.14, 0.99) * card_k;
             let stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(46, 37, 52, a_m) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(34, 26, 40, (a_m + 0.01).min(0.99)) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(34, 26, 40, (a_m + 0.01 * card_k).min(0.99)) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: tile_r.top }, Vector2 { X: cx, Y: tile_r.bottom }, &stops) {
                 rt.FillRoundedRectangle(&rr, &g);
@@ -3684,7 +3755,7 @@ pub unsafe fn draw_standalone_orb_node(
                 rt.FillRoundedRectangle(&rr, br);
             }
             // Subtle tactile matte top-edge sheen
-            br.SetColor(&rgba(255, 244, 255, if is_hovered { 0.26 } else { 0.09 }));
+            br.SetColor(&rgba(255, 244, 255, (if is_hovered { 0.26 } else { 0.09 }) * card_k));
             rt.DrawLine(
                 Vector2 { X: tile_r.left + rad * 0.72, Y: tile_r.top + 0.9 * u },
                 Vector2 { X: tile_r.right - rad * 0.72, Y: tile_r.top + 0.9 * u },
@@ -3693,9 +3764,9 @@ pub unsafe fn draw_standalone_orb_node(
                 None,
             );
             br.SetColor(&if is_hovered {
-                rgba(246, 184, 238, 0.72)
+                rgba(246, 184, 238, 0.72 * card_k)
             } else {
-                rgba(255, 255, 255, 0.08)
+                rgba(255, 255, 255, 0.08 * card_k)
             });
             rt.DrawRoundedRectangle(&rr, br, if is_hovered { 1.25 * u } else { 0.8 * u }, None);
         }
@@ -3709,8 +3780,8 @@ pub unsafe fn draw_standalone_orb_node(
                 right: cx + tr,
                 bottom: cy + tr,
             };
-            draw_macos_soft_shadow(rt, br, tile_r, rad, false, false, u);
-            let has_blur = draw_backdrop_blurred_rrect(rt, d2d, tile_r, rad, 0.92, 0.94);
+            draw_macos_soft_shadow_alpha(rt, br, tile_r, rad, false, false, u, card_k);
+            let has_blur = draw_backdrop_blurred_rrect(rt, d2d, tile_r, rad, 0.92, 0.94 * card_k);
             let live_hw = is_live_hw_blur_active();
             let rr = D2D1_ROUNDED_RECT { rect: tile_r, radiusX: rad, radiusY: rad };
             let raw_t = if live_hw {
@@ -3722,18 +3793,18 @@ pub unsafe fn draw_standalone_orb_node(
             } else {
                 0.72
             };
-            let a_t = scale_dock_theme_alpha(theme, raw_t, u_tint, 0.05, 0.95);
+            let a_t = scale_dock_theme_alpha(theme, raw_t, u_tint, 0.05, 0.95) * card_k;
             let stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(68, 54, 46, a_t) },
                 D2D1_GRADIENT_STOP { position: 0.55, color: rgba(42, 33, 28, a_t * 0.96) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(28, 22, 19, a_t * 1.08) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(28, 22, 19, (a_t * 1.08).min(0.98)) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: tile_r.top }, Vector2 { X: cx, Y: tile_r.bottom }, &stops) {
                 rt.FillRoundedRectangle(&rr, &g);
             }
             // Radial top glass mist
             let dome_stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 242, 232, if is_hovered { 0.28 } else { 0.18 }) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 242, 232, (if is_hovered { 0.28 } else { 0.18 }) * card_k) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 242, 232, 0.0) },
             ];
             if let Some(rg) = create_radial_grad(
@@ -3746,7 +3817,7 @@ pub unsafe fn draw_standalone_orb_node(
             ) {
                 rt.FillRoundedRectangle(&rr, &rg);
             }
-            draw_fresnel_glass_rim(rt, br, tile_r, rad, false, false, if is_hovered { 1.18 } else { 0.86 }, u);
+            draw_fresnel_glass_rim_alpha(rt, br, tile_r, rad, false, false, if is_hovered { 1.18 } else { 0.86 }, u, card_k);
         }
         TaskbarTheme::BubblesDark => {
             // Windhawk Bubbles Dark: standalone photorealistic frosted circular glass bubbles + #86A8E7 ring
@@ -3757,9 +3828,9 @@ pub unsafe fn draw_standalone_orb_node(
                 right: cx + cr,
                 bottom: cy + cr,
             };
-            draw_macos_soft_shadow(rt, br, ell_r, cr, true, false, u);
+            draw_macos_soft_shadow_alpha(rt, br, ell_r, cr, true, false, u, card_k);
             if is_hovered {
-                br.SetColor(&rgba(134, 168, 231, 0.26));
+                br.SetColor(&rgba(134, 168, 231, 0.26 * card_k));
                 rt.FillEllipse(
                     &D2D1_ELLIPSE {
                         point: Vector2 { X: cx, Y: cy },
@@ -3769,24 +3840,24 @@ pub unsafe fn draw_standalone_orb_node(
                     br,
                 );
             }
-            let has_blur = draw_backdrop_blurred_ellipse(rt, d2d, cx, cy, cr, cr, 0.92, 0.94);
-            let a_b = if is_live_hw_blur_active() {
+            let has_blur = draw_backdrop_blurred_ellipse(rt, d2d, cx, cy, cr, cr, 0.92, 0.94 * card_k);
+            let a_b = (if is_live_hw_blur_active() {
                 0.34
             } else if has_blur {
                 0.46
             } else {
                 0.90
-            };
+            }) * card_k;
             let stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(54, 56, 66, a_b) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(24, 26, 32, (a_b + 0.10).min(0.95)) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(24, 26, 32, (a_b + 0.10 * card_k).min(0.95)) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: cy - cr }, Vector2 { X: cx, Y: cy + cr }, &stops) {
                 rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: cr, radiusY: cr }, &g);
             }
             // Radial glass top highlight
             let dome_stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(232, 242, 255, if is_hovered { 0.28 } else { 0.16 }) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(232, 242, 255, (if is_hovered { 0.28 } else { 0.16 }) * card_k) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
             ];
             if let Some(rg) = create_radial_grad(
@@ -3800,9 +3871,9 @@ pub unsafe fn draw_standalone_orb_node(
                 rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: cr, radiusY: cr }, &rg);
             }
             br.SetColor(&if is_hovered {
-                rgba(134, 168, 231, 0.96)
+                rgba(134, 168, 231, 0.96 * card_k)
             } else {
-                rgba(134, 168, 231, 0.44)
+                rgba(134, 168, 231, 0.44 * card_k)
             });
             rt.DrawEllipse(
                 &D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: cr, radiusY: cr },
@@ -3820,9 +3891,9 @@ pub unsafe fn draw_standalone_orb_node(
                 right: cx + cr,
                 bottom: cy + cr,
             };
-            draw_macos_soft_shadow(rt, br, ell_r, cr, true, true, u);
+            draw_macos_soft_shadow_alpha(rt, br, ell_r, cr, true, true, u, card_k);
             if is_hovered {
-                br.SetColor(&rgba(84, 152, 246, 0.24));
+                br.SetColor(&rgba(84, 152, 246, 0.24 * card_k));
                 rt.FillEllipse(
                     &D2D1_ELLIPSE {
                         point: Vector2 { X: cx, Y: cy },
@@ -3832,23 +3903,23 @@ pub unsafe fn draw_standalone_orb_node(
                     br,
                 );
             }
-            let has_blur = draw_backdrop_blurred_ellipse(rt, d2d, cx, cy, cr, cr, 0.92, 0.92);
-            let a_b: f32 = if is_live_hw_blur_active() {
+            let has_blur = draw_backdrop_blurred_ellipse(rt, d2d, cx, cy, cr, cr, 0.92, 0.92 * card_k);
+            let a_b: f32 = (if is_live_hw_blur_active() {
                 0.36
             } else if has_blur {
                 0.48
             } else {
                 0.95
-            };
+            }) * card_k;
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (a_b + 0.08).min(0.98)) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (a_b + 0.08 * card_k).min(0.98)) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba(230, 239, 252, a_b) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: cy - cr }, Vector2 { X: cx, Y: cy + cr }, &stops) {
                 rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: cr, radiusY: cr }, &g);
             }
             if is_hovered {
-                br.SetColor(&rgba(64, 134, 242, 0.92));
+                br.SetColor(&rgba(64, 134, 242, 0.92 * card_k));
                 rt.DrawEllipse(
                     &D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: cr, radiusY: cr },
                     br,
@@ -3856,7 +3927,7 @@ pub unsafe fn draw_standalone_orb_node(
                     None,
                 );
             } else {
-                draw_fresnel_glass_rim(rt, br, ell_r, cr, true, true, 0.95, u);
+                draw_fresnel_glass_rim_alpha(rt, br, ell_r, cr, true, true, 0.95, u, card_k);
             }
         }
         TaskbarTheme::PillsDetached => {
@@ -3870,24 +3941,24 @@ pub unsafe fn draw_standalone_orb_node(
                 right: cx + rx,
                 bottom: cy + ry,
             };
-            draw_macos_soft_shadow(rt, br, pill_r, rad, false, false, u);
-            let has_blur = draw_backdrop_blurred_rrect(rt, d2d, pill_r, rad, 0.94, 0.92);
+            draw_macos_soft_shadow_alpha(rt, br, pill_r, rad, false, false, u, card_k);
+            let has_blur = draw_backdrop_blurred_rrect(rt, d2d, pill_r, rad, 0.94, 0.92 * card_k);
             let rr = D2D1_ROUNDED_RECT { rect: pill_r, radiusX: rad, radiusY: rad };
-            let a_p = if is_live_hw_blur_active() {
+            let a_p = (if is_live_hw_blur_active() {
                 0.32
             } else if has_blur {
                 0.44
             } else {
                 0.88
-            };
+            }) * card_k;
             let stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(46, 56, 70, a_p) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(24, 32, 42, (a_p + 0.08).min(0.94)) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(24, 32, 42, (a_p + 0.08 * card_k).min(0.94)) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: pill_r.top }, Vector2 { X: cx, Y: pill_r.bottom }, &stops) {
                 rt.FillRoundedRectangle(&rr, &g);
             }
-            draw_fresnel_glass_rim(rt, br, pill_r, rad, false, false, if is_hovered { 1.24 } else { 0.94 }, u);
+            draw_fresnel_glass_rim_alpha(rt, br, pill_r, rad, false, false, if is_hovered { 1.24 } else { 0.94 }, u, card_k);
         }
         TaskbarTheme::RosePineTiles | TaskbarTheme::CatppuccinTiles => {
             // Windhawk RosePine (#26233A + #EBBCBA) & Catppuccin Mocha (#1E1E2E + #B4BEFE) crisp squircles
@@ -3905,7 +3976,7 @@ pub unsafe fn draw_standalone_orb_node(
             } else {
                 ((38, 38, 56), (24, 24, 37), (180, 190, 254))
             };
-            draw_macos_soft_shadow(rt, br, tile_r, rad, false, false, u);
+            draw_macos_soft_shadow_alpha(rt, br, tile_r, rad, false, false, u, card_k);
             if is_hovered {
                 let glow_rr = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
@@ -3917,24 +3988,24 @@ pub unsafe fn draw_standalone_orb_node(
                     radiusX: rad + 2.0 * u,
                     radiusY: rad + 2.0 * u,
                 };
-                br.SetColor(&rgba(acc.0, acc.1, acc.2, 0.24));
+                br.SetColor(&rgba(acc.0, acc.1, acc.2, 0.24 * card_k));
                 rt.FillRoundedRectangle(&glow_rr, br);
             }
-            let _ = draw_backdrop_blurred_rrect(rt, d2d, tile_r, rad, 0.96, 0.35);
+            let _ = draw_backdrop_blurred_rrect(rt, d2d, tile_r, rad, 0.96, 0.35 * card_k);
             let rr = D2D1_ROUNDED_RECT { rect: tile_r, radiusX: rad, radiusY: rad };
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(bg0.0, bg0.1, bg0.2, 0.94) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(bg1.0, bg1.1, bg1.2, 0.96) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(bg0.0, bg0.1, bg0.2, 0.94 * card_k) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(bg1.0, bg1.1, bg1.2, 0.96 * card_k) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: tile_r.top }, Vector2 { X: cx, Y: tile_r.bottom }, &stops) {
                 rt.FillRoundedRectangle(&rr, &g);
             }
-            br.SetColor(&rgba(acc.0, acc.1, acc.2, if is_hovered { 0.96 } else { 0.56 }));
+            br.SetColor(&rgba(acc.0, acc.1, acc.2, (if is_hovered { 0.96 } else { 0.56 }) * card_k));
             rt.DrawRoundedRectangle(&rr, br, if is_hovered { 1.55 * u } else { 1.05 * u }, None);
         }
         TaskbarTheme::BiolumAbyssDock => {
             // Standalone floating deep-sea jellyfish bubble orb
-            br.SetColor(&rgba(0, 0, 0, 0.36));
+            br.SetColor(&rgba(0, 0, 0, 0.36 * card_k));
             rt.FillEllipse(
                 &D2D1_ELLIPSE {
                     point: Vector2 { X: cx, Y: cy + node_r * 0.92 },
@@ -3945,24 +4016,24 @@ pub unsafe fn draw_standalone_orb_node(
             );
             let pulse = 0.5 + 0.5 * (anim_phase * 1.8 + idx as f32 * 1.2).sin();
             if is_hovered {
-                br.SetColor(&rgba(58, 244, 232, 0.24));
+                br.SetColor(&rgba(58, 244, 232, 0.24 * card_k));
                 rt.FillEllipse(
                     &D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: node_r * 1.24, radiusY: node_r * 1.24 },
                     br,
                 );
             }
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(24, 72, 118, 0.78) },
-                D2D1_GRADIENT_STOP { position: 0.65, color: rgba(8, 26, 54, 0.84) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(48, 240, 230, 0.28 + 0.14 * pulse) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(24, 72, 118, 0.78 * card_k) },
+                D2D1_GRADIENT_STOP { position: 0.65, color: rgba(8, 26, 54, 0.84 * card_k) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(48, 240, 230, (0.28 + 0.14 * pulse) * card_k) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: rect.top }, Vector2 { X: cx, Y: rect.bottom }, &stops) {
                 rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: node_r, radiusY: node_r }, &g);
             }
-            br.SetColor(&rgba(72, 244, 236, if is_hovered { 0.92 } else { 0.48 + 0.20 * pulse }));
+            br.SetColor(&rgba(72, 244, 236, (if is_hovered { 0.92 } else { 0.48 + 0.20 * pulse }) * card_k));
             rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: node_r, radiusY: node_r }, br, 1.35 * u, None);
             // Tiny bioluminescent spec dot near upper-left bubble highlight
-            br.SetColor(&rgba(218, 255, 255, 0.62));
+            br.SetColor(&rgba(218, 255, 255, 0.62 * card_k));
             rt.FillEllipse(
                 &D2D1_ELLIPSE {
                     point: Vector2 { X: cx - node_r * 0.42, Y: cy - node_r * 0.42 },
@@ -3974,7 +4045,7 @@ pub unsafe fn draw_standalone_orb_node(
         }
         TaskbarTheme::PrismRefractionDock => {
             // Cut octagonal faceted prism crystal jewel floating standalone
-            br.SetColor(&rgba(0, 0, 0, 0.34));
+            br.SetColor(&rgba(0, 0, 0, 0.34 * card_k));
             rt.FillEllipse(
                 &D2D1_ELLIPSE {
                     point: Vector2 { X: cx, Y: cy + node_r * 0.92 },
@@ -3986,23 +4057,23 @@ pub unsafe fn draw_standalone_orb_node(
             if let Some(f) = d2d {
                 if let Some(geo) = chamfer_geo(f, rect, node_r * 0.56) {
                     let stops = [
-                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(68, 86, 128, 0.72) },
-                        D2D1_GRADIENT_STOP { position: 0.5, color: rgba(28, 34, 54, 0.78) },
-                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(58, 42, 86, 0.74) },
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(68, 86, 128, 0.72 * card_k) },
+                        D2D1_GRADIENT_STOP { position: 0.5, color: rgba(28, 34, 54, 0.78 * card_k) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(58, 42, 86, 0.74 * card_k) },
                     ];
                     if let Some(g) = create_grad(rt, Vector2 { X: rect.left, Y: rect.top }, Vector2 { X: rect.right, Y: rect.bottom }, &stops) {
                         rt.FillGeometry(&geo, &g, None);
                     }
                     // RGB chromatic facet borders
                     if let Some(c_geo) = chamfer_geo(f, D2D_RECT_F { left: rect.left - 1.2 * u, top: rect.top, right: rect.right - 1.2 * u, bottom: rect.bottom }, node_r * 0.56) {
-                        br.SetColor(&rgba(86, 238, 255, if is_hovered { 0.85 } else { 0.45 }));
+                        br.SetColor(&rgba(86, 238, 255, (if is_hovered { 0.85 } else { 0.45 }) * card_k));
                         rt.DrawGeometry(&c_geo, br, 1.1 * u, None);
                     }
                     if let Some(m_geo) = chamfer_geo(f, D2D_RECT_F { left: rect.left + 1.2 * u, top: rect.top, right: rect.right + 1.2 * u, bottom: rect.bottom }, node_r * 0.56) {
-                        br.SetColor(&rgba(255, 118, 224, if is_hovered { 0.85 } else { 0.40 }));
+                        br.SetColor(&rgba(255, 118, 224, (if is_hovered { 0.85 } else { 0.40 }) * card_k));
                         rt.DrawGeometry(&m_geo, br, 1.1 * u, None);
                     }
-                    br.SetColor(&rgba(244, 250, 255, if is_hovered { 0.92 } else { 0.56 }));
+                    br.SetColor(&rgba(244, 250, 255, (if is_hovered { 0.92 } else { 0.56 }) * card_k));
                     rt.DrawGeometry(&geo, br, 1.2 * u, None);
                 }
             }
@@ -5285,12 +5356,16 @@ pub unsafe fn draw_dock_slot_fx(
 ) {
     let _ = is_flashing;
     let is_flashing = false;
+    let card_k = active_dock_card_alpha();
     let spec = dock_spec(theme);
     if spec.layout == DockLayoutKind::IndependentOrbs {
         let slot_w = (slot_rect.right - slot_rect.left).max(0.0);
         let slot_h = (slot_rect.bottom - slot_rect.top).max(0.0);
         let is_wide_non_app = (!is_vertical && slot_w > sz * 1.32) || (is_vertical && slot_h > sz * 1.32);
         if is_wide_non_app {
+            if card_k <= 0.01 {
+                return;
+            }
             let pad_x = if slot_w <= 32.0 * u { 0.5 * u } else { 1.0 * u };
             let pad_y = if slot_h <= 32.0 * u { 1.5 * u } else { 3.0 * u };
             let pill_r = D2D_RECT_F {
@@ -5318,14 +5393,14 @@ pub unsafe fn draw_dock_slot_fx(
                     radiusX: rad_p + 1.0 * u,
                     radiusY: rad_p + 1.0 * u,
                 };
-                br.SetColor(&rgba(0, 0, 0, if spec.light_mode_paper { 0.16 } else { 0.30 }));
+                br.SetColor(&rgba(0, 0, 0, (if spec.light_mode_paper { 0.16 } else { 0.30 }) * card_k));
                 rt.FillRoundedRectangle(&sh_rr, br);
             }
             let is_ghost_pill = matches!(
                 theme,
                 TaskbarTheme::InvisibleGhostDock | TaskbarTheme::BorderlessGhost
             );
-            let bg_a = if is_ghost_pill {
+            let bg_a = (if is_ghost_pill {
                 if is_hovered { 0.68 } else { 0.46 }
             } else if spec.light_mode_paper {
                 if is_hovered { 0.98 } else { 0.94 }
@@ -5335,26 +5410,26 @@ pub unsafe fn draw_dock_slot_fx(
                 0.88
             } else {
                 0.76
-            };
+            }) * card_k;
             br.SetColor(&rgba(spec.bg_mid.0, spec.bg_mid.1, spec.bg_mid.2, bg_a));
             rt.FillRoundedRectangle(&rr, br);
             if is_ghost_pill {
                 let (rr_c, rg_c, rb_c, ra_c) = if is_hovered {
-                    (spec.dot_active.0, spec.dot_active.1, spec.dot_active.2, 0.54)
+                    (spec.dot_active.0, spec.dot_active.1, spec.dot_active.2, 0.54 * card_k)
                 } else {
-                    (210, 228, 250, 0.20)
+                    (210, 228, 250, 0.20 * card_k)
                 };
                 br.SetColor(&rgba(rr_c, rg_c, rb_c, ra_c));
                 rt.DrawRoundedRectangle(&rr, br, 1.0 * u, None);
             } else if spec.light_mode_paper {
                 br.SetColor(&if is_hovered {
-                    rgba(spec.dot_active.0, spec.dot_active.1, spec.dot_active.2, 0.70)
+                    rgba(spec.dot_active.0, spec.dot_active.1, spec.dot_active.2, 0.70 * card_k)
                 } else {
-                    rgba(186, 192, 212, 0.54)
+                    rgba(186, 192, 212, 0.54 * card_k)
                 });
                 rt.DrawRoundedRectangle(&rr, br, 1.05 * u, None);
             } else {
-                let rim_a = if is_hovered { 0.88 } else { 0.46 };
+                let rim_a = (if is_hovered { 0.88 } else { 0.46 }) * card_k;
                 br.SetColor(&rgba(
                     spec.rim_outer.0,
                     spec.rim_outer.1,
@@ -5386,6 +5461,9 @@ pub unsafe fn draw_dock_slot_fx(
     // Slot-level frames / buttons per structural architecture!
     match spec.layout {
         DockLayoutKind::FullEdgeTaskbar => {
+            if card_k <= 0.01 && !is_flashing {
+                return;
+            }
             if matches!(
                 theme,
                 TaskbarTheme::BlobLight
@@ -5416,19 +5494,19 @@ pub unsafe fn draw_dock_slot_fx(
                             radiusX: rad_p,
                             radiusY: rad_p,
                         };
-                        br.SetColor(&rgba(48, 72, 114, if is_hovered { 0.16 } else { 0.10 }));
+                        br.SetColor(&rgba(48, 72, 114, (if is_hovered { 0.16 } else { 0.10 }) * card_k));
                         rt.FillRoundedRectangle(&sh_rr, br);
                         let rr = D2D1_ROUNDED_RECT { rect: br_r, radiusX: rad_p, radiusY: rad_p };
-                        br.SetColor(&rgba(255, 255, 255, if is_hovered || is_active { 0.99 } else { 0.92 }));
+                        br.SetColor(&rgba(255, 255, 255, (if is_hovered || is_active { 0.99 } else { 0.92 }) * card_k));
                         rt.FillRoundedRectangle(&rr, br);
                         if is_flashing {
                             br.SetColor(&rgba(255, 162, 36, 0.32 * flash_pulse));
                             rt.FillRoundedRectangle(&rr, br);
                         }
                         br.SetColor(&if is_active || is_hovered {
-                            rgba(64, 134, 242, 0.68)
+                            rgba(64, 134, 242, 0.68 * card_k)
                         } else {
-                            rgba(186, 200, 224, 0.42)
+                            rgba(186, 200, 224, 0.42 * card_k)
                         });
                         rt.DrawRoundedRectangle(&rr, br, if is_hovered || is_active { 1.25 * u } else { 0.9 * u }, None);
                     }
@@ -5445,7 +5523,7 @@ pub unsafe fn draw_dock_slot_fx(
                             255,
                             255,
                             255,
-                            if is_active { 0.72 } else if is_hovered { 0.64 } else { 0.36 },
+                            (if is_active { 0.72 } else if is_hovered { 0.64 } else { 0.36 }) * card_k,
                         ));
                         rt.FillRectangle(&br_r, br);
                         if is_flashing {
@@ -5453,13 +5531,13 @@ pub unsafe fn draw_dock_slot_fx(
                             rt.FillRectangle(&br_r, br);
                         }
                         br.SetColor(&if is_active || is_hovered {
-                            rgba(64, 152, 236, 0.74)
+                            rgba(64, 152, 236, 0.74 * card_k)
                         } else {
-                            rgba(255, 255, 255, 0.72)
+                            rgba(255, 255, 255, 0.72 * card_k)
                         });
                         rt.DrawRectangle(&br_r, br, 1.0 * u, None);
                         if is_active || is_hovered {
-                            br.SetColor(&rgba(46, 138, 228, 0.92));
+                            br.SetColor(&rgba(46, 138, 228, 0.92 * card_k));
                             rt.FillRectangle(
                                 &D2D_RECT_F {
                                     left: br_r.left,
@@ -5489,7 +5567,7 @@ pub unsafe fn draw_dock_slot_fx(
                             11,
                             31,
                             43,
-                            if is_active { 0.88 } else if is_hovered { 0.84 } else { 0.68 },
+                            (if is_active { 0.88 } else if is_hovered { 0.84 } else { 0.68 }) * card_k,
                         ));
                         rt.FillRoundedRectangle(&rr, br);
                         if is_flashing {
@@ -5497,9 +5575,9 @@ pub unsafe fn draw_dock_slot_fx(
                             rt.FillRoundedRectangle(&rr, br);
                         }
                         br.SetColor(&if is_active || is_hovered {
-                            rgba(132, 226, 240, 0.94)
+                            rgba(132, 226, 240, 0.94 * card_k)
                         } else {
-                            rgba(132, 226, 240, 0.30)
+                            rgba(132, 226, 240, 0.30 * card_k)
                         });
                         rt.DrawRoundedRectangle(&rr, br, if is_active || is_hovered { 1.35 * u } else { 0.95 * u }, None);
                     }
@@ -5519,7 +5597,7 @@ pub unsafe fn draw_dock_slot_fx(
                 br.SetColor(&rgba(255, 196, 74, 0.92 * flash_pulse));
                 rt.DrawRoundedRectangle(&btn_rr, br, 1.4 * u, None);
             } else if is_active || has_windows || is_hovered {
-                let bg_a = if is_active { 0.34 } else if is_hovered { 0.24 } else { 0.14 };
+                let bg_a = (if is_active { 0.34 } else if is_hovered { 0.24 } else { 0.14 }) * card_k;
                 br.SetColor(&rgba(spec.dot_glow.0, spec.dot_glow.1, spec.dot_glow.2, bg_a));
                 rt.FillRoundedRectangle(&btn_rr, br);
                 if spec.art == DockArtLayer::AquaReflect {
@@ -5530,15 +5608,18 @@ pub unsafe fn draw_dock_slot_fx(
                         right: slot_rect.right - 1.0 * u,
                         bottom: (slot_rect.top + slot_rect.bottom) * 0.5,
                     };
-                    br.SetColor(&rgba(240, 252, 255, if is_hovered { 0.30 } else { 0.16 }));
+                    br.SetColor(&rgba(240, 252, 255, (if is_hovered { 0.30 } else { 0.16 }) * card_k));
                     rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: top_r, radiusX: 4.0 * u, radiusY: 4.0 * u }, br);
                 }
-                br.SetColor(&rgba(spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2, if is_active { 0.72 } else { 0.36 }));
+                br.SetColor(&rgba(spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2, (if is_active { 0.72 } else { 0.36 }) * card_k));
                 rt.DrawRoundedRectangle(&btn_rr, br, 1.0 * u, None);
             }
             return;
         }
         DockLayoutKind::InlineMorphRail => {
+            if card_k <= 0.01 && !is_flashing {
+                return;
+            }
             let card_rr = D2D1_ROUNDED_RECT {
                 rect: slot_rect,
                 radiusX: 3.0 * u,
@@ -5557,10 +5638,10 @@ pub unsafe fn draw_dock_slot_fx(
                         radiusX: 3.0 * u,
                         radiusY: 3.0 * u,
                     };
-                    br.SetColor(&rgba(24, 22, 18, 0.28));
+                    br.SetColor(&rgba(24, 22, 18, 0.28 * card_k));
                     rt.FillRoundedRectangle(&sh_rr, br);
                 }
-                br.SetColor(&rgba(255, 253, 248, if is_hovered { 0.96 } else { 0.56 }));
+                br.SetColor(&rgba(255, 253, 248, (if is_hovered { 0.96 } else { 0.56 }) * card_k));
                 rt.FillRoundedRectangle(&card_rr, br);
                 if is_flashing {
                     br.SetColor(&rgba(255, 138, 28, 0.26 * flash_pulse));
@@ -5570,11 +5651,11 @@ pub unsafe fn draw_dock_slot_fx(
                     if is_flashing { 216 } else { 34 },
                     if is_flashing { 82 } else { 32 },
                     28,
-                    if is_flashing || is_hovered || is_active { 0.94 } else { 0.36 },
+                    if is_flashing { 0.94 } else { (if is_hovered || is_active { 0.94 } else { 0.36 }) * card_k },
                 ));
                 rt.DrawRoundedRectangle(&card_rr, br, if is_hovered || is_flashing { 1.5 * u } else { 0.9 * u }, None);
             } else if spec.art == DockArtLayer::BauhausPrimary {
-                br.SetColor(&rgba(50, 50, 58, if is_hovered { 0.92 } else { 0.45 }));
+                br.SetColor(&rgba(50, 50, 58, (if is_hovered { 0.92 } else { 0.45 }) * card_k));
                 rt.FillRoundedRectangle(&card_rr, br);
                 if is_flashing {
                     br.SetColor(&rgba(255, 162, 36, 0.34 * flash_pulse));
@@ -5586,7 +5667,7 @@ pub unsafe fn draw_dock_slot_fx(
                     _ => (228, 68, 48),
                 };
                 if is_hovered || has_windows {
-                    br.SetColor(&rgba(col_bar.0, col_bar.1, col_bar.2, 0.92));
+                    br.SetColor(&rgba(col_bar.0, col_bar.1, col_bar.2, 0.92 * card_k));
                     rt.FillRectangle(
                         &D2D_RECT_F {
                             left: slot_rect.left + 3.0 * u,
@@ -5599,18 +5680,21 @@ pub unsafe fn draw_dock_slot_fx(
                 }
             } else {
                 // Kumiko shoji sliding plaque
-                br.SetColor(&rgba(76, 46, 26, if is_hovered { 0.88 } else { 0.44 }));
+                br.SetColor(&rgba(76, 46, 26, (if is_hovered { 0.88 } else { 0.44 }) * card_k));
                 rt.FillRoundedRectangle(&card_rr, br);
                 if is_flashing {
                     br.SetColor(&rgba(255, 158, 38, 0.32 * flash_pulse));
                     rt.FillRoundedRectangle(&card_rr, br);
                 }
-                br.SetColor(&rgba(232, 184, 106, if is_hovered || is_flashing { 0.92 } else { 0.30 }));
+                br.SetColor(&rgba(232, 184, 106, if is_flashing { 0.92 } else { (if is_hovered { 0.92 } else { 0.30 }) * card_k }));
                 rt.DrawRoundedRectangle(&card_rr, br, if is_flashing { 1.4 * u } else { 1.0 * u }, None);
             }
             return;
         }
         DockLayoutKind::HudConsoleDeck => {
+            if card_k <= 0.01 && !is_flashing {
+                return;
+            }
             // Custom hardware/cockpit keycap socket per slot!
             match spec.art {
                 DockArtLayer::CyberHud => {
@@ -5622,9 +5706,9 @@ pub unsafe fn draw_dock_slot_fx(
                                 br.SetColor(&rgba(255, 194, 68, 0.95 * flash_pulse));
                                 rt.DrawGeometry(&geo, br, 1.5 * u, None);
                             } else {
-                                br.SetColor(&rgba(0, 240, 255, if is_hovered { 0.20 } else { 0.06 }));
+                                br.SetColor(&rgba(0, 240, 255, (if is_hovered { 0.20 } else { 0.06 }) * card_k));
                                 rt.FillGeometry(&geo, br, None);
-                                br.SetColor(&rgba(0, 240, 255, if is_hovered { 0.90 } else { 0.28 }));
+                                br.SetColor(&rgba(0, 240, 255, (if is_hovered { 0.90 } else { 0.28 }) * card_k));
                                 rt.DrawGeometry(&geo, br, 1.0 * u, None);
                             }
                         }
@@ -5633,24 +5717,24 @@ pub unsafe fn draw_dock_slot_fx(
                 DockArtLayer::AstrolabeTicks | DockArtLayer::VacuumTubeHiFi => {
                     // Brass circular porthole / tube bezel around every icon
                     let r_port = (sz * 0.56).max(12.0 * u);
-                    br.SetColor(&rgba(8, 14, 32, 0.58));
+                    br.SetColor(&rgba(8, 14, 32, 0.58 * card_k));
                     rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: icon_cx, Y: icon_cy }, radiusX: r_port, radiusY: r_port }, br);
                     if is_flashing {
                         br.SetColor(&rgba(255, 168, 42, 0.30 * flash_pulse));
                         rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: icon_cx, Y: icon_cy }, radiusX: r_port, radiusY: r_port }, br);
                     } else if spec.art == DockArtLayer::VacuumTubeHiFi && is_hovered {
-                        br.SetColor(&rgba(255, 164, 52, 0.24));
+                        br.SetColor(&rgba(255, 164, 52, 0.24 * card_k));
                         rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: icon_cx, Y: icon_cy }, radiusX: r_port * 1.06, radiusY: r_port * 1.06 }, br);
                     }
-                    br.SetColor(&rgba(if is_flashing { 255 } else { 228 }, if is_flashing { 196 } else { 184 }, 92, if is_hovered || is_flashing { 0.94 } else { 0.48 }));
+                    br.SetColor(&rgba(if is_flashing { 255 } else { 228 }, if is_flashing { 196 } else { 184 }, 92, if is_flashing { 0.94 } else { (if is_hovered { 0.94 } else { 0.48 }) * card_k }));
                     rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: icon_cx, Y: icon_cy }, radiusX: r_port, radiusY: r_port }, br, if is_flashing { 1.6 * u } else { 1.2 * u }, None);
                 }
                 DockArtLayer::CassetteDeck1984 => {
                     // Molded tactile ABS keycap bay with orange active rim
                     let k_rr = D2D1_ROUNDED_RECT { rect: slot_rect, radiusX: 4.0 * u, radiusY: 4.0 * u };
-                    br.SetColor(&rgba(24, 22, 20, if is_hovered { 0.72 } else { 0.48 }));
+                    br.SetColor(&rgba(24, 22, 20, (if is_hovered { 0.72 } else { 0.48 }) * card_k));
                     rt.FillRoundedRectangle(&k_rr, br);
-                    br.SetColor(&rgba(255, 148, 36, if is_hovered || is_flashing { 0.92 } else { 0.34 }));
+                    br.SetColor(&rgba(255, 148, 36, if is_flashing { 0.92 } else { (if is_hovered { 0.92 } else { 0.34 }) * card_k }));
                     rt.DrawRoundedRectangle(&k_rr, br, if is_hovered || is_flashing { 1.4 * u } else { 1.0 * u }, None);
                 }
                 DockArtLayer::PhosphorCrt => {
@@ -5663,7 +5747,7 @@ pub unsafe fn draw_dock_slot_fx(
                         if is_flashing { 255 } else { 76 },
                         if is_flashing { 196 } else { 255 },
                         if is_flashing { 64 } else { 132 },
-                        if is_hovered || is_flashing { 0.96 } else { 0.34 },
+                        if is_flashing { 0.96 } else { (if is_hovered { 0.96 } else { 0.34 }) * card_k },
                     ));
                     for &(x0, y0, dx, dy) in &[(l, t, k, k), (r, t, -k, k), (l, b, k, -k), (r, b, -k, -k)] {
                         rt.DrawLine(Vector2 { X: x0, Y: y0 }, Vector2 { X: x0 + dx, Y: y0 }, br, if is_hovered || is_flashing { 1.5 * u } else { 0.9 * u }, None);
@@ -5678,9 +5762,9 @@ pub unsafe fn draw_dock_slot_fx(
                         br.SetColor(&rgba(255, 198, 72, 0.94 * flash_pulse));
                         rt.DrawRoundedRectangle(&k_rr, br, 1.4 * u, None);
                     } else {
-                        br.SetColor(&rgba(spec.dot_glow.0, spec.dot_glow.1, spec.dot_glow.2, if is_hovered { 0.22 } else { 0.08 }));
+                        br.SetColor(&rgba(spec.dot_glow.0, spec.dot_glow.1, spec.dot_glow.2, (if is_hovered { 0.22 } else { 0.08 }) * card_k));
                         rt.FillRoundedRectangle(&k_rr, br);
-                        br.SetColor(&rgba(spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2, if is_hovered { 0.85 } else { 0.30 }));
+                        br.SetColor(&rgba(spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2, (if is_hovered { 0.85 } else { 0.30 }) * card_k));
                         rt.DrawRoundedRectangle(&k_rr, br, 1.0 * u, None);
                     }
                 }
@@ -5734,6 +5818,9 @@ pub unsafe fn draw_dock_slot_fx(
                 return;
             }
             TaskbarTheme::OneUiLightChips | TaskbarTheme::OneUiDarkChips => {
+                if card_k <= 0.01 && !is_flashing {
+                    return;
+                }
                 // Windhawk One UI 8.5: bold rounded snow-white / obsidian squircle chips scaling with fish-eye!
                 let is_white_chip = theme == TaskbarTheme::OneUiLightChips;
                 let cr = sz * 0.50;
@@ -5744,58 +5831,60 @@ pub unsafe fn draw_dock_slot_fx(
                     right: icon_cx + cr,
                     bottom: icon_cy + cr,
                 };
-                draw_macos_soft_shadow(rt, br, c_r, rad, false, !is_white_chip, u);
-                if is_hovered {
-                    let g_rr = D2D1_ROUNDED_RECT {
-                        rect: D2D_RECT_F {
-                            left: c_r.left - 2.0 * u,
-                            top: c_r.top - 2.0 * u,
-                            right: c_r.right + 2.0 * u,
-                            bottom: c_r.bottom + 2.0 * u,
-                        },
-                        radiusX: rad + 1.8 * u,
-                        radiusY: rad + 1.8 * u,
-                    };
-                    br.SetColor(&rgba(spec.dot_glow.0, spec.dot_glow.1, spec.dot_glow.2, 0.28));
-                    rt.FillRoundedRectangle(&g_rr, br);
-                }
                 let c_rr = D2D1_ROUNDED_RECT { rect: c_r, radiusX: rad, radiusY: rad };
-                let u_tint = active_dock_tint_alpha_for(theme);
-                let chip_a = scale_dock_theme_alpha(theme, 0.96, u_tint, 0.16, 0.99);
-                if is_white_chip {
-                    let stops = [
-                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (chip_a + 0.02).min(0.99)) },
-                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(238, 242, 248, chip_a) },
-                    ];
-                    if let Some(g) = create_grad(rt, Vector2 { X: icon_cx, Y: c_r.top }, Vector2 { X: icon_cx, Y: c_r.bottom }, &stops) {
-                        rt.FillRoundedRectangle(&c_rr, &g);
-                    } else {
-                        br.SetColor(&rgba(250, 252, 255, chip_a));
-                        rt.FillRoundedRectangle(&c_rr, br);
+                if card_k > 0.01 {
+                    draw_macos_soft_shadow_alpha(rt, br, c_r, rad, false, !is_white_chip, u, card_k);
+                    if is_hovered {
+                        let g_rr = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: c_r.left - 2.0 * u,
+                                top: c_r.top - 2.0 * u,
+                                right: c_r.right + 2.0 * u,
+                                bottom: c_r.bottom + 2.0 * u,
+                            },
+                            radiusX: rad + 1.8 * u,
+                            radiusY: rad + 1.8 * u,
+                        };
+                        br.SetColor(&rgba(spec.dot_glow.0, spec.dot_glow.1, spec.dot_glow.2, 0.28 * card_k));
+                        rt.FillRoundedRectangle(&g_rr, br);
                     }
-                    br.SetColor(&if is_hovered || is_active {
-                        rgba(168, 92, 255, 0.84)
+                    let u_tint = active_dock_tint_alpha_for(theme);
+                    let chip_a = scale_dock_theme_alpha(theme, 0.96, u_tint, 0.16, 0.99) * card_k;
+                    if is_white_chip {
+                        let stops = [
+                            D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (chip_a + 0.02 * card_k).min(0.99)) },
+                            D2D1_GRADIENT_STOP { position: 1.0, color: rgba(238, 242, 248, chip_a) },
+                        ];
+                        if let Some(g) = create_grad(rt, Vector2 { X: icon_cx, Y: c_r.top }, Vector2 { X: icon_cx, Y: c_r.bottom }, &stops) {
+                            rt.FillRoundedRectangle(&c_rr, &g);
+                        } else {
+                            br.SetColor(&rgba(250, 252, 255, chip_a));
+                            rt.FillRoundedRectangle(&c_rr, br);
+                        }
+                        br.SetColor(&if is_hovered || is_active {
+                            rgba(168, 92, 255, 0.84 * card_k)
+                        } else {
+                            rgba(255, 255, 255, 0.90 * card_k)
+                        });
+                        rt.DrawRoundedRectangle(&c_rr, br, if is_hovered { 1.3 * u } else { 0.85 * u }, None);
                     } else {
-                        rgba(255, 255, 255, 0.90)
-                    });
-                    rt.DrawRoundedRectangle(&c_rr, br, if is_hovered { 1.3 * u } else { 0.85 * u }, None);
-                } else {
-                    let stops = [
-                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(32, 36, 48, chip_a) },
-                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(18, 21, 30, (chip_a + 0.01).min(0.99)) },
-                    ];
-                    if let Some(g) = create_grad(rt, Vector2 { X: icon_cx, Y: c_r.top }, Vector2 { X: icon_cx, Y: c_r.bottom }, &stops) {
-                        rt.FillRoundedRectangle(&c_rr, &g);
-                    } else {
-                        br.SetColor(&rgba(24, 28, 38, chip_a));
-                        rt.FillRoundedRectangle(&c_rr, br);
+                        let stops = [
+                            D2D1_GRADIENT_STOP { position: 0.0, color: rgba(32, 36, 48, chip_a) },
+                            D2D1_GRADIENT_STOP { position: 1.0, color: rgba(18, 21, 30, (chip_a + 0.01 * card_k).min(0.99)) },
+                        ];
+                        if let Some(g) = create_grad(rt, Vector2 { X: icon_cx, Y: c_r.top }, Vector2 { X: icon_cx, Y: c_r.bottom }, &stops) {
+                            rt.FillRoundedRectangle(&c_rr, &g);
+                        } else {
+                            br.SetColor(&rgba(24, 28, 38, chip_a));
+                            rt.FillRoundedRectangle(&c_rr, br);
+                        }
+                        br.SetColor(&if is_hovered || is_active {
+                            rgba(76, 142, 246, 0.88 * card_k)
+                        } else {
+                            rgba(255, 255, 255, 0.16 * card_k)
+                        });
+                        rt.DrawRoundedRectangle(&c_rr, br, if is_hovered { 1.3 * u } else { 0.85 * u }, None);
                     }
-                    br.SetColor(&if is_hovered || is_active {
-                        rgba(76, 142, 246, 0.88)
-                    } else {
-                        rgba(255, 255, 255, 0.16)
-                    });
-                    rt.DrawRoundedRectangle(&c_rr, br, if is_hovered { 1.3 * u } else { 0.85 * u }, None);
                 }
                 if is_flashing {
                     br.SetColor(&rgba(255, 196, 68, 0.92 * flash_pulse));
@@ -6341,25 +6430,33 @@ pub unsafe fn draw_dock_slot_fx_styled(
             return;
         }
         DockSlotCardStyle::GlassPill => {
+            let card_k = active_dock_card_alpha();
+            if card_k <= 0.01 {
+                return;
+            }
             let rr = D2D1_ROUNDED_RECT {
                 rect: slot_rect,
                 radiusX: 11.0 * u,
                 radiusY: 11.0 * u,
             };
-            br.SetColor(&rgba(spec.bg_top.0, spec.bg_top.1, spec.bg_top.2, if is_hovered { 0.72 } else { 0.42 }));
+            br.SetColor(&rgba(spec.bg_top.0, spec.bg_top.1, spec.bg_top.2, (if is_hovered { 0.72 } else { 0.42 }) * card_k));
             rt.FillRoundedRectangle(&rr, br);
             let rim = brand_rgb.unwrap_or((spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2));
-            br.SetColor(&rgba(rim.0, rim.1, rim.2, if is_hovered || is_active { 0.88 } else { 0.36 }));
+            br.SetColor(&rgba(rim.0, rim.1, rim.2, (if is_hovered || is_active { 0.88 } else { 0.36 }) * card_k));
             rt.DrawRoundedRectangle(&rr, br, 1.15 * u, None);
             return;
         }
         DockSlotCardStyle::ChamferOctagon => {
+            let card_k = active_dock_card_alpha();
+            if card_k <= 0.01 {
+                return;
+            }
             if let Some(f) = d2d {
                 if let Some(geo) = chamfer_geo(f, slot_rect, 6.0 * u) {
                     let glow = brand_rgb.unwrap_or(spec.dot_glow);
-                    br.SetColor(&rgba(glow.0, glow.1, glow.2, if is_hovered { 0.24 } else { 0.08 }));
+                    br.SetColor(&rgba(glow.0, glow.1, glow.2, (if is_hovered { 0.24 } else { 0.08 }) * card_k));
                     rt.FillGeometry(&geo, br, None);
-                    br.SetColor(&rgba(glow.0, glow.1, glow.2, if is_hovered || is_active { 0.92 } else { 0.34 }));
+                    br.SetColor(&rgba(glow.0, glow.1, glow.2, (if is_hovered || is_active { 0.92 } else { 0.34 }) * card_k));
                     rt.DrawGeometry(&geo, br, 1.15 * u, None);
                 }
             }
@@ -6370,11 +6467,15 @@ pub unsafe fn draw_dock_slot_fx_styled(
             return;
         }
         DockSlotCardStyle::FlatTile => {
+            let card_k = active_dock_card_alpha();
+            if card_k <= 0.01 {
+                return;
+            }
             let rr = D2D1_ROUNDED_RECT { rect: slot_rect, radiusX: 3.0 * u, radiusY: 3.0 * u };
             let glow = brand_rgb.unwrap_or(spec.dot_glow);
-            br.SetColor(&rgba(glow.0, glow.1, glow.2, if is_hovered { 0.28 } else if is_active { 0.18 } else { 0.08 }));
+            br.SetColor(&rgba(glow.0, glow.1, glow.2, (if is_hovered { 0.28 } else if is_active { 0.18 } else { 0.08 }) * card_k));
             rt.FillRoundedRectangle(&rr, br);
-            br.SetColor(&rgba(spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2, if is_hovered || is_active { 0.78 } else { 0.32 }));
+            br.SetColor(&rgba(spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2, (if is_hovered || is_active { 0.78 } else { 0.32 }) * card_k));
             rt.DrawRoundedRectangle(&rr, br, 1.0 * u, None);
             return;
         }

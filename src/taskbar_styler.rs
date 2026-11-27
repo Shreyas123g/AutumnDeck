@@ -8671,9 +8671,15 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         cfg.mac_dock_mag_pct = base_cfg.mac_dock_mag_pct;
         cfg.mac_dock_edge = base_cfg.mac_dock_edge;
         cfg.mac_dock_dots = base_cfg.mac_dock_dots;
+        cfg.w_apps.card_opacity_pct = base_cfg.w_apps.card_opacity_pct;
         cfg.tb_hover_react = base_cfg.tb_hover_react;
     }
-    let _tint_guard = crate::dock_themes::bind_active_dock_backdrop_with_alpha(None, false, cfg.tint_alpha);
+    let _tint_guard = crate::dock_themes::bind_active_dock_backdrop_full(
+        None,
+        false,
+        cfg.tint_alpha,
+        cfg.w_apps.card_opacity_pct,
+    );
     let pal = effective_taskbar_palette(&cfg);
     let vu_tricolor = is_vu_tricolor_active(&cfg);
 

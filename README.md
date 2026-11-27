@@ -75,21 +75,19 @@
 
 ---
 
-### Option 2: Standalone Releases (Portable ZIP & Setup Installer — Unsigned)
+### Option 2: Standalone Releases (Portable ZIP & Setup Installer)
 > [!NOTE]
-> Standalone binaries distributed on GitHub are compiled directly from open-source code and are **not digitally signed** (commercial certificates cost \$300+/year). For the **official digitally signed edition with zero security warnings**, please use **[Option 1: Microsoft Store](https://apps.microsoft.com/detail/9P6NTH74WSMD)**.
+> Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+> Official digitally signed store edition is also available via **[Option 1: Microsoft Store](https://apps.microsoft.com/detail/9P6NTH74WSMD)**.
 
-1. Download from **Releases**:
+1. Download from **[GitHub Releases](https://github.com/Shreyas123g/AutumnDeck/releases)**:
    - **Portable Edition:** `AutumnDeck-2.0.8-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
    - **Installer:** `AutumnDeck-Setup-2.0.8.exe`
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 
-#### ⚠️ Windows SmartScreen Note
-Because standalone GitHub `.exe`/`.zip` builds are unsigned:
-1. If Windows SmartScreen appears, click **"More info" ➔ "Run anyway"**.
-2. For `.zip` downloads, right-click the `.zip` ➔ **Properties** ➔ check **Unblock** ➔ click **Apply** before extracting.
-3. Prefer zero prompts? Install the **Microsoft Store** edition above (digitally signed by Microsoft).
+#### Code Signing & Security
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). All binaries are compiled transparently from open-source Rust code with zero telemetry and zero third-party bundled software. Full privacy details: [PRIVACY.md](PRIVACY.md).
 
 ---
 

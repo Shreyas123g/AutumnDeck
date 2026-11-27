@@ -114,15 +114,16 @@ use crate::config::{
 };
 use crate::desktop_widgets::{launch_app_path, load_app_bitmap_for_path, wic_src_to_d2d};
 use crate::dock_themes::{
-    bind_active_dock_backdrop_ex, chamfer_geo, clean_acrylic_tint_abgr, dock_spec,
-    draw_clean_top_bar, draw_d2d_text, draw_dock_clock_module, draw_dock_divider_styled,
-    draw_dock_indicator_styled, draw_dock_shelf_and_art_with_ripple, draw_dock_slot_fx_styled,
-    draw_dock_tooltip, draw_top_bar_popover, draw_unified_floating_tray_capsule,
-    is_ambient_animated_cfg, layout_clean_top_bar, layout_top_bar_popover, resolve_shelf_spec,
-    resolve_widget_spec, rgba as dt_rgba, top_bar_popover_dims, unpack_rgb,
-    uses_inside_tile_pill_indicator, CleanTopBarItem, CleanTopBarRenderInfo, CleanTopBarSlot,
-    DockArtLayer, DockBackdropCtx, DockLayoutKind, DockShelfShape, DockVisualSpec,
-    TaskbarWidgetId, TopBarPopoverHit, TopBarPopoverInfo, TopBarPopoverKind, TopBarPopoverLayout,
+    bind_active_dock_backdrop_with_alpha, chamfer_geo, clean_acrylic_tint_abgr_with_alpha,
+    dock_spec, draw_clean_top_bar, draw_d2d_text, draw_dock_clock_module,
+    draw_dock_divider_styled, draw_dock_indicator_styled, draw_dock_shelf_and_art_with_ripple,
+    draw_dock_slot_fx_styled, draw_dock_tooltip, draw_top_bar_popover,
+    draw_unified_floating_tray_capsule, is_ambient_animated_cfg, layout_clean_top_bar,
+    layout_top_bar_popover, resolve_shelf_spec, resolve_widget_spec, rgba as dt_rgba,
+    top_bar_popover_dims, unpack_rgb, uses_inside_tile_pill_indicator, CleanTopBarItem,
+    CleanTopBarRenderInfo, CleanTopBarSlot, DockArtLayer, DockBackdropCtx, DockLayoutKind,
+    DockShelfShape, DockVisualSpec, TaskbarWidgetId, TopBarPopoverHit, TopBarPopoverInfo,
+    TopBarPopoverKind, TopBarPopoverLayout,
 };
 use crate::liquid_backdrop::{AcrylicPillRect, LiquidBackdropContext, LiquidBackdropWindow};
 use crate::system_media::CcSnapshot;
@@ -176,7 +177,7 @@ const IDM_CLEAN_TOPBAR_FULL: usize = 4174;
 const IDM_CLEAN_TOPBAR_FLOAT: usize = 4175;
 const IDM_CLEAN_TOPBAR_DESK_ONLY: usize = 4176;
 const IDM_DOCK_ICON_SIZE_BASE: usize = 4180;
-const DOCK_ICON_SIZE_PRESETS: [u8; 8] = [36, 44, 52, 60, 68, 76, 88, 96];
+const DOCK_ICON_SIZE_PRESETS: [u8; 6] = [32, 40, 44, 48, 56, 64];
 const IDM_DOCK_SYNC_WIN_PINS: usize = 4133;
 
 const IDM_WINX_APPS: usize = 4140;
@@ -2788,7 +2789,6 @@ impl MacDockEngine {
                         let _ = tfl.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                         let _ = tfl.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                         self.tf_left = Some(tfl);
-                        self.tf_left_key = (12, 100);
                     }
                     if let Ok(tfm) = dw.CreateTextFormat(
                         w!("Consolas"),
@@ -3871,7 +3871,12 @@ impl MacDockEngine {
 
         let mon_span = if is_vertical { mon_h } else { mon_w };
         let headroom = base_sz * (max_scale - 1.0) + hud_wing_h + 46.0 * u;
-        let tip_cross = if is_vertical { 164.0 * u } else { 42.0 * u };
+        let tip_extra = (cfg.w_apps.label_font_size_px.clamp(10, 20) as f32 - 12.0).max(0.0);
+        let tip_cross = if is_vertical {
+            (164.0 + tip_extra * 14.0) * u
+        } else {
+            (42.0 + tip_extra * 1.6) * u
+        };
 
         let fg_hwnd = unsafe { GetForegroundWindow() };
         let divider_w = 10.0 * u;
@@ -4192,32 +4197,25 @@ impl MacDockEngine {
                         }
                     }
                     DockLayoutKind::IndependentOrbs | DockLayoutKind::MultiIslandBar => {
-                        if cfg.tb_theme.is_clean_minimal() {
-                            let wave_r = base_sz * 2.55;
-                            let d = (rest_centers[idx] - cursor_rest).abs();
-                            if pane.hover_mix > 0.01 && max_scale > 1.005 && d < wave_r {
-                                let c = (std::f32::consts::FRAC_PI_2 * (d / wave_r)).cos();
-                                1.0 + pane.hover_mix * (max_scale - 1.0) * c * c
-                            } else {
-                                1.0
-                            }
-                        } else if is_hov {
-                            max_scale
+                        let wave_r = base_sz * 2.55;
+                        let d = (rest_centers[idx] - cursor_rest).abs();
+                        if pane.hover_mix > 0.01 && max_scale > 1.005 && d < wave_r {
+                            let c = (std::f32::consts::FRAC_PI_2 * (d / wave_r)).cos();
+                            1.0 + pane.hover_mix * (max_scale - 1.0) * c * c
                         } else {
                             1.0
                         }
                     }
                     DockLayoutKind::HudConsoleDeck => {
-                        if is_hov { max_scale } else { 1.0 }
+                        if is_hov && max_scale > 1.005 { max_scale } else { 1.0 }
                     }
-                    DockLayoutKind::FullEdgeTaskbar => {
-                        if cfg.tb_theme.is_clean_minimal() && is_hov {
+                    DockLayoutKind::FullEdgeTaskbar | DockLayoutKind::InlineMorphRail => {
+                        if is_hov && max_scale > 1.005 {
                             max_scale
                         } else {
                             1.0
                         }
                     }
-                    DockLayoutKind::InlineMorphRail => 1.0,
                 }
             };
 
@@ -4292,24 +4290,21 @@ impl MacDockEngine {
                         * if spec.mechanical_lift { 0.56 } else { 0.44 }
                 }
                 DockLayoutKind::IndependentOrbs if !steady_wide => {
-                    if cfg.tb_theme.is_clean_minimal() {
-                        (sm_s - 1.0).max(0.0) * base_sz * 0.42
+                    let mag_lift = (sm_s - 1.0).max(0.0) * base_sz * 0.42;
+                    let wave = if cfg.tb_theme == TaskbarTheme::BiolumAbyssDock {
+                        ((self.dock_anim_phase * 1.15 + idx as f32 * 0.85).sin() * 0.5 + 0.5)
+                            * 5.0
+                            * u
                     } else {
-                        let wave = if cfg.tb_theme == TaskbarTheme::BiolumAbyssDock {
-                            ((self.dock_anim_phase * 1.15 + idx as f32 * 0.85).sin() * 0.5 + 0.5)
-                                * 5.0
-                                * u
-                        } else {
-                            0.0
-                        };
-                        wave + if is_hov { 3.5 * u } else { 0.0 }
-                    }
+                        0.0
+                    };
+                    wave + mag_lift
                 }
-                DockLayoutKind::MultiIslandBar if !steady_wide && cfg.tb_theme.is_clean_minimal() => {
+                DockLayoutKind::MultiIslandBar if !steady_wide => {
                     (sm_s - 1.0).max(0.0) * base_sz * 0.30
                 }
-                DockLayoutKind::FullEdgeTaskbar if !steady_wide && cfg.tb_theme.is_clean_minimal() => {
-                    (sm_s - 1.0).max(0.0) * base_sz * 0.24
+                DockLayoutKind::FullEdgeTaskbar if !steady_wide => {
+                    (sm_s - 1.0).max(0.0) * base_sz * 0.20
                 }
                 _ => 0.0,
             };
@@ -6536,7 +6531,7 @@ impl MacDockEngine {
                 add_menu_item(hmenu, IDM_DOCK_EXPLORER, "File Explorer");
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
-                if cfg.tb_theme.is_clean_minimal() {
+                if cfg.tb_theme.uses_virtual_dock() {
                     add_menu_item(
                         hmenu,
                         IDM_CLEAN_TOPBAR_TOGGLE,
@@ -7240,7 +7235,7 @@ impl MacDockEngine {
             .contains(&cmd)
         {
             let px = DOCK_ICON_SIZE_PRESETS[cmd - IDM_DOCK_ICON_SIZE_BASE];
-            cfg.mac_dock_icon_size = px.clamp(32, 96);
+            cfg.mac_dock_icon_size = px.clamp(32, 64);
             save_config(cfg);
             self.dirty_windows = true;
             self.mark_dirty_paint();
@@ -7533,7 +7528,7 @@ impl MacDockEngine {
     }
 
     fn ensure_pane_backdrop(&mut self, pane: &mut DockMonitorPane, cfg: &AppConfig) {
-        if !cfg.tb_theme.is_clean_minimal() {
+        if !cfg.tb_theme.is_clean_minimal() && !cfg.is_clean_top_bar_active() {
             return;
         }
         let Some(ref rt) = self.dc_rt else {
@@ -7817,6 +7812,8 @@ impl MacDockEngine {
         cfg.clean_top_bar_style.as_str().hash(&mut h);
         cfg.clean_top_bar_desktop_only.hash(&mut h);
         cfg.tb_match_wallpaper.hash(&mut h);
+        cfg.tint_alpha.hash(&mut h);
+        cfg.w_apps.label_font_size_px.hash(&mut h);
         clock_label.hash(&mut h);
         fg_app.hash(&mut h);
         self.tray_vol_pct.hash(&mut h);
@@ -7850,6 +7847,7 @@ impl MacDockEngine {
         if pane.top_hwnd.0.is_null() || !self.ensure_graphics() {
             return;
         }
+        self.ensure_label_text_format(cfg, pane.dpi_u);
         let cw = (pane.top_win_rect.right - pane.top_win_rect.left).max(16);
         let ch = (pane.top_win_rect.bottom - pane.top_win_rect.top).max(16);
         if !pane.top_surface.ensure_size(cw, ch) {
@@ -7868,7 +7866,7 @@ impl MacDockEngine {
             right: (pane.top_win_rect.left + bar_r.right.round() as i32 - inset).max(pane.top_win_rect.left + 8),
             bottom: (pane.top_win_rect.top + bar_r.bottom.round() as i32 - inset).max(pane.top_win_rect.top + 8),
         };
-        let abgr = clean_acrylic_tint_abgr(cfg.tb_theme, true);
+        let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, true, cfg.tint_alpha);
         let live_hw_blur = pane.top_backdrop.sync_pills(
             self.hinst,
             &mut self.liquid_ctx,
@@ -8022,6 +8020,7 @@ impl MacDockEngine {
         if !self.top_popover.visible || self.top_popover.hwnd.0.is_null() || !self.ensure_graphics() {
             return;
         }
+        self.ensure_label_text_format(cfg, self.top_popover.dpi_u);
         let cw = (self.top_popover.win_rect.right - self.top_popover.win_rect.left).max(16);
         let ch = (self.top_popover.win_rect.bottom - self.top_popover.win_rect.top).max(16);
         if !self.top_popover.surface.ensure_size(cw, ch) {
@@ -8035,7 +8034,7 @@ impl MacDockEngine {
             right: (self.top_popover.win_rect.left + pr.right.round() as i32 - 2).max(self.top_popover.win_rect.left + 8),
             bottom: (self.top_popover.win_rect.top + pr.bottom.round() as i32 - 2).max(self.top_popover.win_rect.top + 8),
         };
-        let abgr = clean_acrylic_tint_abgr(cfg.tb_theme, true);
+        let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, true, cfg.tint_alpha);
         let live_hw = self.top_popover.backdrop.sync_pills(
             self.hinst,
             &mut self.liquid_ctx,
@@ -8117,7 +8116,7 @@ impl MacDockEngine {
                     canvas_top: self.top_popover.win_rect.top as f32,
                 })
             });
-            let _guard = bind_active_dock_backdrop_ex(fallback_ctx, live_hw);
+            let _guard = bind_active_dock_backdrop_with_alpha(fallback_ctx, live_hw, cfg.tint_alpha);
             if let (Some(br), Some(tf_b), Some(tf_r), Some(tf_l)) = (
                 self.solid_brush.clone(),
                 self.tf_top_bold.as_ref().or(self.tf_tip.as_ref()),
@@ -8207,7 +8206,7 @@ impl MacDockEngine {
             canvas_left: pane.top_win_rect.left as f32,
             canvas_top: pane.top_win_rect.top as f32,
         });
-        let _guard = bind_active_dock_backdrop_ex(backdrop_ctx, live_hw_blur);
+        let _guard = bind_active_dock_backdrop_with_alpha(backdrop_ctx, live_hw_blur, cfg.tint_alpha);
 
         let br_opt = self
             .solid_brush
@@ -8239,14 +8238,31 @@ impl MacDockEngine {
         let size_px = cfg.w_apps.label_font_size_px.clamp(10, 20);
         let dpi_q100 = (u.clamp(0.75, 3.0) * 100.0).round() as u16;
         let key = (size_px, dpi_q100);
-        if self.tf_left.is_some() && self.tf_left_key == key {
+        if self.tf_left.is_some() && self.tf_tip.is_some() && self.tf_left_key == key {
             return;
         }
         let Some(ref dw) = self.dw else {
             return;
         };
-        let eff_px = (size_px as f32 * (dpi_q100 as f32 / 100.0)).clamp(10.0, 44.0);
+        let dpi_f = dpi_q100 as f32 / 100.0;
+        let eff_px = (size_px as f32 * dpi_f).clamp(10.0, 52.0);
+        let mono_px = (11.5 * dpi_f).clamp(10.0, 32.0);
+        let top_px = (12.5 * dpi_f).clamp(10.5, 34.0);
         unsafe {
+            if let Ok(tft) = dw.CreateTextFormat(
+                w!("Segoe UI Variable Text"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                eff_px,
+                w!("en-US"),
+            ) {
+                let _ = tft.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = tft.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = tft.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                self.tf_tip = Some(tft);
+            }
             if let Ok(tfl) = dw.CreateTextFormat(
                 w!("Segoe UI Variable Text"),
                 None,
@@ -8260,8 +8276,50 @@ impl MacDockEngine {
                 let _ = tfl.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 let _ = tfl.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                 self.tf_left = Some(tfl);
-                self.tf_left_key = key;
             }
+            if let Ok(tfm) = dw.CreateTextFormat(
+                w!("Consolas"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                mono_px,
+                w!("en-US"),
+            ) {
+                let _ = tfm.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = tfm.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = tfm.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                self.tf_mono = Some(tfm);
+            }
+            if let Ok(tfb) = dw.CreateTextFormat(
+                w!("Segoe UI Variable Text"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                top_px,
+                w!("en-US"),
+            ) {
+                let _ = tfb.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = tfb.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = tfb.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                self.tf_top_bold = Some(tfb);
+            }
+            if let Ok(tfr) = dw.CreateTextFormat(
+                w!("Segoe UI Variable Text"),
+                None,
+                DWRITE_FONT_WEIGHT_REGULAR,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                top_px,
+                w!("en-US"),
+            ) {
+                let _ = tfr.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = tfr.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = tfr.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                self.tf_top_reg = Some(tfr);
+            }
+            self.tf_left_key = key;
         }
     }
 
@@ -8283,7 +8341,7 @@ impl MacDockEngine {
         let u = pane.dpi_u;
         let acrylic_pills = collect_dock_acrylic_pills(pane, cfg, u);
         let live_hw_blur = if !acrylic_pills.is_empty() && !cfg.is_dock_all_elements_off() {
-            let abgr = clean_acrylic_tint_abgr(cfg.tb_theme, false);
+            let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, false, cfg.tint_alpha);
             pane.liquid_backdrop.sync_pills(
                 self.hinst,
                 &mut self.liquid_ctx,
@@ -8436,7 +8494,8 @@ impl MacDockEngine {
             canvas_left: pane.canvas_rect.left as f32,
             canvas_top: pane.canvas_rect.top as f32,
         });
-        let _backdrop_guard = bind_active_dock_backdrop_ex(backdrop_ctx, live_hw_blur);
+        let _backdrop_guard =
+            bind_active_dock_backdrop_with_alpha(backdrop_ctx, live_hw_blur, cfg.tint_alpha);
 
         let br_opt = self
             .solid_brush
@@ -9138,8 +9197,16 @@ impl MacDockEngine {
         let Some(ref tf) = self.tf_tip else {
             return;
         };
-        let label_w = (item.label.chars().count().clamp(4, 28) as f32 * 7.2 * u + 22.0 * u).min(210.0 * u);
-        let tip_h = 25.0 * u;
+        let fs = if self.tf_left_key.0 == 0 {
+            12.0
+        } else {
+            self.tf_left_key.0.clamp(10, 20) as f32
+        };
+        let char_w = (fs * 0.60) * u;
+        let pad_x = (16.0 + (fs - 10.0) * 0.9) * u;
+        let max_tip_w = (186.0 + (fs - 10.0) * 11.0) * u;
+        let label_w = (item.label.chars().count().clamp(4, 28) as f32 * char_w + pad_x).min(max_tip_w);
+        let tip_h = (fs + 13.0) * u;
         let top_margin = 4.0 * u;
         let wing_top_l = pane.hud_wing_local.as_ref().map(|(r, _, _)| r.top).unwrap_or(shelf_r.top);
         let wing_bot_l = pane.hud_wing_local.as_ref().map(|(r, _, _)| r.bottom).unwrap_or(shelf_r.bottom);
@@ -10454,37 +10521,21 @@ fn dock_safe_max_scale(
     mon_cross: f32,
     u: f32,
 ) -> f32 {
-    if !cfg.tb_hover_react {
+    if !cfg.tb_hover_react || cfg.mac_dock_mag_pct <= 102 {
         return 1.0;
     }
     let user_mag = (cfg.mac_dock_mag_pct as f32 / 100.0).clamp(1.0, 1.85);
+    let delta = user_mag - 1.0;
     let raw_scale = match spec.layout {
         DockLayoutKind::FishEyeShelf => user_mag,
-        DockLayoutKind::MultiIslandBar => {
-            if cfg.tb_theme.is_clean_minimal() {
-                (1.0 + (user_mag - 1.0) * 0.48).clamp(1.14, 1.36)
-            } else {
-                1.14
-            }
+        DockLayoutKind::IndependentOrbs => (1.0 + delta * 0.85).clamp(1.0, 1.72),
+        DockLayoutKind::MultiIslandBar => (1.0 + delta * 0.80).clamp(1.0, 1.68),
+        DockLayoutKind::HudConsoleDeck => (1.0 + delta * 0.55).clamp(1.0, 1.48),
+        DockLayoutKind::FullEdgeTaskbar | DockLayoutKind::InlineMorphRail => {
+            (1.0 + delta * 0.35).clamp(1.0, 1.30)
         }
-        DockLayoutKind::IndependentOrbs => {
-            if cfg.tb_theme.is_clean_minimal() {
-                (1.0 + (user_mag - 1.0) * 0.64).clamp(1.22, 1.48)
-            } else {
-                1.22
-            }
-        }
-        DockLayoutKind::HudConsoleDeck => 1.06,
-        DockLayoutKind::FullEdgeTaskbar => {
-            if cfg.tb_theme.is_clean_minimal() {
-                (1.0 + (user_mag - 1.0) * 0.24).clamp(1.08, 1.18)
-            } else {
-                1.0
-            }
-        }
-        DockLayoutKind::InlineMorphRail => 1.0,
     };
-    let max_visual_ico = (mon_cross * 0.18).min(140.0 * u).max(base_sz);
+    let max_visual_ico = (mon_cross * 0.24).min(118.0 * u).max(base_sz);
     let cross_cap = (max_visual_ico / base_sz.max(1.0)).clamp(1.0, 1.85);
     raw_scale.min(cross_cap)
 }
@@ -10492,12 +10543,12 @@ fn dock_safe_max_scale(
 fn dock_cross_metrics(cfg: &AppConfig, u: f32) -> (DockVisualSpec, bool, f32, f32, f32, f32) {
     let spec = resolve_shelf_spec(cfg);
     let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
-    let base_sz = (cfg.mac_dock_icon_size as f32).clamp(32.0, 96.0) * u;
+    let base_sz = (cfg.mac_dock_icon_size as f32).clamp(32.0, 64.0) * u;
     let shelf_cross = if matches!(
         cfg.tb_theme,
         TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark
     ) {
-        base_sz + 13.0 * u
+        base_sz + (base_sz * 0.28).max(13.0 * u)
     } else {
         match spec.layout {
             DockLayoutKind::FullEdgeTaskbar => (base_sz + 14.0 * u).max(46.0 * u),
@@ -11894,7 +11945,7 @@ unsafe fn add_theme_override_submenu(
 }
 
 unsafe fn append_clean_top_bar_quick_toggle(parent: HMENU, cfg: &AppConfig) {
-    if !cfg.tb_theme.is_clean_minimal() {
+    if !cfg.tb_theme.uses_virtual_dock() {
         return;
     }
     add_menu_item(
@@ -11912,17 +11963,15 @@ unsafe fn append_dock_icon_size_submenu(parent: HMENU, cfg: &AppConfig) {
     let Ok(sub) = CreatePopupMenu() else {
         return;
     };
-    let cur = cfg.mac_dock_icon_size.clamp(32, 96);
+    let cur = cfg.mac_dock_icon_size.clamp(32, 64);
     for (idx, &px) in DOCK_ICON_SIZE_PRESETS.iter().enumerate() {
         let label = match px {
-            36 => "Compact (36 px)",
+            32 => "Compact (32 px)",
+            40 => "Small (40 px)",
             44 => "Default (44 px)",
-            52 => "Medium (52 px)",
-            60 => "Large (60 px)",
-            68 => "Extra Large (68 px)",
-            76 => "Dock XL (76 px)",
-            88 => "ObjectDock (88 px)",
-            96 => "Max Jumbo (96 px)",
+            48 => "Medium (48 px)",
+            56 => "Large (56 px)",
+            64 => "macOS Max (64 px)",
             _ => "Custom",
         };
         add_checked_item(sub, IDM_DOCK_ICON_SIZE_BASE + idx, label, cur == px);
@@ -13634,6 +13683,7 @@ fn tray_cluster_item_centers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dock_themes::bind_active_dock_backdrop_ex;
 
     #[test]
     fn dock_monitor_pane_hit_and_band_on_secondary_display() {
@@ -15207,26 +15257,80 @@ mod tests {
     }
 
     #[test]
-    fn dock_88px_icons_18px_labels_safe_mag_and_menu_commands() {
+    fn dock_64px_macos_max_icons_sliders_dpi_fonts_and_opacity() {
         let mut cfg = AppConfig::default();
-        cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassDark);
-        cfg.mac_dock_icon_size = 88;
-        cfg.mac_dock_mag_pct = 185;
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassLight);
+        cfg.mac_dock_icon_size = 64;
+        cfg.mac_dock_mag_pct = 155;
         cfg.w_apps.label_font_size_px = 18;
+
+        // Oversized legacy values clamp strictly to macOS 64px max in dock_cross_metrics
+        let mut over_cfg = cfg.clone();
+        over_cfg.mac_dock_icon_size = 96;
+        let (_, _, over_base, _, _, _) = dock_cross_metrics(&over_cfg, 1.0);
+        assert!((over_base - 64.0).abs() < 0.01);
 
         let (spec, is_vert, base_sz, shelf_cross, edge_gap, _wing) = dock_cross_metrics(&cfg, 1.0);
         assert!(!is_vert);
-        assert!((base_sz - 88.0).abs() < 0.01);
-        assert!(shelf_cross >= base_sz + 10.0 && shelf_cross <= 128.0);
+        assert!((base_sz - 64.0).abs() < 0.01);
+        assert!(
+            shelf_cross >= base_sz + 16.0 && shelf_cross <= 92.0,
+            "OS26 64px shelf_cross must leave balanced glass margin: {}",
+            shelf_cross
+        );
         assert!(edge_gap >= 0.0);
 
-        // Safe magnification cap prevents 88px icons from oversizing on 1080p or 720p monitors
-        let mag_1080 = dock_safe_max_scale(&cfg, &spec, base_sz, 1080.0, 1.0);
-        let mag_720 = dock_safe_max_scale(&cfg, &spec, base_sz, 720.0, 1.0);
-        assert!(mag_1080 >= 1.0 && base_sz * mag_1080 <= 140.5);
-        assert!(mag_720 >= 1.0 && base_sz * mag_720 <= 720.0 * 0.18 + 0.5);
+        // Magnification slider: 100..=102% turns magnification OFF (1.0) on ALL themes; 116% and 155% scale smoothly even at 64px on 720p/1080p!
+        let mut off_cfg = cfg.clone();
+        off_cfg.mac_dock_mag_pct = 100;
+        assert!((dock_safe_max_scale(&off_cfg, &spec, base_sz, 1080.0, 1.0) - 1.0).abs() < 0.001);
+        let mut mid_cfg = cfg.clone();
+        mid_cfg.mac_dock_mag_pct = 116;
+        let mag_116 = dock_safe_max_scale(&mid_cfg, &spec, base_sz, 800.0, 1.0);
+        let mag_155 = dock_safe_max_scale(&cfg, &spec, base_sz, 800.0, 1.0);
+        assert!((mag_116 - 1.16).abs() < 0.01, "Expected 1.16x at 116%, got {}", mag_116);
+        assert!(mag_155 > 1.50, "Expected ~1.55x at 155% even on 800px laptop height, got {}", mag_155);
 
-        // Dynamic inline window pill width & truncation scale cleanly from 10..20 px
+        // MultiIslandBar & IndependentOrbs also respond to magnification slider smoothly (and turn OFF at 100%)
+        let mut isl_cfg = cfg.clone();
+        isl_cfg.apply_taskbar_theme_preset(TaskbarTheme::LiquidGlassClear);
+        let isl_spec = resolve_shelf_spec(&isl_cfg);
+        isl_cfg.mac_dock_mag_pct = 100;
+        assert!((dock_safe_max_scale(&isl_cfg, &isl_spec, 44.0, 1080.0, 1.0) - 1.0).abs() < 0.001);
+        isl_cfg.mac_dock_mag_pct = 160;
+        assert!(dock_safe_max_scale(&isl_cfg, &isl_spec, 44.0, 1080.0, 1.0) > 1.40);
+
+        // Dock Glass Opacity scaling: exact preset at default, near-transparent at 0, rich frost at 255
+        let preset_tint = TaskbarTheme::Os26LiquidGlassLight.preview_preset().2;
+        let a_def = crate::dock_themes::scale_dock_theme_alpha(
+            TaskbarTheme::Os26LiquidGlassLight,
+            0.32,
+            preset_tint,
+            0.04,
+            0.96,
+        );
+        let a_zero = crate::dock_themes::scale_dock_theme_alpha(
+            TaskbarTheme::Os26LiquidGlassLight,
+            0.32,
+            0,
+            0.04,
+            0.96,
+        );
+        let a_full = crate::dock_themes::scale_dock_theme_alpha(
+            TaskbarTheme::Os26LiquidGlassLight,
+            0.32,
+            255,
+            0.04,
+            0.96,
+        );
+        assert!((a_def - 0.32).abs() < 0.001);
+        assert!((a_zero - 0.04).abs() < 0.001);
+        assert!((a_full - 0.96).abs() < 0.001);
+        let abgr_lo = clean_acrylic_tint_abgr_with_alpha(TaskbarTheme::Os26LiquidGlassLight, false, 0);
+        let abgr_hi = clean_acrylic_tint_abgr_with_alpha(TaskbarTheme::Os26LiquidGlassLight, false, 255);
+        assert!((abgr_lo >> 24) < (abgr_hi >> 24));
+
+        // Dynamic inline window pill width & truncation + DPI-aware tf_tip & tf_left font sizes
         let (pw10, tc10, sc10) = dock_inline_label_metrics(10, 1.0);
         let (pw18, tc18, sc18) = dock_inline_label_metrics(18, 1.0);
         let (pw20, tc20, sc20) = dock_inline_label_metrics(20, 1.0);
@@ -15234,20 +15338,33 @@ mod tests {
         assert!(pw18 > 195.0 && pw18 < 220.0 && tc18 >= 24 && sc18 >= 19);
         assert!((pw20 - 220.0).abs() < 0.01 && tc20 == 28 && sc20 == 22);
 
-        // Context menu command handler toggles Top Bar and sets quick Icon Size preset (88 px)
+        // Context menu command handler toggles Top Bar and sets quick Icon Size preset (64 px)
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
         let mut eng = MacDockEngine::new(HINSTANCE::default());
+        assert!(eng.ensure_graphics());
+        eng.ensure_label_text_format(&cfg, 1.5);
+        assert_eq!(eng.tf_left_key, (18, 150));
+        let tip_fs = unsafe { eng.tf_tip.as_ref().unwrap().GetFontSize() };
+        let left_fs = unsafe { eng.tf_left.as_ref().unwrap().GetFontSize() };
+        assert!((tip_fs - 27.0).abs() < 0.1 && (left_fs - 27.0).abs() < 0.1);
+
         assert!(cfg.clean_top_bar_enabled);
         let act_tb = eng.handle_widget_menu_cmd(IDM_CLEAN_TOPBAR_TOGGLE, &mut cfg);
         assert!(matches!(act_tb, Some(MacDockAction::ConfigUpdated)));
         assert!(!cfg.clean_top_bar_enabled);
-        let idx_88 = DOCK_ICON_SIZE_PRESETS
+        let idx_64 = DOCK_ICON_SIZE_PRESETS
             .iter()
-            .position(|&p| p == 88)
-            .expect("88px preset must exist");
+            .position(|&p| p == 64)
+            .expect("64px macOS max preset must exist");
         cfg.mac_dock_icon_size = 44;
-        let act_sz = eng.handle_widget_menu_cmd(IDM_DOCK_ICON_SIZE_BASE + idx_88, &mut cfg);
+        let act_sz = eng.handle_widget_menu_cmd(IDM_DOCK_ICON_SIZE_BASE + idx_64, &mut cfg);
         assert!(matches!(act_sz, Some(MacDockAction::ConfigUpdated)));
-        assert_eq!(cfg.mac_dock_icon_size, 88);
+        assert_eq!(cfg.mac_dock_icon_size, 64);
+        unsafe {
+            CoUninitialize();
+        }
     }
 
     #[test]

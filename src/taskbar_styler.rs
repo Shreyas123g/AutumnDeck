@@ -8663,7 +8663,17 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         cfg.tb_show_backdrop = base_cfg.tb_show_backdrop;
         cfg.tb_show_rim = base_cfg.tb_show_rim;
         cfg.tb_show_fx = base_cfg.tb_show_fx;
+        cfg.clean_top_bar_enabled = base_cfg.clean_top_bar_enabled;
+        cfg.clean_top_bar_edge = base_cfg.clean_top_bar_edge;
+        cfg.clean_top_bar_style = base_cfg.clean_top_bar_style;
+        cfg.clean_top_bar_desktop_only = base_cfg.clean_top_bar_desktop_only;
+        cfg.mac_dock_icon_size = base_cfg.mac_dock_icon_size;
+        cfg.mac_dock_mag_pct = base_cfg.mac_dock_mag_pct;
+        cfg.mac_dock_edge = base_cfg.mac_dock_edge;
+        cfg.mac_dock_dots = base_cfg.mac_dock_dots;
+        cfg.tb_hover_react = base_cfg.tb_hover_react;
     }
+    let _tint_guard = crate::dock_themes::bind_active_dock_backdrop_with_alpha(None, false, cfg.tint_alpha);
     let pal = effective_taskbar_palette(&cfg);
     let vu_tricolor = is_vu_tricolor_active(&cfg);
 

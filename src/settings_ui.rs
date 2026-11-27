@@ -63,12 +63,12 @@ use crate::config::{
     is_portable_mode, is_startup_enabled, is_static_image_wallpaper_path, open_app_data_folder,
     open_kofi_support_page, portable_data_dir_display, read_win_taskbar_prefs, set_startup_enabled, vitals_style_badge, vitals_style_horology,
     vitals_style_label, vitals_style_subtitle, vitals_styles_in_folder, AppConfig, AppShortcut,
-    AppsThemeFolder, CanvasStylePreset, CcThemeFolder, ClockAlign, ClockElemId, ClockElemTransform,
-    ClockStyle, ClockThemeFolder, DockArtLayer, DockClockEngine, DockClockWheelAction,
-    DockIndicatorStyle, DockLayoutKind, DockShelfShape, DockSlotCardStyle, HudTelemetryContent,
-    HudWingMode, MacDockEdge, MacDockHideMode, MusicStyle, MusicThemeFolder, PerformanceMode,
-    PillMode, StartBadgeStyle, SurfaceMode, TaskbarMode, TaskbarTheme, TaskbarThemeFolder,
-    TaskbarVizStyle,
+    AppsThemeFolder, CanvasStylePreset, CcThemeFolder, CleanTopBarEdge, CleanTopBarStyle,
+    ClockAlign, ClockElemId, ClockElemTransform, ClockStyle, ClockThemeFolder, DockArtLayer,
+    DockClockEngine, DockClockWheelAction, DockIndicatorStyle, DockLayoutKind,
+    DockRunningLabelMode, DockShelfShape, DockSlotCardStyle, HudTelemetryContent, HudWingMode,
+    MacDockEdge, MacDockHideMode, MusicStyle, MusicThemeFolder, PerformanceMode, PillMode,
+    StartBadgeStyle, SurfaceMode, TaskbarMode, TaskbarTheme, TaskbarThemeFolder, TaskbarVizStyle,
     TaskbarWidgetTab, TrayAudioMeterStyle, TrayBatteryMeterStyle, TrayNetMeterStyle,
     VideoWallpaperPreset, VitalsThemeFolder, VizColorMode, WallpaperFpsCap, WidgetCanvasTarget,
     WinTaskbarPrefs, KOFI_SUPPORT_URL,
@@ -710,13 +710,39 @@ fn dock_widget_elem_toggles(tab: TaskbarWidgetTab, cfg: &AppConfig) -> Vec<(&'st
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DockCustomTab {
+    LayoutHide,
+    SizeGlass,
+    TopBar,
+    Modules,
+}
+
+impl DockCustomTab {
+    pub const ALL: [Self; 4] = [
+        Self::LayoutHide,
+        Self::SizeGlass,
+        Self::TopBar,
+        Self::Modules,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LayoutHide => "1. Position & Hide",
+            Self::SizeGlass => "2. Size & Glass",
+            Self::TopBar => "3. Top Menu Bar",
+            Self::Modules => "4. Dock Modules",
+        }
+    }
+}
+
 fn dock_widget_elem_pill_rect(idx: usize, total: usize) -> (f32, f32, f32, f32) {
     let n = total.max(1) as f32;
     let gap = 6.0;
     let avail = 722.0 - 38.0;
     let w = (avail - gap * (n - 1.0)) / n;
     let x0 = 38.0 + (idx as f32) * (w + gap);
-    (x0, 525.0, x0 + w, 547.0)
+    (x0, 420.0, x0 + w, 462.0)
 }
 
 fn native_tb_elem_toggles(cfg: &AppConfig) -> [(&'static str, bool, u8); 3] {
@@ -1070,12 +1096,17 @@ enum HitZone {
     OnboardFinish,
     MacDockEdgeBtn(MacDockEdge),
     MacDockHideBtn(MacDockHideMode),
+    DockCustomTabBtn(DockCustomTab),
+    BtnResetDockStyle,
+    SetDockLabelMode(DockRunningLabelMode),
     ToggleMacDockBounce,
     ToggleMacDockDots,
     ToggleCleanTopBar,
     CycleCleanTopBarEdge,
-    CycleCleanTopBarStyle,
     ToggleCleanTopBarDesktopOnly,
+    SetCleanTopBarEdge(CleanTopBarEdge),
+    SetCleanTopBarDesktopOnly(bool),
+    SetCleanTopBarStyle(CleanTopBarStyle),
     BtnRescanDockPinned,
     TbWidgetTabBtn(TaskbarWidgetTab),
     TbWidgetProp1,
@@ -1562,6 +1593,7 @@ pub struct SettingsController {
     tb_folder: TaskbarThemeFolder,
     tb_theme_page: usize,
     tb_fx_page: usize,
+    pub dock_custom_tab: DockCustomTab,
     tb_widget_tab: TaskbarWidgetTab,
     tb_anim_phase: f32,
     tb_mouse_logic: Option<(f32, f32)>,
@@ -1829,6 +1861,7 @@ impl SettingsController {
             tb_folder: TaskbarThemeFolder::OsDocks,
             tb_theme_page: 0,
             tb_fx_page: 0,
+            dock_custom_tab: DockCustomTab::LayoutHide,
             tb_widget_tab: TaskbarWidgetTab::ShelfFrame,
             tb_anim_phase: 0.0,
             tb_mouse_logic: None,
@@ -2426,7 +2459,9 @@ impl SettingsController {
     pub fn is_taskbar_themes_visible(&self) -> bool {
         self.is_actively_viewed()
             && self.active_tab == StudioTab::Taskbar
-            && matches!(self.taskbar_page, TaskbarPage::Folders | TaskbarPage::Themes)
+            && (matches!(self.taskbar_page, TaskbarPage::Folders | TaskbarPage::Themes)
+                || (self.taskbar_page == TaskbarPage::Customize
+                    && self.draft_cfg.tb_theme.uses_virtual_dock()))
     }
 
     pub fn is_widgets_anim_visible(&self) -> bool {
@@ -2983,7 +3018,16 @@ impl SettingsController {
                     step_one(sims, theme, (x0, y0, 346.0, 136.0), (x0 + 10.0, y0 + 8.0, 326.0, 74.0));
                 }
             }
-            TaskbarPage::Customize => {}
+            TaskbarPage::Customize => {
+                if self.draft_cfg.tb_theme.uses_virtual_dock() {
+                    step_one(
+                        sims,
+                        self.draft_cfg.tb_theme,
+                        (26.0, 132.0, 708.0, 84.0),
+                        (26.0, 132.0, 708.0, 84.0),
+                    );
+                }
+            }
         }
     }
 
@@ -3921,7 +3965,11 @@ impl SettingsController {
                         let _ = ReleaseCapture();
                         let _ = InvalidateRect(Some(self.hwnd), None, false);
                     }
-                    let cmd = if matches!(
+                    let cmd = if kind == SliderKind::TaskbarOpacity
+                        && cfg.tb_theme.uses_virtual_dock()
+                    {
+                        SettingsCommand::MacDockUpdated
+                    } else if matches!(
                         kind,
                         SliderKind::TaskbarOpacity
                             | SliderKind::TbVizOpacity
@@ -4909,7 +4957,11 @@ impl SettingsController {
             if new_alpha != cfg.tint_alpha {
                 cfg.tint_alpha = new_alpha;
                 self.draft_cfg.tint_alpha = new_alpha;
-                return Some(SettingsCommand::StylePreview);
+                return Some(if cfg.tb_theme.uses_virtual_dock() {
+                    SettingsCommand::MacDockPreview
+                } else {
+                    SettingsCommand::StylePreview
+                });
             }
             return None;
         }
@@ -4944,7 +4996,7 @@ impl SettingsController {
             return None;
         }
         if kind == SliderKind::MacDockIconSize {
-            let new_sz = (32.0 + t * 64.0).round() as u8;
+            let new_sz = (32.0 + t * 32.0).round() as u8;
             if new_sz != cfg.mac_dock_icon_size {
                 cfg.mac_dock_icon_size = new_sz;
                 self.draft_cfg.mac_dock_icon_size = new_sz;
@@ -5324,6 +5376,7 @@ impl SettingsController {
                 | HitZone::OpenCustomizeExt(_)
                 | HitZone::ExtSubTabBtn(_)
                 | HitZone::DtSubTabBtn(_)
+                | HitZone::DockCustomTabBtn(_)
                 | HitZone::ColorTargetBtn(_)
                 | HitZone::BtnBackGallery
                 | HitZone::ScrollAppsUp
@@ -5772,6 +5825,36 @@ impl SettingsController {
             }
             HitZone::BtnToggleNow => SettingsCommand::ToggleTaskbarNow,
             HitZone::BtnQuitApp => SettingsCommand::QuitApp,
+            HitZone::DockCustomTabBtn(tab) => {
+                self.dock_custom_tab = tab;
+                SettingsCommand::None
+            }
+            HitZone::BtnResetDockStyle => {
+                cfg.reset_dock_style_keep_theme();
+                self.draft_cfg = cfg.clone();
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::SetDockLabelMode(mode) => {
+                cfg.w_apps.label_mode = mode;
+                self.draft_cfg.w_apps.label_mode = mode;
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::SetCleanTopBarEdge(edge) => {
+                cfg.set_clean_top_bar_edge(edge);
+                self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
+                self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::SetCleanTopBarDesktopOnly(desk_only) => {
+                cfg.clean_top_bar_desktop_only = desk_only;
+                self.draft_cfg.clean_top_bar_desktop_only = desk_only;
+                SettingsCommand::MacDockUpdated
+            }
+            HitZone::SetCleanTopBarStyle(style) => {
+                cfg.clean_top_bar_style = style;
+                self.draft_cfg.clean_top_bar_style = style;
+                SettingsCommand::MacDockUpdated
+            }
             HitZone::MacDockEdgeBtn(edge) => {
                 cfg.set_mac_dock_edge_smart(edge);
                 self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
@@ -5792,11 +5875,6 @@ impl SettingsController {
                 cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge.toggle());
                 self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
                 self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
-                SettingsCommand::MacDockUpdated
-            }
-            HitZone::CycleCleanTopBarStyle => {
-                cfg.clean_top_bar_style = cfg.clean_top_bar_style.next();
-                self.draft_cfg.clean_top_bar_style = cfg.clean_top_bar_style;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::ToggleCleanTopBarDesktopOnly => {
@@ -8555,7 +8633,7 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 584.0, 186.0, 622.0) {
                         return HitZone::BtnExportDiagnostics;
                     }
-                    if self.draft_cfg.tb_theme.is_clean_minimal() {
+                    if self.draft_cfg.tb_theme.uses_virtual_dock() {
                         if in_rect(x, y, 194.0, 584.0, 266.0, 622.0) {
                             return HitZone::ToggleCleanTopBar;
                         }
@@ -8587,7 +8665,7 @@ impl SettingsController {
                         }
                     }
                     if in_rect(x, y, 428.0, 94.0, 594.0, 124.0) {
-                        if self.draft_cfg.tb_theme.is_clean_minimal() {
+                        if self.draft_cfg.tb_theme.uses_virtual_dock() {
                             return HitZone::ToggleCleanTopBar;
                         }
                         return HitZone::ToggleWallpaperQuick;
@@ -8610,7 +8688,7 @@ impl SettingsController {
                         return HitZone::BtnExportDiagnostics;
                     }
                     if self.tb_folder == TaskbarThemeFolder::CleanMinimal
-                        || self.draft_cfg.tb_theme.is_clean_minimal()
+                        || self.draft_cfg.tb_theme.uses_virtual_dock()
                     {
                         if in_rect(x, y, 194.0, 584.0, 266.0, 622.0) {
                             return HitZone::ToggleCleanTopBar;
@@ -8630,132 +8708,187 @@ impl SettingsController {
                     }
                 }
                 TaskbarPage::Customize => {
-                    if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
-                        return HitZone::BtnBackTaskbarThemes;
-                    }
-                    if self.draft_cfg.tb_theme.is_clean_minimal() {
-                        if in_rect(x, y, 286.0, 100.0, 364.0, 130.0) {
+                    if self.draft_cfg.tb_theme.uses_virtual_dock() {
+                        if in_rect(x, y, 26.0, 94.0, 126.0, 126.0) {
+                            return HitZone::BtnBackTaskbarThemes;
+                        }
+                        if in_rect(x, y, 504.0, 96.0, 626.0, 124.0) {
                             return HitZone::ToggleCleanTopBar;
                         }
-                        if in_rect(x, y, 368.0, 100.0, 424.0, 130.0) {
-                            return HitZone::CycleCleanTopBarEdge;
+                        if in_rect(x, y, 634.0, 96.0, 734.0, 124.0) {
+                            return HitZone::BtnResetDockStyle;
                         }
-                        if in_rect(x, y, 428.0, 100.0, 502.0, 130.0) {
-                            return HitZone::ToggleCleanTopBarDesktopOnly;
-                        }
-                        if in_rect(x, y, 506.0, 100.0, 562.0, 130.0) {
-                            return HitZone::CycleCleanTopBarStyle;
-                        }
-                    }
-                    if in_rect(x, y, 568.0, 98.0, 734.0, 132.0) {
-                        return HitZone::ToggleWallpaperQuick;
-                    }
-                    if self.draft_cfg.tb_theme.uses_virtual_dock() {
-                        for (i, edge) in [
-                            MacDockEdge::Bottom,
-                            MacDockEdge::Top,
-                            MacDockEdge::Left,
-                            MacDockEdge::Right,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            let x0 = 26.0 + (i as f32) * 179.0;
-                            if in_rect(x, y, x0, 142.0, x0 + 171.0, 192.0) {
-                                return HitZone::MacDockEdgeBtn(edge);
+                        for (i, &tab) in DockCustomTab::ALL.iter().enumerate() {
+                            let tx0 = 26.0 + (i as f32) * 179.0;
+                            if in_rect(x, y, tx0, 224.0, tx0 + 171.0, 256.0) {
+                                return HitZone::DockCustomTabBtn(tab);
                             }
                         }
-                        for (i, hm) in [
-                            MacDockHideMode::SmartAutoHide,
-                            MacDockHideMode::HoverReveal,
-                            MacDockHideMode::AlwaysVisible,
-                            MacDockHideMode::StealthHide,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            let x0 = 26.0 + (i as f32) * 179.0;
-                            if in_rect(x, y, x0, 200.0, x0 + 171.0, 250.0) {
-                                return HitZone::MacDockHideBtn(hm);
+                        match self.dock_custom_tab {
+                            DockCustomTab::LayoutHide => {
+                                for (i, edge) in [
+                                    MacDockEdge::Bottom,
+                                    MacDockEdge::Top,
+                                    MacDockEdge::Left,
+                                    MacDockEdge::Right,
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                {
+                                    let x0 = 26.0 + (i as f32) * 179.0;
+                                    if in_rect(x, y, x0, 286.0, x0 + 171.0, 344.0) {
+                                        return HitZone::MacDockEdgeBtn(edge);
+                                    }
+                                }
+                                for (i, hm) in [
+                                    MacDockHideMode::SmartAutoHide,
+                                    MacDockHideMode::HoverReveal,
+                                    MacDockHideMode::AlwaysVisible,
+                                    MacDockHideMode::StealthHide,
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                {
+                                    let x0 = 26.0 + (i as f32) * 179.0;
+                                    if in_rect(x, y, x0, 374.0, x0 + 171.0, 432.0) {
+                                        return HitZone::MacDockHideBtn(hm);
+                                    }
+                                }
+                                if in_rect(x, y, 40.0, 474.0, 372.0, 514.0) {
+                                    return HitZone::ToggleMacDockBounce;
+                                }
+                                if in_rect(x, y, 388.0, 474.0, 720.0, 514.0) {
+                                    return HitZone::ToggleMacDockDots;
+                                }
+                                if in_rect(x, y, 40.0, 522.0, 372.0, 562.0) {
+                                    return HitZone::ToggleTbHoverReact;
+                                }
+                                if in_rect(x, y, 388.0, 522.0, 720.0, 562.0) {
+                                    return HitZone::ToggleTbAmbientAnim;
+                                }
                             }
-                        }
-                        if in_rect(x, y, 222.0, 264.0, 650.0, 287.0) {
-                            return HitZone::Slider(SliderKind::MacDockMagPct);
-                        }
-                        if in_rect(x, y, 222.0, 288.0, 650.0, 311.0) {
-                            return HitZone::Slider(SliderKind::MacDockIconSize);
-                        }
-                        if in_rect(x, y, 222.0, 312.0, 650.0, 335.0) {
-                            return HitZone::Slider(SliderKind::MacDockLabelFontSize);
-                        }
-                        if in_rect(x, y, 222.0, 336.0, 650.0, 359.0) {
-                            return HitZone::Slider(SliderKind::TaskbarOpacity);
-                        }
-                        if in_rect(x, y, 40.0, 364.0, 372.0, 391.0) {
-                            return HitZone::ToggleMacDockBounce;
-                        }
-                        if in_rect(x, y, 388.0, 364.0, 720.0, 391.0) {
-                            return HitZone::ToggleMacDockDots;
-                        }
-                        if in_rect(x, y, 40.0, 396.0, 372.0, 423.0) {
-                            return HitZone::ToggleTbHoverReact;
-                        }
-                        if in_rect(x, y, 388.0, 396.0, 720.0, 423.0) {
-                            return HitZone::ToggleTbAmbientAnim;
-                        }
-                        if in_rect(x, y, 40.0, 428.0, 372.0, 455.0) {
-                            return HitZone::ToggleAmberRim;
-                        }
-                        if in_rect(x, y, 388.0, 428.0, 720.0, 455.0) {
-                            return HitZone::ToggleMatchWallpaper(MatchTarget::Taskbar);
-                        }
-                        for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
-                            let tx0 = 38.0 + (i as f32) * 105.0;
-                            if in_rect(x, y, tx0, 468.0, tx0 + 99.0, 491.0) {
-                                return HitZone::TbWidgetTabBtn(tab);
+                            DockCustomTab::SizeGlass => {
+                                if in_rect(x, y, 222.0, 296.0, 650.0, 328.0) {
+                                    return HitZone::Slider(SliderKind::MacDockIconSize);
+                                }
+                                if in_rect(x, y, 222.0, 332.0, 650.0, 364.0) {
+                                    return HitZone::Slider(SliderKind::MacDockMagPct);
+                                }
+                                if in_rect(x, y, 222.0, 368.0, 650.0, 400.0) {
+                                    return HitZone::Slider(SliderKind::TaskbarOpacity);
+                                }
+                                if in_rect(x, y, 222.0, 404.0, 650.0, 436.0) {
+                                    return HitZone::Slider(SliderKind::MacDockLabelFontSize);
+                                }
+                                for (i, mode) in [
+                                    DockRunningLabelMode::InheritTheme,
+                                    DockRunningLabelMode::ActiveAppOnly,
+                                    DockRunningLabelMode::AllRunningApps,
+                                    DockRunningLabelMode::HoverExpandMorph,
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                {
+                                    let px0 = 164.0 + (i as f32) * 141.0;
+                                    if in_rect(x, y, px0, 450.0, px0 + 133.0, 484.0) {
+                                        return HitZone::SetDockLabelMode(mode);
+                                    }
+                                }
+                                if in_rect(x, y, 40.0, 504.0, 372.0, 548.0) {
+                                    return HitZone::ToggleAmberRim;
+                                }
+                                if in_rect(x, y, 388.0, 504.0, 720.0, 548.0) {
+                                    return HitZone::ToggleMatchWallpaper(MatchTarget::Taskbar);
+                                }
                             }
-                        }
-                        if in_rect(x, y, 670.0, 468.0, 722.0, 491.0) {
-                            return HitZone::TbWidgetResetAll;
-                        }
-                        if self.tb_widget_tab == TaskbarWidgetTab::Clock {
-                            if in_rect(x, y, 38.0, 495.0, 203.0, 521.0) {
-                                return HitZone::TbWidgetProp1;
+                            DockCustomTab::TopBar => {
+                                if in_rect(x, y, 26.0, 266.0, 734.0, 336.0) {
+                                    return HitZone::ToggleCleanTopBar;
+                                }
+                                if in_rect(x, y, 26.0, 366.0, 197.0, 436.0) {
+                                    return HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Top);
+                                }
+                                if in_rect(x, y, 205.0, 366.0, 376.0, 436.0) {
+                                    return HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Bottom);
+                                }
+                                if in_rect(x, y, 384.0, 366.0, 555.0, 436.0) {
+                                    return HitZone::SetCleanTopBarDesktopOnly(false);
+                                }
+                                if in_rect(x, y, 563.0, 366.0, 734.0, 436.0) {
+                                    return HitZone::SetCleanTopBarDesktopOnly(true);
+                                }
+                                for (i, sty) in [
+                                    CleanTopBarStyle::Auto,
+                                    CleanTopBarStyle::FullWidth,
+                                    CleanTopBarStyle::Floating,
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                {
+                                    let sx0 = 26.0 + (i as f32) * 239.0;
+                                    if in_rect(x, y, sx0, 468.0, sx0 + 230.0, 548.0) {
+                                        return HitZone::SetCleanTopBarStyle(sty);
+                                    }
+                                }
                             }
-                            if in_rect(x, y, 211.0, 495.0, 376.0, 521.0) {
-                                return HitZone::ToggleWidgets24h;
+                            DockCustomTab::Modules => {
+                                for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
+                                    let tx0 = 38.0 + (i as f32) * 105.0;
+                                    if in_rect(x, y, tx0, 280.0, tx0 + 99.0, 314.0) {
+                                        return HitZone::TbWidgetTabBtn(tab);
+                                    }
+                                }
+                                if in_rect(x, y, 670.0, 280.0, 722.0, 314.0) {
+                                    return HitZone::TbWidgetResetAll;
+                                }
+                                if self.tb_widget_tab == TaskbarWidgetTab::Clock {
+                                    if in_rect(x, y, 38.0, 328.0, 203.0, 384.0) {
+                                        return HitZone::TbWidgetProp1;
+                                    }
+                                    if in_rect(x, y, 211.0, 328.0, 376.0, 384.0) {
+                                        return HitZone::ToggleWidgets24h;
+                                    }
+                                    if in_rect(x, y, 384.0, 328.0, 549.0, 384.0) {
+                                        return HitZone::TbWidgetProp2;
+                                    }
+                                    if in_rect(x, y, 557.0, 328.0, 722.0, 384.0) {
+                                        return HitZone::TbWidgetProp3;
+                                    }
+                                } else {
+                                    if in_rect(x, y, 38.0, 328.0, 258.0, 384.0) {
+                                        return HitZone::TbWidgetProp1;
+                                    }
+                                    if in_rect(x, y, 266.0, 328.0, 490.0, 384.0) {
+                                        return HitZone::TbWidgetProp2;
+                                    }
+                                    if in_rect(x, y, 498.0, 328.0, 722.0, 384.0) {
+                                        return HitZone::TbWidgetProp3;
+                                    }
+                                }
+                                let elem_toggles =
+                                    dock_widget_elem_toggles(self.tb_widget_tab, &self.draft_cfg);
+                                for (idx, &(_, _, elem_id)) in elem_toggles.iter().enumerate() {
+                                    let (ex0, ey0, ex1, ey1) =
+                                        dock_widget_elem_pill_rect(idx, elem_toggles.len());
+                                    if in_rect(x, y, ex0, ey0, ex1, ey1) {
+                                        return HitZone::TbWidgetElemToggle(elem_id);
+                                    }
+                                }
+                                if in_rect(x, y, 38.0, 498.0, 452.0, 548.0) {
+                                    return HitZone::TbWidgetCycleTheme;
+                                }
+                                if in_rect(x, y, 460.0, 498.0, 722.0, 548.0) {
+                                    return HitZone::BtnRescanDockPinned;
+                                }
                             }
-                            if in_rect(x, y, 384.0, 495.0, 549.0, 521.0) {
-                                return HitZone::TbWidgetProp2;
-                            }
-                            if in_rect(x, y, 557.0, 495.0, 722.0, 521.0) {
-                                return HitZone::TbWidgetProp3;
-                            }
-                        } else {
-                            if in_rect(x, y, 38.0, 495.0, 258.0, 521.0) {
-                                return HitZone::TbWidgetProp1;
-                            }
-                            if in_rect(x, y, 266.0, 495.0, 490.0, 521.0) {
-                                return HitZone::TbWidgetProp2;
-                            }
-                            if in_rect(x, y, 498.0, 495.0, 722.0, 521.0) {
-                                return HitZone::TbWidgetProp3;
-                            }
-                        }
-                        let elem_toggles = dock_widget_elem_toggles(self.tb_widget_tab, &self.draft_cfg);
-                        for (idx, &(_, _, elem_id)) in elem_toggles.iter().enumerate() {
-                            let (ex0, ey0, ex1, ey1) = dock_widget_elem_pill_rect(idx, elem_toggles.len());
-                            if in_rect(x, y, ex0, ey0, ex1, ey1) {
-                                return HitZone::TbWidgetElemToggle(elem_id);
-                            }
-                        }
-                        if in_rect(x, y, 38.0, 551.0, 452.0, 573.0) {
-                            return HitZone::TbWidgetCycleTheme;
-                        }
-                        if in_rect(x, y, 460.0, 551.0, 722.0, 573.0) {
-                            return HitZone::BtnRescanDockPinned;
                         }
                     } else {
+                        if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
+                            return HitZone::BtnBackTaskbarThemes;
+                        }
+                        if in_rect(x, y, 568.0, 98.0, 734.0, 132.0) {
+                            return HitZone::ToggleWallpaperQuick;
+                        }
                         for idx in 0..3usize {
                             let (nx0, ny0, nx1, ny1) = native_tb_elem_pill_rect(idx);
                             if in_rect(x, y, nx0, ny0, nx1, ny1) {
@@ -8906,6 +9039,9 @@ impl SettingsController {
                         return HitZone::BtnExportDiagnostics;
                     }
                     if in_rect(x, y, 194.0, 584.0, 354.0, 622.0) {
+                        if self.draft_cfg.tb_theme.uses_virtual_dock() {
+                            return HitZone::ToggleWallpaperQuick;
+                        }
                         return HitZone::BtnBackTaskbarThemes;
                     }
                     if in_rect(x, y, 364.0, 584.0, 556.0, 622.0) {
@@ -12058,8 +12194,8 @@ impl SettingsController {
 
         if (self.taskbar_page == TaskbarPage::Themes
             && (self.tb_folder == TaskbarThemeFolder::CleanMinimal
-                || cfg.tb_theme.is_clean_minimal()))
-            || (self.taskbar_page == TaskbarPage::Folders && cfg.tb_theme.is_clean_minimal())
+                || cfg.tb_theme.uses_virtual_dock()))
+            || (self.taskbar_page == TaskbarPage::Folders && cfg.tb_theme.uses_virtual_dock())
         {
             let tb_on = cfg.clean_top_bar_enabled;
             let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
@@ -12358,7 +12494,7 @@ impl SettingsController {
                 }
 
                 let wp_rr = rrect(428.0, 94.0, 594.0, 124.0, 8.0, u);
-                if cfg.tb_theme.is_clean_minimal() {
+                if cfg.tb_theme.uses_virtual_dock() {
                     let tb_on = cfg.clean_top_bar_enabled;
                     let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
                     rt.FillRoundedRectangle(
@@ -12484,24 +12620,25 @@ impl SettingsController {
             }
 
             TaskbarPage::Customize => {
-                // Header (98..132)
-                let back_rr = rrect(26.0, 98.0, 126.0, 132.0, 8.0, u);
-                let bhov = self.hovered == HitZone::BtnBackTaskbarThemes;
-                rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
-                rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                draw_txt(rt, "← Themes", &r.tf_btn, back_rr.rect, &r.cream);
+                if cfg.tb_theme.uses_virtual_dock() {
+                    // Clean Header (94..126): [← Themes]  Theme Title  [Top Bar: ON/OFF]  [Reset Style]
+                    let back_rr = rrect(26.0, 94.0, 126.0, 126.0, 8.0, u);
+                    let bhov = self.hovered == HitZone::BtnBackTaskbarThemes;
+                    rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "← Themes", &r.tf_btn, back_rr.rect, &r.cream);
 
-                if cfg.tb_theme.is_clean_minimal() {
                     draw_txt(
                         rt,
                         cfg.tb_theme.label(),
                         &r.tf_title,
-                        rect_f(134.0, 98.0, 282.0, 132.0, u),
+                        rect_f(138.0, 94.0, 496.0, 126.0, u),
                         &r.cream,
                     );
+
                     let tb_on = cfg.clean_top_bar_enabled;
                     let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
-                    let tb_rr = rrect(286.0, 100.0, 364.0, 130.0, 7.0, u);
+                    let tb_rr = rrect(504.0, 96.0, 626.0, 124.0, 8.0, u);
                     rt.FillRoundedRectangle(
                         &tb_rr,
                         if tb_hov {
@@ -12515,7 +12652,7 @@ impl SettingsController {
                     rt.DrawRoundedRectangle(
                         &tb_rr,
                         if tb_on || tb_hov { &r.sun_gold } else { &r.card_border },
-                        if tb_on { 1.1 * u } else { 0.9 * u },
+                        if tb_on { 1.15 * u } else { 0.95 * u },
                         None,
                     );
                     let dot_c = if tb_on {
@@ -12526,94 +12663,953 @@ impl SettingsController {
                     if let Some(ref db) = solid(rt, dot_c) {
                         rt.FillEllipse(
                             &D2D1_ELLIPSE {
-                                point: Vector2 { X: 295.0 * u, Y: 115.0 * u },
-                                radiusX: 2.6 * u,
-                                radiusY: 2.6 * u,
+                                point: Vector2 { X: 516.0 * u, Y: 110.0 * u },
+                                radiusX: 3.0 * u,
+                                radiusY: 3.0 * u,
                             },
                             db,
                         );
                     }
                     draw_txt(
                         rt,
-                        if tb_on { "Bar: ON" } else { "Bar: OFF" },
+                        if tb_on { "Top Bar: ON" } else { "Top Bar: OFF" },
                         &r.tf_badge,
-                        rect_f(300.0, 100.0, 362.0, 130.0, u),
-                        if tb_on { &r.sun_gold } else { &r.muted_txt },
+                        rect_f(523.0, 96.0, 622.0, 124.0, u),
+                        if tb_on { &r.sun_gold } else { &r.warm_sub },
                     );
 
-                    let pos_hov = self.hovered == HitZone::CycleCleanTopBarEdge;
-                    let pos_rr = rrect(368.0, 100.0, 424.0, 130.0, 7.0, u);
-                    rt.FillRoundedRectangle(&pos_rr, if pos_hov { &r.card_hover } else { &r.card_bg });
+                    let rst_hov = self.hovered == HitZone::BtnResetDockStyle;
+                    let rst_rr = rrect(634.0, 96.0, 734.0, 124.0, 8.0, u);
+                    rt.FillRoundedRectangle(&rst_rr, if rst_hov { &r.card_hover } else { &r.card_bg });
                     rt.DrawRoundedRectangle(
-                        &pos_rr,
-                        if pos_hov { &r.sun_gold } else { &r.card_border },
-                        0.9 * u,
+                        &rst_rr,
+                        if rst_hov { &r.sun_gold } else { &r.card_border },
+                        1.0 * u,
                         None,
                     );
                     draw_txt(
                         rt,
-                        if cfg.clean_top_bar_edge == crate::config::CleanTopBarEdge::Top {
-                            "Up ▲"
+                        "Reset Style",
+                        &r.tf_badge,
+                        rst_rr.rect,
+                        if rst_hov { &r.sun_gold } else { &r.cream },
+                    );
+
+                    // Live Interactive Preview Stage (132..216)
+                    let stg_rr = rrect(26.0, 132.0, 734.0, 216.0, 11.0, u);
+                    draw_taskbar_preview_card_with_viz(
+                        rt,
+                        d2d,
+                        26.0,
+                        132.0,
+                        708.0,
+                        84.0,
+                        u,
+                        cfg.tb_theme,
+                        cfg,
+                        &preview_bands,
+                        self.tb_anim_phase,
+                        self.preview_sim_for(cfg.tb_theme),
+                    );
+                    rt.DrawRoundedRectangle(&stg_rr, &r.card_border, 1.1 * u, None);
+
+                    // 4 Studio Sub-Tabs (224..256)
+                    for (i, &tab) in DockCustomTab::ALL.iter().enumerate() {
+                        let tx0 = 26.0 + (i as f32) * 179.0;
+                        let trr = rrect(tx0, 224.0, tx0 + 171.0, 256.0, 9.0, u);
+                        let act = self.dock_custom_tab == tab;
+                        let hov = self.hovered == HitZone::DockCustomTabBtn(tab);
+                        if act {
+                            rt.FillRoundedRectangle(&trr, &r.sun_gold);
+                            draw_txt(rt, tab.label(), &r.tf_btn, trr.rect, &r.dark_ink);
                         } else {
-                            "Dn ▼"
-                        },
-                        &r.tf_badge,
-                        pos_rr.rect,
-                        if tb_on { &r.cream } else { &r.muted_txt },
-                    );
+                            rt.FillRoundedRectangle(&trr, if hov { &r.card_hover } else { &r.card_bg });
+                            rt.DrawRoundedRectangle(
+                                &trr,
+                                if hov { &r.sun_gold } else { &r.card_border },
+                                1.0 * u,
+                                None,
+                            );
+                            draw_txt(
+                                rt,
+                                tab.label(),
+                                &r.tf_btn,
+                                trr.rect,
+                                if hov { &r.sun_gold } else { &r.cream },
+                            );
+                        }
+                    }
 
-                    let dk_on = cfg.clean_top_bar_desktop_only;
-                    let dk_hov = self.hovered == HitZone::ToggleCleanTopBarDesktopOnly;
-                    let dk_rr = rrect(428.0, 100.0, 502.0, 130.0, 7.0, u);
-                    rt.FillRoundedRectangle(
-                        &dk_rr,
-                        if dk_hov {
-                            &r.card_hover
-                        } else if dk_on && tb_on {
-                            &r.card_active
-                        } else {
-                            &r.card_bg
-                        },
-                    );
-                    rt.DrawRoundedRectangle(
-                        &dk_rr,
-                        if (dk_on && tb_on) || dk_hov { &r.sun_gold } else { &r.card_border },
-                        0.9 * u,
-                        None,
-                    );
-                    draw_txt(
-                        rt,
-                        if dk_on { "Desk Only" } else { "In Apps" },
-                        &r.tf_badge,
-                        dk_rr.rect,
-                        if dk_on && tb_on { &r.sun_gold } else if tb_on { &r.cream } else { &r.muted_txt },
-                    );
+                    match self.dock_custom_tab {
+                        DockCustomTab::LayoutHide => {
+                            draw_txt(
+                                rt,
+                                "DOCK SCREEN EDGE",
+                                &r.tf_sec,
+                                rect_f(28.0, 266.0, 320.0, 282.0, u),
+                                &r.sun_gold,
+                            );
+                            let edges = [
+                                (MacDockEdge::Bottom, "Bottom Edge", "Horizontal bottom dock"),
+                                (MacDockEdge::Top, "Top Edge", "Horizontal top bar"),
+                                (MacDockEdge::Left, "Left Edge", "Vertical sidebar on left"),
+                                (MacDockEdge::Right, "Right Edge", "Vertical sidebar on right"),
+                            ];
+                            for (i, (edge, title, desc)) in edges.into_iter().enumerate() {
+                                let x0 = 26.0 + (i as f32) * 179.0;
+                                let c_rr = rrect(x0, 286.0, x0 + 171.0, 344.0, 10.0, u);
+                                let act = cfg.mac_dock_edge == edge;
+                                let hov = self.hovered == HitZone::MacDockEdgeBtn(edge);
+                                rt.FillRoundedRectangle(
+                                    &c_rr,
+                                    if act { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg },
+                                );
+                                rt.DrawRoundedRectangle(
+                                    &c_rr,
+                                    if act || hov { &r.sun_gold } else { &r.card_border },
+                                    if act { 1.35 * u } else { 1.0 * u },
+                                    None,
+                                );
+                                draw_txt(
+                                    rt,
+                                    title,
+                                    &r.tf_title,
+                                    rect_f(x0 + 12.0, 294.0, x0 + 160.0, 315.0, u),
+                                    if act { &r.sun_gold } else { &r.cream },
+                                );
+                                draw_txt(
+                                    rt,
+                                    desc,
+                                    &r.tf_sub,
+                                    rect_f(x0 + 12.0, 317.0, x0 + 160.0, 337.0, u),
+                                    &r.warm_sub,
+                                );
+                            }
 
-                    let sty_hov = self.hovered == HitZone::CycleCleanTopBarStyle;
-                    let sty_rr = rrect(506.0, 100.0, 562.0, 130.0, 7.0, u);
-                    rt.FillRoundedRectangle(&sty_rr, if sty_hov { &r.card_hover } else { &r.card_bg });
-                    rt.DrawRoundedRectangle(
-                        &sty_rr,
-                        if sty_hov { &r.sun_gold } else { &r.card_border },
-                        0.9 * u,
-                        None,
-                    );
-                    draw_txt(
-                        rt,
-                        cfg.clean_top_bar_style.label(),
-                        &r.tf_badge,
-                        sty_rr.rect,
-                        if tb_on { &r.cream } else { &r.muted_txt },
-                    );
-                } else if cfg.tb_theme.uses_virtual_dock() {
-                    draw_txt(
-                        rt,
-                        &format!("Customize Taskbar — {}", cfg.tb_theme.label()),
-                        &r.tf_title,
-                        rect_f(138.0, 98.0, 558.0, 132.0, u),
-                        &r.cream,
-                    );
+                            draw_txt(
+                                rt,
+                                "VISIBILITY & AUTO-HIDE",
+                                &r.tf_sec,
+                                rect_f(28.0, 354.0, 360.0, 370.0, u),
+                                &r.sun_gold,
+                            );
+                            let hides = [
+                                (MacDockHideMode::SmartAutoHide, "Smart Auto-Hide", "Hides on maximized app"),
+                                (MacDockHideMode::HoverReveal, "Edge Hover Reveal", "Shows on screen edge"),
+                                (MacDockHideMode::AlwaysVisible, "Always Visible", "Permanent floating dock"),
+                                (MacDockHideMode::StealthHide, "Full Stealth Hide", "Hidden • Ctrl+Alt+T"),
+                            ];
+                            for (i, (hm, title, desc)) in hides.into_iter().enumerate() {
+                                let x0 = 26.0 + (i as f32) * 179.0;
+                                let c_rr = rrect(x0, 374.0, x0 + 171.0, 432.0, 10.0, u);
+                                let act = cfg.mac_dock_hide == hm;
+                                let hov = self.hovered == HitZone::MacDockHideBtn(hm);
+                                rt.FillRoundedRectangle(
+                                    &c_rr,
+                                    if act { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg },
+                                );
+                                rt.DrawRoundedRectangle(
+                                    &c_rr,
+                                    if act || hov { &r.sun_gold } else { &r.card_border },
+                                    if act { 1.35 * u } else { 1.0 * u },
+                                    None,
+                                );
+                                draw_txt(
+                                    rt,
+                                    title,
+                                    &r.tf_title,
+                                    rect_f(x0 + 12.0, 382.0, x0 + 160.0, 403.0, u),
+                                    if act { &r.sun_gold } else { &r.cream },
+                                );
+                                draw_txt(
+                                    rt,
+                                    desc,
+                                    &r.tf_sub,
+                                    rect_f(x0 + 12.0, 405.0, x0 + 160.0, 425.0, u),
+                                    &r.warm_sub,
+                                );
+                            }
+
+                            let beh_rr = rrect(26.0, 444.0, 734.0, 572.0, 12.0, u);
+                            rt.FillRoundedRectangle(&beh_rr, &r.card_bg);
+                            rt.DrawRoundedRectangle(&beh_rr, &r.card_border, 1.0 * u, None);
+                            draw_txt(
+                                rt,
+                                "MOTION & INTERACTION",
+                                &r.tf_sec,
+                                rect_f(42.0, 452.0, 340.0, 468.0, u),
+                                &r.sun_gold,
+                            );
+                            draw_compact_toggle(
+                                rt,
+                                r,
+                                u,
+                                40.0,
+                                474.0,
+                                372.0,
+                                514.0,
+                                "Launch Bounce Animation",
+                                cfg.mac_dock_bounce,
+                                self.hovered == HitZone::ToggleMacDockBounce,
+                            );
+                            draw_compact_toggle(
+                                rt,
+                                r,
+                                u,
+                                388.0,
+                                474.0,
+                                720.0,
+                                514.0,
+                                "Active App Indicator Dots",
+                                cfg.mac_dock_dots,
+                                self.hovered == HitZone::ToggleMacDockDots,
+                            );
+                            draw_compact_toggle(
+                                rt,
+                                r,
+                                u,
+                                40.0,
+                                522.0,
+                                372.0,
+                                562.0,
+                                "Mouse Hover Physics",
+                                cfg.tb_hover_react,
+                                self.hovered == HitZone::ToggleTbHoverReact,
+                            );
+                            draw_compact_toggle(
+                                rt,
+                                r,
+                                u,
+                                388.0,
+                                522.0,
+                                720.0,
+                                562.0,
+                                "Live Material Motion",
+                                cfg.tb_ambient_anim,
+                                self.hovered == HitZone::ToggleTbAmbientAnim,
+                            );
+                        }
+
+                        DockCustomTab::SizeGlass => {
+                            let phys_rr = rrect(26.0, 266.0, 734.0, 572.0, 12.0, u);
+                            rt.FillRoundedRectangle(&phys_rr, &r.card_bg);
+                            rt.DrawRoundedRectangle(&phys_rr, &r.card_border, 1.0 * u, None);
+                            draw_txt(
+                                rt,
+                                "ICON SCALE, MAGNIFICATION & GLASS MATERIAL",
+                                &r.tf_sec,
+                                rect_f(44.0, 276.0, 520.0, 292.0, u),
+                                &r.sun_gold,
+                            );
+
+                            let cur_ico = cfg.mac_dock_icon_size.clamp(32, 64);
+                            let t_sz = ((cur_ico as f32 - 32.0) / 32.0).clamp(0.0, 1.0);
+                            draw_slider_row(
+                                rt,
+                                r,
+                                u,
+                                "Base Icon Size",
+                                44.0,
+                                232.0,
+                                640.0,
+                                312.0,
+                                t_sz,
+                                &format!("{} px", cur_ico),
+                                self.dragging_slider == Some(SliderKind::MacDockIconSize)
+                                    || self.hovered == HitZone::Slider(SliderKind::MacDockIconSize),
+                            );
+
+                            let t_mag = ((cfg.mac_dock_mag_pct as f32 - 100.0) / 85.0).clamp(0.0, 1.0);
+                            draw_slider_row(
+                                rt,
+                                r,
+                                u,
+                                "Hover Magnification",
+                                44.0,
+                                232.0,
+                                640.0,
+                                348.0,
+                                t_mag,
+                                &if cfg.mac_dock_mag_pct <= 102 {
+                                    "Off".to_string()
+                                } else {
+                                    format!("{}%", cfg.mac_dock_mag_pct)
+                                },
+                                self.dragging_slider == Some(SliderKind::MacDockMagPct)
+                                    || self.hovered == HitZone::Slider(SliderKind::MacDockMagPct),
+                            );
+
+                            let pct = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
+                            draw_slider_row(
+                                rt,
+                                r,
+                                u,
+                                "Dock Glass Opacity",
+                                44.0,
+                                232.0,
+                                640.0,
+                                384.0,
+                                pct,
+                                &format!("{}%", (pct * 100.0).round() as i32),
+                                self.dragging_slider == Some(SliderKind::TaskbarOpacity)
+                                    || self.hovered == HitZone::Slider(SliderKind::TaskbarOpacity),
+                            );
+
+                            let t_fs = ((cfg.w_apps.label_font_size_px.clamp(10, 20) as f32 - 10.0) / 10.0)
+                                .clamp(0.0, 1.0);
+                            draw_slider_row(
+                                rt,
+                                r,
+                                u,
+                                "App Name Font Size",
+                                44.0,
+                                232.0,
+                                640.0,
+                                420.0,
+                                t_fs,
+                                &format!("{} px", cfg.w_apps.label_font_size_px.clamp(10, 20)),
+                                self.dragging_slider == Some(SliderKind::MacDockLabelFontSize)
+                                    || self.hovered == HitZone::Slider(SliderKind::MacDockLabelFontSize),
+                            );
+
+                            draw_txt(
+                                rt,
+                                "App Name Display",
+                                &r.tf_title,
+                                rect_f(44.0, 450.0, 160.0, 484.0, u),
+                                &r.cream,
+                            );
+                            let label_modes = [
+                                (DockRunningLabelMode::InheritTheme, "Tooltip Only"),
+                                (DockRunningLabelMode::ActiveAppOnly, "Active App"),
+                                (DockRunningLabelMode::AllRunningApps, "All Open Apps"),
+                                (DockRunningLabelMode::HoverExpandMorph, "Hover Expand"),
+                            ];
+                            for (i, (mode, lbl)) in label_modes.into_iter().enumerate() {
+                                let px0 = 164.0 + (i as f32) * 141.0;
+                                let prr = rrect(px0, 450.0, px0 + 133.0, 484.0, 8.0, u);
+                                let act = cfg.w_apps.label_mode == mode
+                                    || (mode == DockRunningLabelMode::InheritTheme
+                                        && cfg.w_apps.label_mode == DockRunningLabelMode::IconOnly);
+                                let hov = self.hovered == HitZone::SetDockLabelMode(mode);
+                                if act {
+                                    rt.FillRoundedRectangle(&prr, &r.sun_gold);
+                                    draw_txt(rt, lbl, &r.tf_badge, prr.rect, &r.dark_ink);
+                                } else {
+                                    rt.FillRoundedRectangle(
+                                        &prr,
+                                        if hov { &r.card_hover } else { &r.card_active },
+                                    );
+                                    rt.DrawRoundedRectangle(
+                                        &prr,
+                                        if hov { &r.sun_gold } else { &r.card_border },
+                                        1.0 * u,
+                                        None,
+                                    );
+                                    draw_txt(
+                                        rt,
+                                        lbl,
+                                        &r.tf_badge,
+                                        prr.rect,
+                                        if hov { &r.sun_gold } else { &r.cream },
+                                    );
+                                }
+                            }
+
+                            draw_compact_toggle(
+                                rt,
+                                r,
+                                u,
+                                40.0,
+                                504.0,
+                                372.0,
+                                548.0,
+                                "Crystal Glow Rim",
+                                cfg.amber_border,
+                                self.hovered == HitZone::ToggleAmberRim,
+                            );
+                            draw_compact_toggle(
+                                rt,
+                                r,
+                                u,
+                                388.0,
+                                504.0,
+                                720.0,
+                                548.0,
+                                "Match Wallpaper Accent",
+                                cfg.tb_match_wallpaper,
+                                self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Taskbar),
+                            );
+                        }
+
+                        DockCustomTab::TopBar => {
+                            let tb_on = cfg.clean_top_bar_enabled;
+                            let hero_hov = self.hovered == HitZone::ToggleCleanTopBar;
+                            let hero_rr = rrect(26.0, 266.0, 734.0, 336.0, 12.0, u);
+                            rt.FillRoundedRectangle(
+                                &hero_rr,
+                                if hero_hov {
+                                    &r.card_hover
+                                } else if tb_on {
+                                    &r.card_active
+                                } else {
+                                    &r.card_bg
+                                },
+                            );
+                            rt.DrawRoundedRectangle(
+                                &hero_rr,
+                                if tb_on || hero_hov { &r.sun_gold } else { &r.card_border },
+                                if tb_on { 1.4 * u } else { 1.0 * u },
+                                None,
+                            );
+                            draw_txt(
+                                rt,
+                                "Dedicated Status Menu Bar (Top Bar)",
+                                &r.tf_title,
+                                rect_f(44.0, 276.0, 620.0, 300.0, u),
+                                if tb_on { &r.sun_gold } else { &r.cream },
+                            );
+                            draw_txt(
+                                rt,
+                                if tb_on {
+                                    "Enabled • Moves clock & system tray from the dock into a clean macOS-style menu bar"
+                                } else {
+                                    "Disabled (Dock Only) • Keeps clock, Wi-Fi, audio, battery & hidden icons inside the dock"
+                                },
+                                &r.tf_sub,
+                                rect_f(44.0, 302.0, 646.0, 326.0, u),
+                                &r.warm_sub,
+                            );
+                            draw_switch_r(rt, r, 666.0, 290.0, u, tb_on);
+
+                            draw_txt(
+                                rt,
+                                "MENU BAR POSITION",
+                                &r.tf_sec,
+                                rect_f(28.0, 346.0, 360.0, 362.0, u),
+                                &r.sun_gold,
+                            );
+                            draw_txt(
+                                rt,
+                                "WINDOW VISIBILITY",
+                                &r.tf_sec,
+                                rect_f(386.0, 346.0, 720.0, 362.0, u),
+                                &r.sun_gold,
+                            );
+
+                            let pos_vis_cards = [
+                                (
+                                    26.0f32,
+                                    "Top of Screen",
+                                    "Classic macOS top menu",
+                                    cfg.clean_top_bar_edge == CleanTopBarEdge::Top,
+                                    HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Top),
+                                ),
+                                (
+                                    205.0,
+                                    "Bottom of Screen",
+                                    "Auto-swaps dock to top",
+                                    cfg.clean_top_bar_edge == CleanTopBarEdge::Bottom,
+                                    HitZone::SetCleanTopBarEdge(CleanTopBarEdge::Bottom),
+                                ),
+                                (
+                                    384.0,
+                                    "Show in Apps",
+                                    "Smart titlebar dodge",
+                                    !cfg.clean_top_bar_desktop_only,
+                                    HitZone::SetCleanTopBarDesktopOnly(false),
+                                ),
+                                (
+                                    563.0,
+                                    "Desktop Only",
+                                    "Hides when app focused",
+                                    cfg.clean_top_bar_desktop_only,
+                                    HitZone::SetCleanTopBarDesktopOnly(true),
+                                ),
+                            ];
+                            for (cx0, title, desc, act, hz) in pos_vis_cards {
+                                let crr = rrect(cx0, 366.0, cx0 + 171.0, 436.0, 10.0, u);
+                                let hov = self.hovered == hz;
+                                rt.FillRoundedRectangle(
+                                    &crr,
+                                    if act && tb_on {
+                                        &r.card_active
+                                    } else if hov {
+                                        &r.card_hover
+                                    } else {
+                                        &r.card_bg
+                                    },
+                                );
+                                rt.DrawRoundedRectangle(
+                                    &crr,
+                                    if (act && tb_on) || hov {
+                                        &r.sun_gold
+                                    } else if act {
+                                        &r.warm_sub
+                                    } else {
+                                        &r.card_border
+                                    },
+                                    if act { 1.3 * u } else { 1.0 * u },
+                                    None,
+                                );
+                                draw_txt(
+                                    rt,
+                                    title,
+                                    &r.tf_title,
+                                    rect_f(cx0 + 12.0, 376.0, cx0 + 160.0, 399.0, u),
+                                    if act && tb_on {
+                                        &r.sun_gold
+                                    } else if tb_on {
+                                        &r.cream
+                                    } else {
+                                        &r.muted_txt
+                                    },
+                                );
+                                draw_txt(
+                                    rt,
+                                    desc,
+                                    &r.tf_sub,
+                                    rect_f(cx0 + 12.0, 401.0, cx0 + 160.0, 424.0, u),
+                                    &r.warm_sub,
+                                );
+                            }
+
+                            draw_txt(
+                                rt,
+                                "MENU BAR SILHOUETTE STYLE",
+                                &r.tf_sec,
+                                rect_f(28.0, 448.0, 420.0, 464.0, u),
+                                &r.sun_gold,
+                            );
+                            let styles = [
+                                (
+                                    CleanTopBarStyle::Auto,
+                                    "Auto (Match Theme)",
+                                    "Picks band or pill per dock theme",
+                                ),
+                                (
+                                    CleanTopBarStyle::FullWidth,
+                                    "Full-Width Band",
+                                    "Edge-to-edge macOS status bar",
+                                ),
+                                (
+                                    CleanTopBarStyle::Floating,
+                                    "Floating Glass Pill",
+                                    "Rounded detached glass bar",
+                                ),
+                            ];
+                            for (i, (sty, title, desc)) in styles.into_iter().enumerate() {
+                                let sx0 = 26.0 + (i as f32) * 239.0;
+                                let srr = rrect(sx0, 468.0, sx0 + 230.0, 548.0, 10.0, u);
+                                let act = cfg.clean_top_bar_style == sty;
+                                let hov = self.hovered == HitZone::SetCleanTopBarStyle(sty);
+                                rt.FillRoundedRectangle(
+                                    &srr,
+                                    if act && tb_on {
+                                        &r.card_active
+                                    } else if hov {
+                                        &r.card_hover
+                                    } else {
+                                        &r.card_bg
+                                    },
+                                );
+                                rt.DrawRoundedRectangle(
+                                    &srr,
+                                    if (act && tb_on) || hov {
+                                        &r.sun_gold
+                                    } else if act {
+                                        &r.warm_sub
+                                    } else {
+                                        &r.card_border
+                                    },
+                                    if act { 1.35 * u } else { 1.0 * u },
+                                    None,
+                                );
+                                draw_txt(
+                                    rt,
+                                    title,
+                                    &r.tf_title,
+                                    rect_f(sx0 + 14.0, 482.0, sx0 + 216.0, 506.0, u),
+                                    if act && tb_on {
+                                        &r.sun_gold
+                                    } else if tb_on {
+                                        &r.cream
+                                    } else {
+                                        &r.muted_txt
+                                    },
+                                );
+                                draw_txt(
+                                    rt,
+                                    desc,
+                                    &r.tf_sub,
+                                    rect_f(sx0 + 14.0, 509.0, sx0 + 216.0, 534.0, u),
+                                    &r.warm_sub,
+                                );
+                            }
+                        }
+
+                        DockCustomTab::Modules => {
+                            let pin_rr = rrect(26.0, 266.0, 734.0, 572.0, 12.0, u);
+                            rt.FillRoundedRectangle(&pin_rr, &r.card_bg);
+                            rt.DrawRoundedRectangle(&pin_rr, &r.card_border, 1.0 * u, None);
+
+                            for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
+                                let tx0 = 38.0 + (i as f32) * 105.0;
+                                let trr = rrect(tx0, 280.0, tx0 + 99.0, 314.0, 8.0, u);
+                                let act = self.tb_widget_tab == tab;
+                                let hov = self.hovered == HitZone::TbWidgetTabBtn(tab);
+                                if act {
+                                    rt.FillRoundedRectangle(&trr, &r.sun_gold);
+                                    draw_txt(rt, tab.label(), &r.tf_badge, trr.rect, &r.dark_ink);
+                                } else {
+                                    rt.FillRoundedRectangle(
+                                        &trr,
+                                        if hov { &r.card_hover } else { &r.card_active },
+                                    );
+                                    rt.DrawRoundedRectangle(
+                                        &trr,
+                                        if hov { &r.sun_gold } else { &r.card_border },
+                                        1.0 * u,
+                                        None,
+                                    );
+                                    draw_txt(rt, tab.label(), &r.tf_badge, trr.rect, &r.cream);
+                                }
+                            }
+
+                            let rst_rr = rrect(670.0, 280.0, 722.0, 314.0, 8.0, u);
+                            let rst_hov = self.hovered == HitZone::TbWidgetResetAll;
+                            rt.FillRoundedRectangle(
+                                &rst_rr,
+                                if rst_hov { &r.coral } else { &r.card_active },
+                            );
+                            rt.DrawRoundedRectangle(&rst_rr, &r.coral, 1.0 * u, None);
+                            draw_txt(
+                                rt,
+                                "Reset",
+                                &r.tf_badge,
+                                rst_rr.rect,
+                                if rst_hov { &r.dark_ink } else { &r.coral },
+                            );
+
+                            let (p1_lbl, p2_lbl, p3_lbl, th_ovr) = match self.tb_widget_tab {
+                                TaskbarWidgetTab::ShelfFrame => (
+                                    format!(
+                                        "Layout: {}",
+                                        cfg.w_shelf
+                                            .layout_override
+                                            .map(|l| l.label())
+                                            .unwrap_or("Theme")
+                                    ),
+                                    format!(
+                                        "Shape: {}",
+                                        cfg.w_shelf
+                                            .shape_override
+                                            .map(|s| s.label())
+                                            .unwrap_or("Theme")
+                                    ),
+                                    format!(
+                                        "Art: {}",
+                                        cfg.w_shelf
+                                            .art_override
+                                            .map(|a| a.label())
+                                            .unwrap_or("Theme")
+                                    ),
+                                    cfg.w_shelf.theme_override,
+                                ),
+                                TaskbarWidgetTab::AppDock => (
+                                    format!("Card: {}", cfg.w_apps.card_style.label()),
+                                    format!(
+                                        "Dot: {}",
+                                        cfg.w_apps
+                                            .indicator_override
+                                            .map(|d| d.label())
+                                            .unwrap_or("Theme")
+                                    ),
+                                    format!(
+                                        "Brand Glow: {}",
+                                        if cfg.w_apps.per_app_brand_glow { "ON" } else { "OFF" }
+                                    ),
+                                    cfg.w_apps.theme_override,
+                                ),
+                                TaskbarWidgetTab::Clock => (
+                                    format!("Clock: {}", cfg.w_clock.engine.label()),
+                                    format!(
+                                        "Seconds: {}",
+                                        if cfg.w_clock.show_seconds { "ON" } else { "OFF" }
+                                    ),
+                                    format!("Wheel: {}", cfg.w_clock.wheel_action.label()),
+                                    cfg.w_clock.theme_override,
+                                ),
+                                TaskbarWidgetTab::SystemTray => (
+                                    format!("Audio: {}", cfg.w_tray.audio_style.label()),
+                                    format!("Battery: {}", cfg.w_tray.battery_style.label()),
+                                    format!("Net: {}", cfg.w_tray.net_style.label()),
+                                    cfg.w_tray.theme_override,
+                                ),
+                                TaskbarWidgetTab::HudWing => (
+                                    format!("HUD: {}", cfg.w_hud.mode.label()),
+                                    format!("Telemetry: {}", cfg.w_hud.content.label()),
+                                    format!(
+                                        "Marquee: {}",
+                                        if cfg.w_hud.marquee_ticker { "ON" } else { "OFF" }
+                                    ),
+                                    cfg.w_hud.theme_override,
+                                ),
+                                TaskbarWidgetTab::Utilities => (
+                                    format!("Start: {}", cfg.w_util.start_style.label()),
+                                    format!(
+                                        "Edge Sliver: {}",
+                                        if cfg.w_util.show_desktop_sliver { "ON" } else { "OFF" }
+                                    ),
+                                    format!(
+                                        "Utilities: {}",
+                                        if !cfg.w_util.is_all_elements_off() { "ON" } else { "OFF" }
+                                    ),
+                                    cfg.w_util.theme_override,
+                                ),
+                            };
+
+                            let clock_24h_lbl = format!(
+                                "Format: {}",
+                                if cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h) {
+                                    "24-Hour"
+                                } else {
+                                    "12-Hour"
+                                }
+                            );
+                            let prop_cards: Vec<(f32, f32, HitZone, &str)> =
+                                if self.tb_widget_tab == TaskbarWidgetTab::Clock {
+                                    vec![
+                                        (38.0f32, 203.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
+                                        (
+                                            211.0f32,
+                                            376.0f32,
+                                            HitZone::ToggleWidgets24h,
+                                            clock_24h_lbl.as_str(),
+                                        ),
+                                        (384.0f32, 549.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
+                                        (557.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
+                                    ]
+                                } else {
+                                    vec![
+                                        (38.0f32, 258.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
+                                        (266.0f32, 490.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
+                                        (498.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
+                                    ]
+                                };
+
+                            for (bx0, bx1, hz, txt) in prop_cards {
+                                let brr = rrect(bx0, 328.0, bx1, 384.0, 9.0, u);
+                                let bhov = self.hovered == hz;
+                                let (lbl_key, lbl_val) = txt.split_once(": ").unwrap_or(("Option", txt));
+                                let is_default =
+                                    matches!(lbl_val, "Theme" | "OFF" | "Inherit" | "12-Hour");
+                                rt.FillRoundedRectangle(
+                                    &brr,
+                                    if bhov {
+                                        &r.card_hover
+                                    } else if !is_default {
+                                        &r.card_active
+                                    } else {
+                                        &r.card_bg
+                                    },
+                                );
+                                rt.DrawRoundedRectangle(
+                                    &brr,
+                                    if bhov || !is_default { &r.sun_gold } else { &r.card_border },
+                                    1.0 * u,
+                                    None,
+                                );
+                                draw_txt(
+                                    rt,
+                                    lbl_key,
+                                    &r.tf_sub,
+                                    rect_f(bx0 + 12.0, 334.0, bx1 - 20.0, 353.0, u),
+                                    &r.warm_sub,
+                                );
+                                draw_txt(
+                                    rt,
+                                    lbl_val,
+                                    &r.tf_title,
+                                    rect_f(bx0 + 12.0, 353.0, bx1 - 20.0, 377.0, u),
+                                    if !is_default { &r.sun_gold } else { &r.cream },
+                                );
+                                draw_txt(
+                                    rt,
+                                    "›",
+                                    &r.tf_title,
+                                    rect_f(bx1 - 20.0, 328.0, bx1 - 6.0, 384.0, u),
+                                    if bhov { &r.sun_gold } else { &r.muted_txt },
+                                );
+                            }
+
+                            draw_txt(
+                                rt,
+                                "VISIBLE MODULE ELEMENTS",
+                                &r.tf_sec,
+                                rect_f(38.0, 398.0, 380.0, 414.0, u),
+                                &r.sun_gold,
+                            );
+                            let elem_toggles = dock_widget_elem_toggles(self.tb_widget_tab, cfg);
+                            for (idx, &(el_lbl, is_on, elem_id)) in elem_toggles.iter().enumerate() {
+                                let (ex0, ey0, ex1, ey1) =
+                                    dock_widget_elem_pill_rect(idx, elem_toggles.len());
+                                let err = rrect(ex0, ey0, ex1, ey1, 8.0, u);
+                                let ehov = self.hovered == HitZone::TbWidgetElemToggle(elem_id);
+                                rt.FillRoundedRectangle(
+                                    &err,
+                                    if ehov {
+                                        &r.card_hover
+                                    } else if is_on {
+                                        &r.card_active
+                                    } else {
+                                        &r.card_bg
+                                    },
+                                );
+                                rt.DrawRoundedRectangle(
+                                    &err,
+                                    if ehov {
+                                        &r.sun_gold
+                                    } else if is_on {
+                                        &r.sage
+                                    } else {
+                                        &r.card_border
+                                    },
+                                    1.0 * u,
+                                    None,
+                                );
+                                let dot_col = if is_on {
+                                    rgb_u8(104, 232, 148, 0.96)
+                                } else {
+                                    rgb_u8(148, 118, 92, 0.42)
+                                };
+                                if let Some(ref dbr) = solid(rt, dot_col) {
+                                    rt.FillEllipse(
+                                        &D2D1_ELLIPSE {
+                                            point: Vector2 {
+                                                X: (ex0 + 12.0) * u,
+                                                Y: ((ey0 + ey1) * 0.5) * u,
+                                            },
+                                            radiusX: 3.2 * u,
+                                            radiusY: 3.2 * u,
+                                        },
+                                        dbr,
+                                    );
+                                }
+                                draw_txt(
+                                    rt,
+                                    el_lbl,
+                                    &r.tf_badge,
+                                    rect_f(ex0 + 19.0, ey0, ex1 - 6.0, ey1, u),
+                                    if is_on { &r.cream } else { &r.muted_txt },
+                                );
+                            }
+
+                            draw_txt(
+                                rt,
+                                "MODULE PALETTE & PINNED APPS",
+                                &r.tf_sec,
+                                rect_f(38.0, 476.0, 420.0, 492.0, u),
+                                &r.sun_gold,
+                            );
+                            let mut pal_tmp = cfg.clone();
+                            if let Some(th) = th_ovr {
+                                pal_tmp.tb_theme = th;
+                                pal_tmp.tb_match_wallpaper = false;
+                            }
+                            let mix_pal = resolve_palette_for(&pal_tmp, false);
+                            let mix_cols = [
+                                mix_pal.accent,
+                                mix_pal.accent_light,
+                                mix_pal.rim,
+                                mix_pal.glass_top,
+                            ];
+                            let th_lbl = match th_ovr {
+                                Some(th) => format!("Palette: {} (Click to cycle)", th.label()),
+                                None => "Palette: Inherit Active Theme (Click to mix)".to_string(),
+                            };
+                            let th_rr = rrect(38.0, 498.0, 452.0, 548.0, 9.0, u);
+                            let th_hov = self.hovered == HitZone::TbWidgetCycleTheme;
+                            rt.FillRoundedRectangle(
+                                &th_rr,
+                                if th_hov {
+                                    &r.card_hover
+                                } else if th_ovr.is_some() {
+                                    &r.card_active
+                                } else {
+                                    &r.card_bg
+                                },
+                            );
+                            rt.DrawRoundedRectangle(
+                                &th_rr,
+                                if th_hov || th_ovr.is_some() {
+                                    &r.sun_gold
+                                } else {
+                                    &r.card_border
+                                },
+                                1.0 * u,
+                                None,
+                            );
+                            for (si, &scol) in mix_cols.iter().enumerate() {
+                                let cx = (56.0 + (si as f32) * 14.0) * u;
+                                let cy = 523.0 * u;
+                                let ell = D2D1_ELLIPSE {
+                                    point: Vector2 { X: cx, Y: cy },
+                                    radiusX: 5.2 * u,
+                                    radiusY: 5.2 * u,
+                                };
+                                if let Some(ref sbr) = solid(rt, rgb_u8(scol.0, scol.1, scol.2, 0.95)) {
+                                    rt.FillEllipse(&ell, sbr);
+                                }
+                            }
+                            draw_txt(
+                                rt,
+                                &th_lbl,
+                                &r.tf_badge,
+                                rect_f(114.0, 498.0, 444.0, 548.0, u),
+                                if th_ovr.is_some() { &r.sun_gold } else { &r.cream },
+                            );
+
+                            let rescan_rr = rrect(460.0, 498.0, 722.0, 548.0, 9.0, u);
+                            let rs_hov = self.hovered == HitZone::BtnRescanDockPinned;
+                            rt.FillRoundedRectangle(
+                                &rescan_rr,
+                                if rs_hov { &r.card_hover } else { &r.card_active },
+                            );
+                            rt.DrawRoundedRectangle(
+                                &rescan_rr,
+                                if rs_hov { &r.sun_gold } else { &r.card_border },
+                                1.0 * u,
+                                None,
+                            );
+                            draw_txt(
+                                rt,
+                                "↻  Rescan Pinned Apps",
+                                &r.tf_badge,
+                                rect_f(472.0, 498.0, 668.0, 548.0, u),
+                                &r.cream,
+                            );
+                            let cnt_rr = rrect(674.0, 511.0, 712.0, 535.0, 6.0, u);
+                            if let Some(ref cbg) = solid(rt, rgb_u8(245, 166, 62, 0.22)) {
+                                rt.FillRoundedRectangle(&cnt_rr, cbg);
+                            }
+                            rt.DrawRoundedRectangle(&cnt_rr, &r.sun_gold, 0.9 * u, None);
+                            draw_txt(
+                                rt,
+                                &format!("{}", cfg.mac_dock_pinned.len()),
+                                &r.tf_badge,
+                                cnt_rr.rect,
+                                &r.sun_gold,
+                            );
+                        }
+                    }
                 } else {
+                    let back_rr = rrect(26.0, 98.0, 126.0, 132.0, 8.0, u);
+                    let bhov = self.hovered == HitZone::BtnBackTaskbarThemes;
+                    rt.FillRoundedRectangle(&back_rr, if bhov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "← Themes", &r.tf_btn, back_rr.rect, &r.cream);
+
                     draw_txt(
                         rt,
                         cfg.tb_theme.label(),
@@ -12655,733 +13651,27 @@ impl SettingsController {
                             if is_on { &r.sun_gold } else { &r.muted_txt },
                         );
                     }
-                }
 
-                let wp_rr = rrect(568.0, 98.0, 734.0, 132.0, 8.0, u);
-                let wp_on = cfg.wallpaper_enabled;
-                let wp_hov = self.hovered == HitZone::ToggleWallpaperQuick;
-                rt.FillRoundedRectangle(
-                    &wp_rr,
-                    if wp_hov { &r.card_hover } else if wp_on { &r.amber_dim } else { &r.card_bg },
-                );
-                rt.DrawRoundedRectangle(
-                    &wp_rr,
-                    if wp_on || wp_hov { &r.sun_gold } else { &r.card_border },
-                    1.0 * u,
-                    None,
-                );
-                draw_txt(
-                    rt,
-                    if wp_on { "Live Wallpaper: ON" } else { "Test Live Wallpaper" },
-                    &r.tf_badge,
-                    wp_rr.rect,
-                    if wp_on { &r.sun_gold } else { &r.cream },
-                );
-
-                if cfg.tb_theme.uses_virtual_dock() {
-                    let edges = [
-                        (MacDockEdge::Bottom, "Bottom Edge", "Horizontal bottom shell"),
-                        (MacDockEdge::Top, "Top Edge", "Horizontal top shell bar"),
-                        (MacDockEdge::Left, "Left Edge", "Vertical sidebar on left"),
-                        (MacDockEdge::Right, "Right Edge", "Vertical sidebar on right"),
-                    ];
-                    for (i, (edge, title, desc)) in edges.into_iter().enumerate() {
-                        let x0 = 26.0 + (i as f32) * 179.0;
-                        let c_rr = rrect(x0, 142.0, x0 + 171.0, 192.0, 10.0, u);
-                        let act = cfg.mac_dock_edge == edge;
-                        let hov = self.hovered == HitZone::MacDockEdgeBtn(edge);
-                        rt.FillRoundedRectangle(&c_rr, if act { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg });
-                        rt.DrawRoundedRectangle(&c_rr, if act { &r.sun_gold } else { &r.card_border }, if act { 1.3 * u } else { 1.0 * u }, None);
-                        draw_txt(rt, title, &r.tf_title, rect_f(x0 + 10.0, 148.0, x0 + 161.0, 168.0, u), if act { &r.sun_gold } else { &r.cream });
-                        draw_txt(rt, desc, &r.tf_sub, rect_f(x0 + 10.0, 169.0, x0 + 161.0, 187.0, u), &r.warm_sub);
-                    }
-
-                    let hides = [
-                        (MacDockHideMode::SmartAutoHide, "Smart Auto-Hide", "Hides on maximized app"),
-                        (MacDockHideMode::HoverReveal, "Edge Hover Reveal", "Shows on screen edge"),
-                        (MacDockHideMode::AlwaysVisible, "Always Visible", "Permanent floating dock"),
-                        (MacDockHideMode::StealthHide, "Full Stealth Hide", "Hidden • Ctrl+Alt+T"),
-                    ];
-                    for (i, (hm, title, desc)) in hides.into_iter().enumerate() {
-                        let x0 = 26.0 + (i as f32) * 179.0;
-                        let c_rr = rrect(x0, 200.0, x0 + 171.0, 250.0, 10.0, u);
-                        let act = cfg.mac_dock_hide == hm;
-                        let hov = self.hovered == HitZone::MacDockHideBtn(hm);
-                        rt.FillRoundedRectangle(&c_rr, if act { &r.card_active } else if hov { &r.card_hover } else { &r.card_bg });
-                        rt.DrawRoundedRectangle(&c_rr, if act { &r.sun_gold } else { &r.card_border }, if act { 1.3 * u } else { 1.0 * u }, None);
-                        draw_txt(rt, title, &r.tf_title, rect_f(x0 + 10.0, 206.0, x0 + 161.0, 226.0, u), if act { &r.sun_gold } else { &r.cream });
-                        draw_txt(rt, desc, &r.tf_sub, rect_f(x0 + 10.0, 227.0, x0 + 161.0, 245.0, u), &r.warm_sub);
-                    }
-
-                    let phys_rr = rrect(26.0, 260.0, 734.0, 458.0, 12.0, u);
-                    rt.FillRoundedRectangle(&phys_rr, &r.card_bg);
-                    rt.DrawRoundedRectangle(&phys_rr, &r.card_border, 1.0 * u, None);
-
-                    let t_mag = ((cfg.mac_dock_mag_pct as f32 - 100.0) / 85.0).clamp(0.0, 1.0);
-                    draw_slider_row(
-                        rt,
-                        r,
-                        u,
-                        "Fish-Eye Magnification",
-                        44.0,
-                        232.0,
-                        640.0,
-                        276.0,
-                        t_mag,
-                        &if cfg.mac_dock_mag_pct <= 102 {
-                            "Off".to_string()
-                        } else {
-                            format!("{}%", cfg.mac_dock_mag_pct)
-                        },
-                        self.dragging_slider == Some(SliderKind::MacDockMagPct)
-                            || self.hovered == HitZone::Slider(SliderKind::MacDockMagPct),
+                    let wp_rr = rrect(568.0, 98.0, 734.0, 132.0, 8.0, u);
+                    let wp_on = cfg.wallpaper_enabled;
+                    let wp_hov = self.hovered == HitZone::ToggleWallpaperQuick;
+                    rt.FillRoundedRectangle(
+                        &wp_rr,
+                        if wp_hov { &r.card_hover } else if wp_on { &r.amber_dim } else { &r.card_bg },
                     );
-                    let t_sz = ((cfg.mac_dock_icon_size as f32 - 32.0) / 64.0).clamp(0.0, 1.0);
-                    draw_slider_row(
-                        rt,
-                        r,
-                        u,
-                        "Base Icon Size",
-                        44.0,
-                        232.0,
-                        640.0,
-                        300.0,
-                        t_sz,
-                        &format!("{} px", cfg.mac_dock_icon_size),
-                        self.dragging_slider == Some(SliderKind::MacDockIconSize)
-                            || self.hovered == HitZone::Slider(SliderKind::MacDockIconSize),
+                    rt.DrawRoundedRectangle(
+                        &wp_rr,
+                        if wp_on || wp_hov { &r.sun_gold } else { &r.card_border },
+                        1.0 * u,
+                        None,
                     );
-                    let t_fs = ((cfg.w_apps.label_font_size_px.clamp(10, 20) as f32 - 10.0) / 10.0)
-                        .clamp(0.0, 1.0);
-                    draw_slider_row(
-                        rt,
-                        r,
-                        u,
-                        "App Name Font Size",
-                        44.0,
-                        232.0,
-                        640.0,
-                        324.0,
-                        t_fs,
-                        &format!("{} px", cfg.w_apps.label_font_size_px.clamp(10, 20)),
-                        self.dragging_slider == Some(SliderKind::MacDockLabelFontSize)
-                            || self.hovered == HitZone::Slider(SliderKind::MacDockLabelFontSize),
-                    );
-                    let pct = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
-                    draw_slider_row(
-                        rt,
-                        r,
-                        u,
-                        "Dock Glass Opacity",
-                        44.0,
-                        232.0,
-                        640.0,
-                        348.0,
-                        pct,
-                        &format!("{}%", (pct * 100.0).round() as i32),
-                        self.dragging_slider == Some(SliderKind::TaskbarOpacity)
-                            || self.hovered == HitZone::Slider(SliderKind::TaskbarOpacity),
-                    );
-                    draw_compact_toggle(
-                        rt,
-                        r,
-                        u,
-                        40.0,
-                        364.0,
-                        372.0,
-                        391.0,
-                        "Launch Bounce Animation",
-                        cfg.mac_dock_bounce,
-                        self.hovered == HitZone::ToggleMacDockBounce,
-                    );
-                    draw_compact_toggle(
-                        rt,
-                        r,
-                        u,
-                        388.0,
-                        364.0,
-                        720.0,
-                        391.0,
-                        "Active App Indicator Dots",
-                        cfg.mac_dock_dots,
-                        self.hovered == HitZone::ToggleMacDockDots,
-                    );
-                    draw_compact_toggle(
-                        rt,
-                        r,
-                        u,
-                        40.0,
-                        396.0,
-                        372.0,
-                        423.0,
-                        "Mouse Hover Physics",
-                        cfg.tb_hover_react,
-                        self.hovered == HitZone::ToggleTbHoverReact,
-                    );
-                    draw_compact_toggle(
-                        rt,
-                        r,
-                        u,
-                        388.0,
-                        396.0,
-                        720.0,
-                        423.0,
-                        "Live Material Motion",
-                        cfg.tb_ambient_anim,
-                        self.hovered == HitZone::ToggleTbAmbientAnim,
-                    );
-                    draw_compact_toggle(
-                        rt,
-                        r,
-                        u,
-                        40.0,
-                        428.0,
-                        372.0,
-                        455.0,
-                        "Crystal Glow Rim",
-                        cfg.amber_border,
-                        self.hovered == HitZone::ToggleAmberRim,
-                    );
-                    draw_compact_toggle(
-                        rt,
-                        r,
-                        u,
-                        388.0,
-                        428.0,
-                        720.0,
-                        455.0,
-                        "Match Wallpaper Accent",
-                        cfg.tb_match_wallpaper,
-                        self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Taskbar),
-                    );
-
-                    let pin_rr = rrect(26.0, 464.0, 734.0, 576.0, 12.0, u);
-                    if let Some(ref g) = create_grad(
-                        rt,
-                        Vector2 { X: 26.0 * u, Y: 464.0 * u },
-                        Vector2 { X: 734.0 * u, Y: 576.0 * u },
-                        &[
-                            D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(46, 32, 20, 0.95) },
-                            D2D1_GRADIENT_STOP { position: 0.45, color: rgb_u8(28, 20, 14, 0.97) },
-                            D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(20, 14, 10, 0.99) },
-                        ],
-                    ) {
-                        rt.FillRoundedRectangle(&pin_rr, g);
-                    } else {
-                        rt.FillRoundedRectangle(&pin_rr, &r.card_bg);
-                    }
-                    if let Some(ref glow) = create_grad(
-                        rt,
-                        Vector2 { X: 26.0 * u, Y: 464.0 * u },
-                        Vector2 { X: 360.0 * u, Y: 540.0 * u },
-                        &[
-                            D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(245, 166, 62, 0.09) },
-                            D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(245, 166, 62, 0.0) },
-                        ],
-                    ) {
-                        rt.FillRoundedRectangle(&pin_rr, glow);
-                    }
-                    if let Some(ref rim) = solid(rt, rgb_u8(215, 160, 96, 0.28)) {
-                        rt.DrawRoundedRectangle(&pin_rr, rim, 1.0 * u, None);
-                    } else {
-                        rt.DrawRoundedRectangle(&pin_rr, &r.card_border, 1.0 * u, None);
-                    }
-                    if let Some(ref sheen) = create_grad(
-                        rt,
-                        Vector2 { X: 38.0 * u, Y: 465.0 * u },
-                        Vector2 { X: 722.0 * u, Y: 465.0 * u },
-                        &[
-                            D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(255, 224, 175, 0.02) },
-                            D2D1_GRADIENT_STOP { position: 0.28, color: rgb_u8(255, 224, 175, 0.16) },
-                            D2D1_GRADIENT_STOP { position: 0.72, color: rgb_u8(255, 224, 175, 0.10) },
-                            D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(255, 224, 175, 0.02) },
-                        ],
-                    ) {
-                        rt.DrawLine(
-                            Vector2 { X: 40.0 * u, Y: 465.0 * u },
-                            Vector2 { X: 720.0 * u, Y: 465.0 * u },
-                            sheen,
-                            1.0 * u,
-                            None,
-                        );
-                    }
-
-                    for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
-                        let tx0 = 38.0 + (i as f32) * 105.0;
-                        let trr = rrect(tx0, 468.0, tx0 + 99.0, 491.0, 7.0, u);
-                        let act = self.tb_widget_tab == tab;
-                        let hov = self.hovered == HitZone::TbWidgetTabBtn(tab);
-                        let pill_stops = if act {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(255, 206, 118, 1.0) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(230, 148, 48, 1.0) },
-                            ]
-                        } else if hov {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(74, 52, 34, 0.96) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(50, 34, 22, 0.98) },
-                            ]
-                        } else {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(38, 27, 19, 0.94) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(26, 18, 13, 0.96) },
-                            ]
-                        };
-                        if let Some(ref g) = create_grad(
-                            rt,
-                            Vector2 { X: tx0 * u, Y: 468.0 * u },
-                            Vector2 { X: tx0 * u, Y: 491.0 * u },
-                            &pill_stops,
-                        ) {
-                            rt.FillRoundedRectangle(&trr, g);
-                        } else {
-                            rt.FillRoundedRectangle(
-                                &trr,
-                                if act {
-                                    &r.sun_gold
-                                } else if hov {
-                                    &r.card_hover
-                                } else {
-                                    &r.card_active
-                                },
-                            );
-                        }
-                        if act {
-                            if let Some(ref b) = solid(rt, rgb_u8(255, 234, 180, 0.72)) {
-                                rt.DrawRoundedRectangle(&trr, b, 1.0 * u, None);
-                            }
-                            let bar = rrect(tx0 + 22.0, 488.5, tx0 + 77.0, 491.0, 1.2, u);
-                            if let Some(ref glow) = solid(rt, rgb_u8(255, 244, 214, 0.95)) {
-                                rt.FillRoundedRectangle(&bar, glow);
-                            }
-                        } else if let Some(ref b) = solid(
-                            rt,
-                            if hov {
-                                rgb_u8(245, 178, 86, 0.55)
-                            } else {
-                                rgb_u8(168, 126, 84, 0.16)
-                            },
-                        ) {
-                            rt.DrawRoundedRectangle(&trr, b, 1.0 * u, None);
-                        }
-                        draw_txt(
-                            rt,
-                            tab.label(),
-                            &r.tf_badge,
-                            trr.rect,
-                            if act { &r.dark_ink } else { &r.cream },
-                        );
-                    }
-                    let rst_rr = rrect(670.0, 468.0, 722.0, 491.0, 7.0, u);
-                    let rst_hov = self.hovered == HitZone::TbWidgetResetAll;
-                    if let Some(ref g) = create_grad(
-                        rt,
-                        Vector2 { X: 670.0 * u, Y: 468.0 * u },
-                        Vector2 { X: 670.0 * u, Y: 491.0 * u },
-                        &if rst_hov {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(245, 114, 102, 1.0) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(204, 72, 64, 1.0) },
-                            ]
-                        } else {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(54, 28, 25, 0.92) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(38, 20, 18, 0.95) },
-                            ]
-                        },
-                    ) {
-                        rt.FillRoundedRectangle(&rst_rr, g);
-                    } else {
-                        rt.FillRoundedRectangle(&rst_rr, if rst_hov { &r.coral } else { &r.card_active });
-                    }
-                    if let Some(ref b) = solid(
-                        rt,
-                        if rst_hov {
-                            rgb_u8(255, 180, 172, 0.85)
-                        } else {
-                            rgb_u8(224, 102, 92, 0.42)
-                        },
-                    ) {
-                        rt.DrawRoundedRectangle(&rst_rr, b, 1.0 * u, None);
-                    }
                     draw_txt(
                         rt,
-                        "Reset",
+                        if wp_on { "Live Wallpaper: ON" } else { "Test Live Wallpaper" },
                         &r.tf_badge,
-                        rst_rr.rect,
-                        if rst_hov { &r.dark_ink } else { &r.coral },
+                        wp_rr.rect,
+                        if wp_on { &r.sun_gold } else { &r.cream },
                     );
-
-                    let (p1_lbl, p2_lbl, p3_lbl, th_ovr) = match self.tb_widget_tab {
-                        TaskbarWidgetTab::ShelfFrame => (
-                            format!(
-                                "Layout: {}",
-                                cfg.w_shelf
-                                    .layout_override
-                                    .map(|l| l.label())
-                                    .unwrap_or("Theme")
-                            ),
-                            format!(
-                                "Shape: {}",
-                                cfg.w_shelf
-                                    .shape_override
-                                    .map(|s| s.label())
-                                    .unwrap_or("Theme")
-                            ),
-                            format!(
-                                "Art: {}",
-                                cfg.w_shelf
-                                    .art_override
-                                    .map(|a| a.label())
-                                    .unwrap_or("Theme")
-                            ),
-                            cfg.w_shelf.theme_override,
-                        ),
-                        TaskbarWidgetTab::AppDock => (
-                            format!("Card: {}", cfg.w_apps.card_style.label()),
-                            format!(
-                                "Dot: {}",
-                                cfg.w_apps
-                                    .indicator_override
-                                    .map(|d| d.label())
-                                    .unwrap_or("Theme")
-                            ),
-                            format!(
-                                "Brand Glow: {}",
-                                if cfg.w_apps.per_app_brand_glow { "ON" } else { "OFF" }
-                            ),
-                            cfg.w_apps.theme_override,
-                        ),
-                        TaskbarWidgetTab::Clock => (
-                            format!("Clock: {}", cfg.w_clock.engine.label()),
-                            format!(
-                                "Seconds: {}",
-                                if cfg.w_clock.show_seconds { "ON" } else { "OFF" }
-                            ),
-                            format!("Wheel: {}", cfg.w_clock.wheel_action.label()),
-                            cfg.w_clock.theme_override,
-                        ),
-                        TaskbarWidgetTab::SystemTray => (
-                            format!("Audio: {}", cfg.w_tray.audio_style.label()),
-                            format!("Battery: {}", cfg.w_tray.battery_style.label()),
-                            format!("Net: {}", cfg.w_tray.net_style.label()),
-                            cfg.w_tray.theme_override,
-                        ),
-                        TaskbarWidgetTab::HudWing => (
-                            format!("HUD: {}", cfg.w_hud.mode.label()),
-                            format!("Telemetry: {}", cfg.w_hud.content.label()),
-                            format!(
-                                "Marquee: {}",
-                                if cfg.w_hud.marquee_ticker { "ON" } else { "OFF" }
-                            ),
-                            cfg.w_hud.theme_override,
-                        ),
-                        TaskbarWidgetTab::Utilities => (
-                            format!("Start: {}", cfg.w_util.start_style.label()),
-                            format!(
-                                "Edge Sliver: {}",
-                                if cfg.w_util.show_desktop_sliver { "ON" } else { "OFF" }
-                            ),
-                            format!(
-                                "Utilities: {}",
-                                if !cfg.w_util.is_all_elements_off() { "ON" } else { "OFF" }
-                            ),
-                            cfg.w_util.theme_override,
-                        ),
-                    };
-
-                    let clock_24h_lbl = format!(
-                        "Format: {}",
-                        if cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h) {
-                            "24-Hour"
-                        } else {
-                            "12-Hour"
-                        }
-                    );
-                    let prop_cards: Vec<(f32, f32, HitZone, &str)> =
-                        if self.tb_widget_tab == TaskbarWidgetTab::Clock {
-                            vec![
-                                (38.0f32, 203.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
-                                (211.0f32, 376.0f32, HitZone::ToggleWidgets24h, clock_24h_lbl.as_str()),
-                                (384.0f32, 549.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
-                                (557.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
-                            ]
-                        } else {
-                            vec![
-                                (38.0f32, 258.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
-                                (266.0f32, 490.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
-                                (498.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
-                            ]
-                        };
-
-                    for (bx0, bx1, hz, txt) in prop_cards {
-                        let brr = rrect(bx0, 495.0, bx1, 521.0, 7.0, u);
-                        let bhov = self.hovered == hz;
-                        let (_lbl_key, lbl_val) = txt.split_once(": ").unwrap_or(("Option", txt));
-                        let is_default = matches!(lbl_val, "Theme" | "OFF" | "Inherit" | "12-Hour");
-                        let card_stops = if bhov {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(74, 52, 34, 0.96) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(48, 33, 21, 0.98) },
-                            ]
-                        } else if !is_default {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(54, 38, 24, 0.94) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(34, 24, 16, 0.97) },
-                            ]
-                        } else {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(40, 29, 20, 0.92) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(28, 20, 14, 0.96) },
-                            ]
-                        };
-                        if let Some(ref g) = create_grad(
-                            rt,
-                            Vector2 { X: bx0 * u, Y: 495.0 * u },
-                            Vector2 { X: bx0 * u, Y: 521.0 * u },
-                            &card_stops,
-                        ) {
-                            rt.FillRoundedRectangle(&brr, g);
-                        } else {
-                            rt.FillRoundedRectangle(&brr, if bhov { &r.card_hover } else { &r.card_active });
-                        }
-                        if let Some(ref b) = solid(
-                            rt,
-                            if bhov {
-                                rgb_u8(255, 198, 102, 0.85)
-                            } else if !is_default {
-                                rgb_u8(245, 166, 62, 0.48)
-                            } else {
-                                rgb_u8(168, 126, 84, 0.22)
-                            },
-                        ) {
-                            rt.DrawRoundedRectangle(&brr, b, 1.0 * u, None);
-                        }
-                        let bar_rr = rrect(bx0 + 6.0, 500.0, bx0 + 9.0, 516.0, 1.5, u);
-                        let bar_col = if bhov || !is_default {
-                            if lbl_val == "ON" {
-                                rgb_u8(116, 204, 144, 0.95)
-                            } else {
-                                rgb_u8(245, 178, 72, 0.95)
-                            }
-                        } else {
-                            rgb_u8(168, 126, 84, 0.38)
-                        };
-                        if let Some(ref bar_br) = solid(rt, bar_col) {
-                            rt.FillRoundedRectangle(&bar_rr, bar_br);
-                        }
-                        draw_txt(
-                            rt,
-                            txt,
-                            &r.tf_badge,
-                            rect_f(bx0 + 13.0, 495.0, bx1 - 16.0, 521.0, u),
-                            if !is_default {
-                                &r.sun_gold
-                            } else {
-                                &r.cream
-                            },
-                        );
-                        draw_txt(
-                            rt,
-                            "›",
-                            &r.tf_sub,
-                            rect_f(bx1 - 16.0, 495.0, bx1 - 3.0, 521.0, u),
-                            if bhov { &r.sun_gold } else { &r.muted_txt },
-                        );
-                    }
-
-                    // Granular Per-Element Visibility Toggle Strip (Row 3: y = 525..547)
-                    let elem_toggles = dock_widget_elem_toggles(self.tb_widget_tab, cfg);
-                    for (idx, &(el_lbl, is_on, elem_id)) in elem_toggles.iter().enumerate() {
-                        let (ex0, ey0, ex1, ey1) = dock_widget_elem_pill_rect(idx, elem_toggles.len());
-                        let err = rrect(ex0, ey0, ex1, ey1, 6.0, u);
-                        let ehov = self.hovered == HitZone::TbWidgetElemToggle(elem_id);
-                        if is_on {
-                            rt.FillRoundedRectangle(&err, if ehov { &r.card_hover } else { &r.card_active });
-                            if let Some(ref b) = solid(
-                                rt,
-                                if ehov {
-                                    rgb_u8(255, 206, 118, 0.90)
-                                } else {
-                                    rgb_u8(116, 208, 148, 0.56)
-                                },
-                            ) {
-                                rt.DrawRoundedRectangle(&err, b, 1.0 * u, None);
-                            }
-                        } else {
-                            rt.FillRoundedRectangle(&err, if ehov { &r.card_hover } else { &r.card_bg });
-                            if let Some(ref b) = solid(
-                                rt,
-                                if ehov {
-                                    rgb_u8(245, 178, 86, 0.65)
-                                } else {
-                                    rgb_u8(168, 126, 84, 0.18)
-                                },
-                            ) {
-                                rt.DrawRoundedRectangle(&err, b, 0.9 * u, None);
-                            }
-                        }
-                        let dot_col = if is_on {
-                            rgb_u8(104, 232, 148, 0.96)
-                        } else {
-                            rgb_u8(148, 118, 92, 0.42)
-                        };
-                        if let Some(ref dbr) = solid(rt, dot_col) {
-                            rt.FillEllipse(
-                                &D2D1_ELLIPSE {
-                                    point: Vector2 {
-                                        X: (ex0 + 9.5) * u,
-                                        Y: ((ey0 + ey1) * 0.5) * u,
-                                    },
-                                    radiusX: 2.8 * u,
-                                    radiusY: 2.8 * u,
-                                },
-                                dbr,
-                            );
-                        }
-                        draw_txt(
-                            rt,
-                            el_lbl,
-                            &r.tf_badge,
-                            rect_f(ex0 + 15.0, ey0, ex1 - 4.0, ey1, u),
-                            if is_on { &r.cream } else { &r.muted_txt },
-                        );
-                    }
-
-                    let mut pal_tmp = cfg.clone();
-                    if let Some(th) = th_ovr {
-                        pal_tmp.tb_theme = th;
-                        pal_tmp.tb_match_wallpaper = false;
-                    }
-                    let mix_pal = resolve_palette_for(&pal_tmp, false);
-                    let mix_cols = [
-                        mix_pal.accent,
-                        mix_pal.accent_light,
-                        mix_pal.rim,
-                        mix_pal.glass_top,
-                    ];
-
-                    let th_lbl = match th_ovr {
-                        Some(th) => format!("Widget Palette: {} (Click to cycle)", th.label()),
-                        None => "Widget Palette: Inherit Global Theme (Click to mix)".to_string(),
-                    };
-                    let th_rr = rrect(38.0, 551.0, 452.0, 573.0, 7.0, u);
-                    let th_hov = self.hovered == HitZone::TbWidgetCycleTheme;
-                    if let Some(ref g) = create_grad(
-                        rt,
-                        Vector2 { X: 38.0 * u, Y: 551.0 * u },
-                        Vector2 { X: 452.0 * u, Y: 573.0 * u },
-                        &if th_hov {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(74, 52, 34, 0.96) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(48, 33, 21, 0.98) },
-                            ]
-                        } else if th_ovr.is_some() {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(54, 38, 23, 0.94) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(33, 23, 15, 0.97) },
-                            ]
-                        } else {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(40, 29, 20, 0.92) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(28, 20, 14, 0.96) },
-                            ]
-                        },
-                    ) {
-                        rt.FillRoundedRectangle(&th_rr, g);
-                    } else {
-                        rt.FillRoundedRectangle(&th_rr, if th_hov { &r.card_hover } else { &r.card_active });
-                    }
-                    if let Some(ref b) = solid(
-                        rt,
-                        if th_hov {
-                            rgb_u8(255, 198, 102, 0.88)
-                        } else if th_ovr.is_some() {
-                            rgb_u8(245, 166, 62, 0.52)
-                        } else {
-                            rgb_u8(168, 126, 84, 0.24)
-                        },
-                    ) {
-                        rt.DrawRoundedRectangle(&th_rr, b, 1.0 * u, None);
-                    }
-                    for (si, &scol) in mix_cols.iter().enumerate() {
-                        let cx = (52.0 + (si as f32) * 13.0) * u;
-                        let cy = 562.0 * u;
-                        let ell = D2D1_ELLIPSE {
-                            point: Vector2 { X: cx, Y: cy },
-                            radiusX: 4.8 * u,
-                            radiusY: 4.8 * u,
-                        };
-                        let sw_col = rgb_u8(scol.0, scol.1, scol.2, 0.95);
-                        if let Some(ref sbr) = solid(rt, sw_col) {
-                            rt.FillEllipse(&ell, sbr);
-                        }
-                        if let Some(ref srim) = solid(rt, rgb_u8(255, 244, 224, 0.35)) {
-                            rt.DrawEllipse(&ell, srim, 0.9 * u, None);
-                        }
-                    }
-                    draw_txt(
-                        rt,
-                        &th_lbl,
-                        &r.tf_badge,
-                        rect_f(102.0, 551.0, 446.0, 573.0, u),
-                        if th_ovr.is_some() { &r.sun_gold } else { &r.cream },
-                    );
-
-                    let rescan_rr = rrect(460.0, 551.0, 722.0, 573.0, 7.0, u);
-                    let rs_hov = self.hovered == HitZone::BtnRescanDockPinned;
-                    if let Some(ref g) = create_grad(
-                        rt,
-                        Vector2 { X: 460.0 * u, Y: 551.0 * u },
-                        Vector2 { X: 722.0 * u, Y: 573.0 * u },
-                        &if rs_hov {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(74, 52, 34, 0.96) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(48, 33, 21, 0.98) },
-                            ]
-                        } else {
-                            [
-                                D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(40, 29, 20, 0.92) },
-                                D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(28, 20, 14, 0.96) },
-                            ]
-                        },
-                    ) {
-                        rt.FillRoundedRectangle(&rescan_rr, g);
-                    } else {
-                        rt.FillRoundedRectangle(&rescan_rr, if rs_hov { &r.card_hover } else { &r.card_active });
-                    }
-                    if let Some(ref b) = solid(
-                        rt,
-                        if rs_hov {
-                            rgb_u8(255, 198, 102, 0.85)
-                        } else {
-                            rgb_u8(168, 126, 84, 0.24)
-                        },
-                    ) {
-                        rt.DrawRoundedRectangle(&rescan_rr, b, 1.0 * u, None);
-                    }
-                    draw_txt(
-                        rt,
-                        "↻  Rescan Pinned Apps",
-                        &r.tf_badge,
-                        rect_f(470.0, 551.0, 672.0, 573.0, u),
-                        &r.cream,
-                    );
-                    let cnt_rr = rrect(676.0, 554.0, 712.0, 570.0, 5.0, u);
-                    if let Some(ref cbg) = solid(rt, rgb_u8(245, 166, 62, 0.20)) {
-                        rt.FillRoundedRectangle(&cnt_rr, cbg);
-                    }
-                    if let Some(ref cbd) = solid(rt, rgb_u8(245, 166, 62, 0.45)) {
-                        rt.DrawRoundedRectangle(&cnt_rr, cbd, 0.9 * u, None);
-                    }
-                    draw_txt(
-                        rt,
-                        &format!("{}", cfg.mac_dock_pinned.len()),
-                        &r.tf_badge,
-                        cnt_rr.rect,
-                        &r.sun_gold,
-                    );
-                } else {
                 let mode_cards = [
                     (TaskbarMode::SmartMaximize, "Smart Auto-Hide", "Hides on maximized app"),
                     (TaskbarMode::HoverReveal, "Edge Hover Reveal", "Shows on screen edge"),
@@ -13891,10 +14181,38 @@ impl SettingsController {
                 );
 
                 let bk_rr = rrect(194.0, 584.0, 354.0, 622.0, 9.0, u);
-                let bk_hov = self.hovered == HitZone::BtnBackTaskbarThemes;
-                rt.FillRoundedRectangle(&bk_rr, if bk_hov { &r.card_hover } else { &r.card_bg });
-                rt.DrawRoundedRectangle(&bk_rr, if bk_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
-                draw_txt(rt, "← Themes", &r.tf_btn, bk_rr.rect, &r.cream);
+                if cfg.tb_theme.uses_virtual_dock() {
+                    let wp_on = cfg.wallpaper_enabled;
+                    let wp_hov = self.hovered == HitZone::ToggleWallpaperQuick;
+                    rt.FillRoundedRectangle(
+                        &bk_rr,
+                        if wp_hov {
+                            &r.card_hover
+                        } else if wp_on {
+                            &r.amber_dim
+                        } else {
+                            &r.card_bg
+                        },
+                    );
+                    rt.DrawRoundedRectangle(
+                        &bk_rr,
+                        if wp_on || wp_hov { &r.sun_gold } else { &r.card_border },
+                        1.0 * u,
+                        None,
+                    );
+                    draw_txt(
+                        rt,
+                        if wp_on { "Live Wallpaper: ON" } else { "Test Live Wallpaper" },
+                        &r.tf_badge,
+                        bk_rr.rect,
+                        if wp_on { &r.sun_gold } else { &r.cream },
+                    );
+                } else {
+                    let bk_hov = self.hovered == HitZone::BtnBackTaskbarThemes;
+                    rt.FillRoundedRectangle(&bk_rr, if bk_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&bk_rr, if bk_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(rt, "← Themes", &r.tf_btn, bk_rr.rect, &r.cream);
+                }
 
                 let btn1_rr = rrect(364.0, 584.0, 556.0, 622.0, 9.0, u);
                 rt.FillRoundedRectangle(&btn1_rr, &r.sun_gold);
@@ -24335,8 +24653,9 @@ mod tests {
 
         sc.active_tab = StudioTab::Taskbar;
         sc.taskbar_page = TaskbarPage::Customize;
-        let hz_hover = sc.hit_test(200.0, 410.0);
-        let hz_live = sc.hit_test(540.0, 410.0);
+        sc.dock_custom_tab = DockCustomTab::LayoutHide;
+        let hz_hover = sc.hit_test(200.0, 542.0);
+        let hz_live = sc.hit_test(540.0, 542.0);
         assert_eq!(hz_hover, HitZone::ToggleTbHoverReact);
         assert_eq!(hz_live, HitZone::ToggleTbAmbientAnim);
         let cmd1 = sc.activate_zone(hz_hover, &mut live_cfg);
@@ -25113,20 +25432,22 @@ mod tests {
         assert_eq!(sc.hit_test(520.0, 555.0), HitZone::TabSettings);
         assert!(sc.render_d2d(&cfg), "Taskbar Customize with Settings quick link must render cleanly");
 
-        // 5. Dock Customize: 4th visibility card (Full Stealth Hide) + Clock tab 12h/24h toggle
+        // 5. Dock Customize: 4th visibility card (Full Stealth Hide) + Modules -> Clock 12h/24h toggle
         cfg.tb_theme = TaskbarTheme::RealisticWaterDock;
         cfg.mac_dock_enabled = true;
         sc.draft_cfg = cfg.clone();
-        assert_eq!(sc.hit_test(110.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::SmartAutoHide));
-        assert_eq!(sc.hit_test(290.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::HoverReveal));
-        assert_eq!(sc.hit_test(470.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::AlwaysVisible));
-        assert_eq!(sc.hit_test(648.0, 225.0), HitZone::MacDockHideBtn(MacDockHideMode::StealthHide));
+        sc.dock_custom_tab = DockCustomTab::LayoutHide;
+        assert_eq!(sc.hit_test(110.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::SmartAutoHide));
+        assert_eq!(sc.hit_test(290.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::HoverReveal));
+        assert_eq!(sc.hit_test(470.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::AlwaysVisible));
+        assert_eq!(sc.hit_test(648.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::StealthHide));
         let cmd_stealth = sc.activate_zone(HitZone::MacDockHideBtn(MacDockHideMode::StealthHide), &mut cfg);
         assert!(matches!(cmd_stealth, SettingsCommand::MacDockUpdated));
         assert_eq!(cfg.mac_dock_hide, MacDockHideMode::StealthHide);
         assert_eq!(cfg.mode, TaskbarMode::StealthHide);
+        sc.dock_custom_tab = DockCustomTab::Modules;
         sc.tb_widget_tab = TaskbarWidgetTab::Clock;
-        assert_eq!(sc.hit_test(293.0, 515.0), HitZone::ToggleWidgets24h);
+        assert_eq!(sc.hit_test(293.0, 356.0), HitZone::ToggleWidgets24h);
         let cmd_clk = sc.activate_zone(HitZone::ToggleWidgets24h, &mut cfg);
         assert!(matches!(cmd_clk, SettingsCommand::WidgetsConfigUpdated));
         assert!(!cfg.widgets_24h);
@@ -25840,6 +26161,7 @@ mod tests {
         sc.draft_cfg = cfg.clone();
         sc.active_tab = StudioTab::Taskbar;
         sc.taskbar_page = TaskbarPage::Customize;
+        sc.dock_custom_tab = DockCustomTab::Modules;
 
         for tab in TaskbarWidgetTab::ALL {
             sc.tb_widget_tab = tab;
@@ -27336,27 +27658,63 @@ mod tests {
         assert!(!sc.draft_cfg.clean_top_bar_enabled);
         assert!(sc.render_d2d(&cfg), "All Themes view with Top Menu Bar OFF pill must render cleanly");
 
-        // 2. Customize page exposes expanded 32..=96 px Icon Size slider AND 10..=20 px App Name Font Size slider
+        // 2. Upgraded 4-Tab Dock Customize UI: Preview Stage + Size & Glass (32..=64px macOS max, mag, opacity, label font + mode) + Dedicated Top Menu Bar tab + Reset Style
         sc.taskbar_page = TaskbarPage::Customize;
-        assert_eq!(
-            sc.hit_test(400.0, 300.0),
-            HitZone::Slider(SliderKind::MacDockIconSize)
-        );
-        assert_eq!(
-            sc.hit_test(400.0, 324.0),
-            HitZone::Slider(SliderKind::MacDockLabelFontSize)
-        );
-        // Drag Icon Size near right end -> 88..=96 px
+        assert_eq!(sc.hit_test(110.0, 240.0), HitZone::DockCustomTabBtn(DockCustomTab::LayoutHide));
+        assert_eq!(sc.hit_test(290.0, 240.0), HitZone::DockCustomTabBtn(DockCustomTab::SizeGlass));
+        assert_eq!(sc.hit_test(470.0, 240.0), HitZone::DockCustomTabBtn(DockCustomTab::TopBar));
+        assert_eq!(sc.hit_test(648.0, 240.0), HitZone::DockCustomTabBtn(DockCustomTab::Modules));
+        assert!(sc.render_d2d(&cfg), "Dock Customize Tab 1 (Position & Hide) must render cleanly");
+
+        let _ = sc.activate_zone(HitZone::DockCustomTabBtn(DockCustomTab::SizeGlass), &mut cfg);
+        assert_eq!(sc.dock_custom_tab, DockCustomTab::SizeGlass);
+        assert_eq!(sc.hit_test(400.0, 312.0), HitZone::Slider(SliderKind::MacDockIconSize));
+        assert_eq!(sc.hit_test(400.0, 348.0), HitZone::Slider(SliderKind::MacDockMagPct));
+        assert_eq!(sc.hit_test(400.0, 384.0), HitZone::Slider(SliderKind::TaskbarOpacity));
+        assert_eq!(sc.hit_test(400.0, 420.0), HitZone::Slider(SliderKind::MacDockLabelFontSize));
+        assert_eq!(sc.hit_test(512.0, 467.0), HitZone::SetDockLabelMode(DockRunningLabelMode::AllRunningApps));
+
+        // Drag Icon Size to right end -> strictly capped at macOS max 64 px!
         let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 640.0, &mut cfg);
-        assert_eq!(cfg.mac_dock_icon_size, 96);
-        let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 589.0, &mut cfg);
-        assert!((87..=89).contains(&cfg.mac_dock_icon_size), "Expected ~88px, got {}", cfg.mac_dock_icon_size);
-        // Drag App Name Font Size -> 18 px
+        assert_eq!(cfg.mac_dock_icon_size, 64);
+        let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 232.0, &mut cfg);
+        assert_eq!(cfg.mac_dock_icon_size, 32);
+        let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 538.0, &mut cfg);
+        assert!((55..=57).contains(&cfg.mac_dock_icon_size), "Expected ~56px, got {}", cfg.mac_dock_icon_size);
+
+        // Drag Dock Glass Opacity -> emits MacDockPreview for Virtual Dock!
+        let cmd_op = sc.update_slider_from_x(SliderKind::TaskbarOpacity, 640.0, &mut cfg);
+        assert!(matches!(cmd_op, Some(SettingsCommand::MacDockPreview)));
+        assert_eq!(cfg.tint_alpha, 255);
+
+        // Drag App Name Font Size -> 18 px + select All Open Apps label mode
         let cmd_fs = sc.update_slider_from_x(SliderKind::MacDockLabelFontSize, 558.4, &mut cfg);
         assert!(matches!(cmd_fs, Some(SettingsCommand::MacDockPreview)));
         assert_eq!(cfg.w_apps.label_font_size_px, 18);
-        assert_eq!(sc.draft_cfg.w_apps.label_font_size_px, 18);
-        assert!(sc.render_d2d(&cfg), "Dock Customize page with 88px icon + 18px label font must render cleanly");
+        let cmd_lm = sc.activate_zone(HitZone::SetDockLabelMode(DockRunningLabelMode::AllRunningApps), &mut cfg);
+        assert!(matches!(cmd_lm, SettingsCommand::MacDockUpdated));
+        assert_eq!(cfg.w_apps.label_mode, DockRunningLabelMode::AllRunningApps);
+        assert!(sc.render_d2d(&cfg), "Dock Customize Tab 2 (Size & Glass) must render cleanly");
+
+        // Dedicated Top Menu Bar tab works on ANY Virtual Dock theme (e.g. QuartzShellDock)
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::QuartzShellDock);
+        sc.draft_cfg = cfg.clone();
+        assert!(!cfg.clean_top_bar_enabled);
+        let _ = sc.activate_zone(HitZone::DockCustomTabBtn(DockCustomTab::TopBar), &mut cfg);
+        assert_eq!(sc.hit_test(380.0, 300.0), HitZone::ToggleCleanTopBar);
+        let _ = sc.activate_zone(HitZone::ToggleCleanTopBar, &mut cfg);
+        assert!(cfg.clean_top_bar_enabled && cfg.is_clean_top_bar_active());
+        assert_eq!(sc.hit_test(600.0, 505.0), HitZone::SetCleanTopBarStyle(CleanTopBarStyle::Floating));
+        let _ = sc.activate_zone(HitZone::SetCleanTopBarStyle(CleanTopBarStyle::Floating), &mut cfg);
+        assert_eq!(cfg.clean_top_bar_style, CleanTopBarStyle::Floating);
+        assert!(sc.render_d2d(&cfg), "Dock Customize Tab 3 (Top Menu Bar) must render cleanly");
+
+        // Reset Style button resets dock size/mag/opacity/top-bar while keeping QuartzShellDock!
+        assert_eq!(sc.hit_test(684.0, 110.0), HitZone::BtnResetDockStyle);
+        let _ = sc.activate_zone(HitZone::BtnResetDockStyle, &mut cfg);
+        assert_eq!(cfg.tb_theme, TaskbarTheme::QuartzShellDock);
+        assert_eq!(cfg.mac_dock_icon_size, 44);
+        assert!(!cfg.clean_top_bar_enabled);
 
         // 3. Settings tab exposes Portable Mode status + Convert to Portable pill without disturbing (140, 445)
         sc.active_tab = StudioTab::Settings;

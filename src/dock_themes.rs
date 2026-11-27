@@ -2383,6 +2383,7 @@ pub struct DockBackdropCtx {
 thread_local! {
     static ACTIVE_DOCK_BACKDROP: RefCell<Option<DockBackdropCtx>> = const { RefCell::new(None) };
     static ACTIVE_LIVE_HW_BLUR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ACTIVE_DOCK_TINT_ALPHA: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
 }
 
 pub struct DockBackdropGuard;
@@ -2393,6 +2394,7 @@ impl Drop for DockBackdropGuard {
             *c.borrow_mut() = None;
         });
         ACTIVE_LIVE_HW_BLUR.with(|c| c.set(false));
+        ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(None));
     }
 }
 
@@ -2409,12 +2411,58 @@ pub fn bind_active_dock_backdrop_ex(
         *c.borrow_mut() = ctx;
     });
     ACTIVE_LIVE_HW_BLUR.with(|c| c.set(live_hw_blur));
+    ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(None));
+    DockBackdropGuard
+}
+
+pub fn bind_active_dock_backdrop_with_alpha(
+    ctx: Option<DockBackdropCtx>,
+    live_hw_blur: bool,
+    tint_alpha: u8,
+) -> DockBackdropGuard {
+    ACTIVE_DOCK_BACKDROP.with(|c| {
+        *c.borrow_mut() = ctx;
+    });
+    ACTIVE_LIVE_HW_BLUR.with(|c| c.set(live_hw_blur));
+    ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(Some(tint_alpha)));
     DockBackdropGuard
 }
 
 #[inline]
 pub fn is_live_hw_blur_active() -> bool {
     ACTIVE_LIVE_HW_BLUR.with(|c| c.get())
+}
+
+#[inline]
+pub fn active_dock_tint_alpha_for(theme: TaskbarTheme) -> u8 {
+    ACTIVE_DOCK_TINT_ALPHA
+        .with(|c| c.get())
+        .unwrap_or_else(|| theme.preview_preset().2)
+}
+
+/// Scales a dock glass/plate/keycap alpha smoothly across `0..=255` `tint_alpha` while
+/// returning the exact curated `default_a` whenever `tint_alpha` matches the theme's preset.
+#[inline]
+pub fn scale_dock_theme_alpha(
+    theme: TaskbarTheme,
+    default_a: f32,
+    tint_alpha: u8,
+    min_a: f32,
+    max_a: f32,
+) -> f32 {
+    let lo = min_a.min(max_a);
+    let hi = max_a.max(min_a);
+    let def = default_a.clamp(lo, hi);
+    let ref_u8 = theme.preview_preset().2.clamp(16, 239);
+    if tint_alpha == ref_u8 {
+        def
+    } else if tint_alpha < ref_u8 {
+        let k = (tint_alpha as f32 / ref_u8 as f32).clamp(0.0, 1.0);
+        (lo + (def - lo) * k).clamp(lo, hi)
+    } else {
+        let k = ((tint_alpha - ref_u8) as f32 / (255 - ref_u8) as f32).clamp(0.0, 1.0);
+        (def + (hi - def) * k).clamp(lo, hi)
+    }
 }
 
 /// Computes the screen-aligned source sub-rectangle inside the cached blurred monitor wallpaper,
@@ -2788,10 +2836,16 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
     // 2. Real Gaussian-blurred + 0.84x convex-lens-refracted desktop wallpaper clipped inside keycap!
     let has_blur = draw_backdrop_blurred_rrect(rt, d2d, k_r, rad, 0.84, 0.96);
 
-    // 3. Ultra-clear MacBook Liquid Glass optical body glaze (crystal-transparent over live GPU blur)
+    // 3. Ultra-clear MacBook Liquid Glass optical body glaze (scales smoothly with Dock Glass Opacity)
     let live_hw = is_live_hw_blur_active();
+    let k_theme = if is_light {
+        TaskbarTheme::Os26LiquidGlassLight
+    } else {
+        TaskbarTheme::Os26LiquidGlassDark
+    };
+    let u_tint = active_dock_tint_alpha_for(k_theme);
     let body_stops = if is_light {
-        let a_hi = if live_hw {
+        let raw_hi = if live_hw {
             if is_hovered { 0.34 } else { 0.24 }
         } else if has_blur {
             if is_hovered { 0.44 } else { 0.32 }
@@ -2800,7 +2854,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         } else {
             0.70
         };
-        let a_lo = if live_hw {
+        let raw_lo = if live_hw {
             if is_hovered { 0.22 } else { 0.14 }
         } else if has_blur {
             if is_hovered { 0.34 } else { 0.22 }
@@ -2809,13 +2863,15 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         } else {
             0.58
         };
+        let a_hi = scale_dock_theme_alpha(k_theme, raw_hi, u_tint, 0.04, 0.96);
+        let a_lo = scale_dock_theme_alpha(k_theme, raw_lo, u_tint, 0.02, 0.92);
         [
             D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, a_hi) },
             D2D1_GRADIENT_STOP { position: 0.52, color: rgba(238, 248, 255, a_lo) },
             D2D1_GRADIENT_STOP { position: 1.0, color: rgba(218, 236, 255, a_hi * 0.88) },
         ]
     } else {
-        let a_top = if live_hw {
+        let raw_top = if live_hw {
             if is_hovered { 0.24 } else { 0.16 }
         } else if has_blur {
             if is_hovered { 0.28 } else { 0.19 }
@@ -2824,7 +2880,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         } else {
             0.32
         };
-        let a_mid = if live_hw {
+        let raw_mid = if live_hw {
             if is_hovered { 0.14 } else { 0.10 }
         } else if has_blur {
             if is_hovered { 0.19 } else { 0.13 }
@@ -2833,7 +2889,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         } else {
             0.34
         };
-        let a_bot = if live_hw {
+        let raw_bot = if live_hw {
             if is_hovered { 0.22 } else { 0.16 }
         } else if has_blur {
             if is_hovered { 0.26 } else { 0.20 }
@@ -2842,6 +2898,9 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         } else {
             0.42
         };
+        let a_top = scale_dock_theme_alpha(k_theme, raw_top, u_tint, 0.03, 0.92);
+        let a_mid = scale_dock_theme_alpha(k_theme, raw_mid, u_tint, 0.02, 0.90);
+        let a_bot = scale_dock_theme_alpha(k_theme, raw_bot, u_tint, 0.03, 0.94);
         [
             D2D1_GRADIENT_STOP { position: 0.0, color: rgba(196, 224, 248, a_top) },
             D2D1_GRADIENT_STOP { position: 0.45, color: rgba(16, 30, 48, a_mid) },
@@ -2853,13 +2912,14 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
     }
 
     // 4. Signature Apple OS26 cloudy milky-white radial top-dome mist (true radial gradient!)
-    let dome_a = if is_light {
+    let raw_dome = if is_light {
         if is_hovered { 0.66 } else { 0.52 }
     } else if is_hovered {
         0.44
     } else {
         0.34
     };
+    let dome_a = scale_dock_theme_alpha(k_theme, raw_dome, u_tint, 0.06, 0.92);
     let dome_stops = [
         D2D1_GRADIENT_STOP { position: 0.00, color: rgba(255, 255, 255, dome_a) },
         D2D1_GRADIENT_STOP { position: 0.45, color: rgba(232, 244, 255, dome_a * 0.38) },
@@ -3179,8 +3239,8 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                     spec.light_mode_paper,
                 );
             }
-            let alpha_user = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
-            let base_a = (spec.bg_alpha_bias * 0.72 + alpha_user * 0.28).clamp(0.55, 0.99);
+            let def_pbr_a = spec.bg_alpha_bias.clamp(0.55, 0.98);
+            let base_a = scale_dock_theme_alpha(cfg.tb_theme, def_pbr_a, cfg.tint_alpha, 0.12, 0.99);
             let tint_override = if cfg.tb_match_wallpaper {
                 Some((
                     crate::theme::rgb_to_u32(pal.glass_top),
@@ -3331,13 +3391,12 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
             has_live_blur = draw_backdrop_blurred_rrect(rt, d2d, shelf_r, rad, lens_z, blur_op);
         }
 
-        let alpha_user = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
         let live_hw = is_live_hw_blur_active();
-        let base_a = if is_os26_rail {
-            if spec.light_mode_paper { 0.06 } else { 0.045 }
+        let (def_a, min_a, max_a) = if is_os26_rail {
+            (if spec.light_mode_paper { 0.06 } else { 0.045 }, 0.005, 0.78)
         } else if live_hw && has_live_blur {
-            // Crystal-clear MacBook Tahoe / Sequoia live GPU glass: keep veil whisper-translucent!
-            if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
+            // Crystal-clear MacBook Tahoe / Sequoia live GPU glass: keep veil whisper-translucent at preset, adjustable 0..100%!
+            let d = if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
                 0.08
             } else if spec.bg_alpha_bias < 0.30 {
                 0.10
@@ -3345,10 +3404,10 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                 (spec.bg_alpha_bias * 0.42).clamp(0.24, 0.46)
             } else {
                 (spec.bg_alpha_bias * 0.36).clamp(0.18, 0.40)
-            }
+            };
+            (d, 0.01, 0.92)
         } else if has_live_blur {
-            // Let the vibrant blurred wallpaper shine through cleanly like macOS Sequoia / Windhawk Acrylic!
-            if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
+            let d = if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
                 0.10
             } else if spec.bg_alpha_bias < 0.30 {
                 0.13
@@ -3356,12 +3415,14 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                 (spec.bg_alpha_bias * 0.52).clamp(0.32, 0.56)
             } else {
                 (spec.bg_alpha_bias * 0.44).clamp(0.22, 0.48)
-            }
+            };
+            (d, 0.02, 0.94)
         } else if spec.bg_alpha_bias < 0.38 {
-            (spec.bg_alpha_bias * 0.82 + alpha_user * 0.18).clamp(0.14, 0.56)
+            (spec.bg_alpha_bias.clamp(0.14, 0.42), 0.03, 0.92)
         } else {
-            (spec.bg_alpha_bias * 0.68 + alpha_user * 0.32).clamp(0.40, 0.96)
+            (spec.bg_alpha_bias.clamp(0.42, 0.94), 0.08, 0.98)
         };
+        let base_a = scale_dock_theme_alpha(cfg.tb_theme, def_a, cfg.tint_alpha, min_a, max_a);
         let (gt, gm, gb) = if cfg.tb_match_wallpaper {
             (
                 pal.glass_top,
@@ -3531,6 +3592,7 @@ pub unsafe fn draw_standalone_orb_node(
     u: f32,
 ) {
     let spec = dock_spec(theme);
+    let u_tint = active_dock_tint_alpha_for(theme);
     let node_r = sz * 0.58;
     let rect = D2D_RECT_F {
         left: cx - node_r,
@@ -3566,14 +3628,15 @@ pub unsafe fn draw_standalone_orb_node(
                 rt.FillRoundedRectangle(&glow_rr, br);
             }
             let rr = D2D1_ROUNDED_RECT { rect: tile_r, radiusX: rad, radiusY: rad };
+            let a_m = scale_dock_theme_alpha(theme, 0.97, u_tint, 0.14, 0.99);
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.99) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(242, 239, 249, 0.97) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (a_m + 0.02).min(0.99)) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(242, 239, 249, a_m) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: tile_r.top }, Vector2 { X: cx, Y: tile_r.bottom }, &stops) {
                 rt.FillRoundedRectangle(&rr, &g);
             } else {
-                br.SetColor(&rgba(248, 246, 253, 0.97));
+                br.SetColor(&rgba(248, 246, 253, a_m));
                 rt.FillRoundedRectangle(&rr, br);
             }
             br.SetColor(&if is_hovered {
@@ -3609,14 +3672,15 @@ pub unsafe fn draw_standalone_orb_node(
                 rt.FillRoundedRectangle(&glow_rr, br);
             }
             let rr = D2D1_ROUNDED_RECT { rect: tile_r, radiusX: rad, radiusY: rad };
+            let a_m = scale_dock_theme_alpha(theme, 0.97, u_tint, 0.14, 0.99);
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(46, 37, 52, 0.97) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(34, 26, 40, 0.98) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(46, 37, 52, a_m) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(34, 26, 40, (a_m + 0.01).min(0.99)) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: tile_r.top }, Vector2 { X: cx, Y: tile_r.bottom }, &stops) {
                 rt.FillRoundedRectangle(&rr, &g);
             } else {
-                br.SetColor(&rgba(40, 32, 46, 0.97));
+                br.SetColor(&rgba(40, 32, 46, a_m));
                 rt.FillRoundedRectangle(&rr, br);
             }
             // Subtle tactile matte top-edge sheen
@@ -3649,7 +3713,7 @@ pub unsafe fn draw_standalone_orb_node(
             let has_blur = draw_backdrop_blurred_rrect(rt, d2d, tile_r, rad, 0.92, 0.94);
             let live_hw = is_live_hw_blur_active();
             let rr = D2D1_ROUNDED_RECT { rect: tile_r, radiusX: rad, radiusY: rad };
-            let a_t = if live_hw {
+            let raw_t = if live_hw {
                 if is_hovered { 0.34 } else { 0.24 }
             } else if has_blur {
                 if is_hovered { 0.44 } else { 0.32 }
@@ -3658,6 +3722,7 @@ pub unsafe fn draw_standalone_orb_node(
             } else {
                 0.72
             };
+            let a_t = scale_dock_theme_alpha(theme, raw_t, u_tint, 0.05, 0.95);
             let stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(68, 54, 46, a_t) },
                 D2D1_GRADIENT_STOP { position: 0.55, color: rgba(42, 33, 28, a_t * 0.96) },
@@ -5695,15 +5760,17 @@ pub unsafe fn draw_dock_slot_fx(
                     rt.FillRoundedRectangle(&g_rr, br);
                 }
                 let c_rr = D2D1_ROUNDED_RECT { rect: c_r, radiusX: rad, radiusY: rad };
+                let u_tint = active_dock_tint_alpha_for(theme);
+                let chip_a = scale_dock_theme_alpha(theme, 0.96, u_tint, 0.16, 0.99);
                 if is_white_chip {
                     let stops = [
-                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.99) },
-                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(238, 242, 248, 0.96) },
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (chip_a + 0.02).min(0.99)) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(238, 242, 248, chip_a) },
                     ];
                     if let Some(g) = create_grad(rt, Vector2 { X: icon_cx, Y: c_r.top }, Vector2 { X: icon_cx, Y: c_r.bottom }, &stops) {
                         rt.FillRoundedRectangle(&c_rr, &g);
                     } else {
-                        br.SetColor(&rgba(250, 252, 255, 0.98));
+                        br.SetColor(&rgba(250, 252, 255, chip_a));
                         rt.FillRoundedRectangle(&c_rr, br);
                     }
                     br.SetColor(&if is_hovered || is_active {
@@ -5714,13 +5781,13 @@ pub unsafe fn draw_dock_slot_fx(
                     rt.DrawRoundedRectangle(&c_rr, br, if is_hovered { 1.3 * u } else { 0.85 * u }, None);
                 } else {
                     let stops = [
-                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(32, 36, 48, 0.96) },
-                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(18, 21, 30, 0.97) },
+                        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(32, 36, 48, chip_a) },
+                        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(18, 21, 30, (chip_a + 0.01).min(0.99)) },
                     ];
                     if let Some(g) = create_grad(rt, Vector2 { X: icon_cx, Y: c_r.top }, Vector2 { X: icon_cx, Y: c_r.bottom }, &stops) {
                         rt.FillRoundedRectangle(&c_rr, &g);
                     } else {
-                        br.SetColor(&rgba(24, 28, 38, 0.96));
+                        br.SetColor(&rgba(24, 28, 38, chip_a));
                         rt.FillRoundedRectangle(&c_rr, br);
                     }
                     br.SetColor(&if is_hovered || is_active {
@@ -7044,6 +7111,24 @@ pub unsafe fn draw_dock_preview_card(
     ];
     let sweep_n = ((anim_phase * 0.9).sin() * 0.22 + 0.5).clamp(0.15, 0.85);
     let bot_y = (y + h) * u;
+    let bar_x = x;
+    let bar_w = w;
+    let size_k = if w > 360.0 {
+        0.88 + ((cfg.mac_dock_icon_size.clamp(32, 64) as f32 - 32.0) / 32.0) * 0.28
+    } else {
+        1.0
+    };
+    let mag_k = if !cfg.tb_hover_react || cfg.mac_dock_mag_pct <= 102 {
+        0.0
+    } else {
+        ((cfg.mac_dock_mag_pct as f32 - 100.0) / 55.0).clamp(0.05, 1.45)
+    };
+    let (x, w) = if w > 360.0 && spec.layout != DockLayoutKind::FullEdgeTaskbar {
+        let dw = (318.0 * size_k).min(w - 24.0);
+        (x + (w - dw) * 0.5, dw)
+    } else {
+        (x, w)
+    };
 
     // Dedicated high-craft animated previews for all 20 Clean & Minimal Virtual Dock themes
     if theme.is_clean_minimal() {
@@ -7051,7 +7136,7 @@ pub unsafe fn draw_dock_preview_card(
         let ink_m = pal.text_muted;
         let sweep = (anim_phase * 0.9).sin() * 1.15;
         if cfg.clean_top_bar_enabled {
-            draw_clean_top_bar_preview(rt, &br, x, y, w, h, u, theme, cfg, pal);
+            draw_clean_top_bar_preview(rt, &br, bar_x, y, bar_w, h, u, theme, cfg, pal);
         }
         match spec.layout {
             DockLayoutKind::IndependentOrbs => {
@@ -7059,24 +7144,24 @@ pub unsafe fn draw_dock_preview_card(
                 let pure_mode = cfg.clean_top_bar_enabled;
                 let n_icons = if pure_mode { 6usize } else { 5usize };
                 let inside_ind = uses_inside_tile_pill_indicator(theme);
-                let tile_step = if w < 260.0 { 24.5 } else { 27.5 };
+                let tile_step = (if w < 260.0 { 24.5 } else { 27.5 }) * size_k;
                 let pill_w = if pure_mode { 0.0 } else if w < 260.0 { 48.0 } else { 58.0 };
                 let total_w = (n_icons as f32) * tile_step + if pure_mode { 0.0 } else { 10.0 + pill_w };
                 let start_x = x + (w - total_w) * 0.5 + tile_step * 0.5;
-                let base_y = (y + h - 22.0) * u;
+                let base_y = (y + h - 22.0 * size_k) * u;
 
                 for idx in 0..n_icons {
                     let dist = ((idx as f32 - 2.0) - sweep).abs();
-                    let sw_k = if dist < 1.65 {
+                    let sw_k = if mag_k > 0.01 && dist < 1.65 {
                         let c = (FRAC_PI_2 * (dist / 1.65)).cos();
-                        1.0 + 0.28 * c * c
+                        1.0 + 0.28 * mag_k * c * c
                     } else {
                         1.0
                     };
                     let ix = (start_x + idx as f32 * tile_step) * u;
                     let iy = base_y - (sw_k - 1.0) * 8.0 * u;
-                    let hov = dist < 0.65;
-                    let sz = 18.0 * u * sw_k;
+                    let hov = mag_k > 0.01 && dist < 0.65;
+                    let sz = 18.0 * size_k * u * sw_k;
                     draw_standalone_orb_node(rt, d2d, &br, ix, iy, sz, theme, hov, anim_phase, idx, u);
                     let glyph_y = if inside_ind { iy - 1.4 * u } else { iy };
                     let glyph_h = if theme.uses_icon_pads() { sz * 0.30 } else { sz * 0.42 };
@@ -7305,11 +7390,11 @@ pub unsafe fn draw_dock_preview_card(
                 } else {
                     18.0
                 };
-                let shelf_h = if matches!(theme, TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark) {
+                let shelf_h = (if matches!(theme, TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark) {
                     25.5
                 } else {
                     26.5
-                };
+                }) * size_k;
                 let shelf_r = D2D_RECT_F {
                     left: (x + margin_x) * u,
                     top: (y + h - shelf_h - 6.5) * u,
@@ -7331,7 +7416,7 @@ pub unsafe fn draw_dock_preview_card(
                 let apps_l = shelf_r.left + 12.0 * u;
                 let apps_r = shelf_r.right - right_zone - 8.0 * u;
                 let n_icons = 6usize;
-                let step = ((apps_r - apps_l) / n_icons as f32).min(29.0 * u);
+                let step = ((apps_r - apps_l) / n_icons as f32).min(29.0 * size_k * u);
                 let row_cx = (apps_l + apps_r) * 0.5;
                 let is_padded = theme.uses_icon_pads();
                 let ind_shelf = D2D_RECT_F {
@@ -7344,16 +7429,16 @@ pub unsafe fn draw_dock_preview_card(
                 for idx in 0..n_icons {
                     let rel = idx as f32 - 2.5;
                     let dist = (rel - sweep * 0.85).abs();
-                    let sw_k = if dist < 1.85 {
+                    let sw_k = if mag_k > 0.01 && dist < 1.85 {
                         let c = (FRAC_PI_2 * (dist / 1.85)).cos();
-                        1.0 + 0.42 * c * c
+                        1.0 + 0.42 * mag_k * c * c
                     } else {
                         1.0
                     };
-                    let ix = row_cx + rel * step + (rel - sweep * 0.85).clamp(-1.0, 1.0) * 1.4 * u;
+                    let ix = row_cx + rel * step + (rel - sweep * 0.85).clamp(-1.0, 1.0) * 1.4 * mag_k * u;
                     let icy = cy - (sw_k - 1.0) * 7.8 * u;
-                    let sz = (if is_padded { 14.5 } else { 13.0 }) * u * sw_k;
-                    let hov = dist < 0.65;
+                    let sz = (if is_padded { 14.5 } else { 13.0 }) * size_k * u * sw_k;
+                    let hov = mag_k > 0.01 && dist < 0.65;
                     let s_rect = D2D_RECT_F {
                         left: ix - sz * 0.5,
                         top: icy - sz * 0.5,
@@ -7459,6 +7544,10 @@ pub unsafe fn draw_dock_preview_card(
             }
         }
         return;
+    }
+
+    if cfg.is_clean_top_bar_active() {
+        draw_clean_top_bar_preview(rt, &br, bar_x, y, bar_w, h, u, theme, cfg, pal);
     }
 
     match spec.layout {
@@ -8912,37 +9001,49 @@ pub struct CleanTopBarRenderInfo<'a> {
 }
 
 /// Returns the crystal-clear Windows 11 `SetWindowCompositionAttribute` `AABBGGRR` acrylic tint
-/// tuned per Clean & Minimal theme so live desktop windows & live video wallpapers shine through
-/// smoothly (never black, never opaque sludge).
+/// tuned per theme and scaled smoothly by `tint_alpha` (`0..=255`).
+#[allow(dead_code)]
 pub fn clean_acrylic_tint_abgr(theme: TaskbarTheme, for_top_bar: bool) -> u32 {
+    clean_acrylic_tint_abgr_with_alpha(theme, for_top_bar, theme.preview_preset().2)
+}
+
+pub fn clean_acrylic_tint_abgr_with_alpha(
+    theme: TaskbarTheme,
+    for_top_bar: bool,
+    tint_alpha: u8,
+) -> u32 {
     let spec = dock_spec(theme);
     let pack = crate::liquid_backdrop::pack_abgr;
-    if spec.light_mode_paper {
-        let a = if for_top_bar { 56u8 } else { 42u8 };
-        pack(244, 248, 255, a)
+    let (cr, cg, cb, def_a, max_a): (u8, u8, u8, u8, u8) = if spec.light_mode_paper {
+        (244, 248, 255, if for_top_bar { 56 } else { 42 }, 224)
     } else {
         match theme {
             TaskbarTheme::LiquidGlassClear | TaskbarTheme::BorderlessGhost => {
-                // Ultra-clear bright crystal tint (high transparency so live wallpaper gleams right through!)
-                pack(226, 236, 250, if for_top_bar { 22 } else { 18 })
+                (226, 236, 250, if for_top_bar { 22 } else { 18 }, 196)
             }
             TaskbarTheme::Os26LiquidGlassDark => {
-                pack(148, 178, 214, if for_top_bar { 28 } else { 22 })
+                (148, 178, 214, if for_top_bar { 28 } else { 22 }, 208)
             }
             TaskbarTheme::DockLikeDark => {
-                pack(28, 44, 78, if for_top_bar { 48 } else { 42 })
+                (28, 44, 78, if for_top_bar { 48 } else { 42 }, 224)
             }
             TaskbarTheme::OneUiLightChips | TaskbarTheme::LuminosityFloat => {
-                pack(32, 38, 48, if for_top_bar { 46 } else { 38 })
+                (32, 38, 48, if for_top_bar { 46 } else { 38 }, 220)
             }
             TaskbarTheme::MatterTilesDark
             | TaskbarTheme::RosePineTiles
-            | TaskbarTheme::CatppuccinTiles => {
-                pack(spec.bg_mid.0, spec.bg_mid.1, spec.bg_mid.2, 118)
-            }
-            _ => pack(30, 36, 48, if for_top_bar { 44 } else { 36 }),
+            | TaskbarTheme::CatppuccinTiles => (spec.bg_mid.0, spec.bg_mid.1, spec.bg_mid.2, 118, 240),
+            _ => (30, 36, 48, if for_top_bar { 44 } else { 36 }, 224),
         }
-    }
+    };
+    let scaled = scale_dock_theme_alpha(
+        theme,
+        def_a as f32 / 255.0,
+        tint_alpha,
+        2.0 / 255.0,
+        max_a as f32 / 255.0,
+    );
+    pack(cr, cg, cb, (scaled * 255.0).round().clamp(2.0, 244.0) as u8)
 }
 
 /// Computes deterministic hit-test & paint slot geometry for the Clean & Minimal macOS / Windhawk Status Menu Bar.
@@ -9330,7 +9431,7 @@ pub unsafe fn draw_clean_top_bar(
             | TaskbarTheme::RosePineTiles
             | TaskbarTheme::CatppuccinTiles
     );
-    let base_a: f32 = if is_matte_card {
+    let raw_bar_a: f32 = if is_matte_card {
         if live_hw { 0.72 } else { 0.88 }
     } else if matches!(theme, TaskbarTheme::LiquidGlassClear | TaskbarTheme::BorderlessGhost) {
         if live_hw { 0.09 } else if has_blur { 0.14 } else { 0.34 }
@@ -9353,6 +9454,7 @@ pub unsafe fn draw_clean_top_bar(
     } else {
         0.64
     };
+    let base_a = scale_dock_theme_alpha(theme, raw_bar_a, cfg.tint_alpha, 0.02, 0.96);
 
     let (gt, gb) = if cfg.tb_match_wallpaper {
         (pal.glass_top, pal.glass_bot)

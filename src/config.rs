@@ -4377,6 +4377,7 @@ impl CleanTopBarStyle {
         }
     }
 
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             CleanTopBarStyle::Auto => "Auto",
@@ -4385,6 +4386,7 @@ impl CleanTopBarStyle {
         }
     }
 
+    #[allow(dead_code)]
     pub fn next(self) -> Self {
         match self {
             CleanTopBarStyle::Auto => CleanTopBarStyle::FullWidth,
@@ -5899,9 +5901,9 @@ impl AppConfig {
         Self::anim_frame_ms_for(self.anim_fps)
     }
 
-    /// True when the macOS / Windhawk Status Menu Bar should render (Clean & Minimal themes only).
+    /// True when the macOS / Windhawk Status Menu Bar should render for the active Virtual Dock.
     pub fn is_clean_top_bar_active(&self) -> bool {
-        self.mac_dock_enabled && self.tb_theme.is_clean_minimal() && self.clean_top_bar_enabled
+        self.mac_dock_enabled && self.clean_top_bar_enabled
     }
 
     /// Resolves whether the Clean & Minimal Top Bar uses Floating Glass Pill silhouette vs Full-Width macOS band.
@@ -5926,11 +5928,11 @@ impl AppConfig {
         }
     }
 
-    /// Sets the Clean & Minimal Top Bar edge (`Top` or `Bottom`) and auto-swaps the app dock
+    /// Sets the Status Menu Bar edge (`Top` or `Bottom`) and auto-swaps the app dock
     /// to the opposite horizontal edge if they would otherwise collide on the same edge.
     pub fn set_clean_top_bar_edge(&mut self, edge: CleanTopBarEdge) {
         self.clean_top_bar_edge = edge;
-        if self.tb_theme.is_clean_minimal() && self.clean_top_bar_enabled {
+        if self.mac_dock_enabled && self.clean_top_bar_enabled {
             match (edge, self.mac_dock_edge) {
                 (CleanTopBarEdge::Top, MacDockEdge::Top) => {
                     self.mac_dock_edge = MacDockEdge::Bottom;
@@ -5941,6 +5943,30 @@ impl AppConfig {
                 _ => {}
             }
         }
+    }
+
+    /// Resets dock size, magnification, label font, glass opacity, Top Bar defaults, and module
+    /// overrides back to the active theme's curated defaults while keeping `self.tb_theme` & pins!
+    pub fn reset_dock_style_keep_theme(&mut self) {
+        let cur_theme = self.tb_theme;
+        let cur_pins = self.mac_dock_pinned.clone();
+        let cur_edge = self.mac_dock_edge;
+        let cur_hide = self.mac_dock_hide;
+        self.reset_dock_widget_overrides();
+        self.mac_dock_icon_size = 44;
+        self.mac_dock_mag_pct = 155;
+        self.mac_dock_bounce = true;
+        self.mac_dock_dots = true;
+        self.tb_hover_react = true;
+        self.tb_ambient_anim = true;
+        self.clean_top_bar_edge = CleanTopBarEdge::Top;
+        self.clean_top_bar_style = CleanTopBarStyle::Auto;
+        self.clean_top_bar_desktop_only = false;
+        self.apply_taskbar_theme_preset(cur_theme);
+        self.mac_dock_pinned = cur_pins;
+        self.mac_dock_hide = cur_hide;
+        self.sync_hide_mode_from_dock();
+        self.set_mac_dock_edge_smart(cur_edge);
     }
 
     /// Sets `mac_dock_edge` while keeping the Clean & Minimal Top Bar on the opposite horizontal
@@ -6430,6 +6456,10 @@ impl AppConfig {
         let was_dock = self.mac_dock_enabled;
         let now_dock = theme.uses_virtual_dock();
         self.mac_dock_enabled = now_dock;
+        self.clean_top_bar_enabled = theme.is_clean_minimal();
+        if self.is_clean_top_bar_active() {
+            self.set_clean_top_bar_edge(self.clean_top_bar_edge);
+        }
         if was_dock && !now_dock {
             self.sync_hide_mode_from_dock();
         } else if !was_dock && now_dock {
@@ -7910,7 +7940,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "mac_dock_enabled" => cfg.mac_dock_enabled = parse_bool(val),
                 "mac_dock_edge" => cfg.mac_dock_edge = MacDockEdge::from_str(val),
                 "mac_dock_hide" => cfg.mac_dock_hide = MacDockHideMode::from_str(val),
-                "mac_dock_icon_size" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_icon_size = v.clamp(32, 96); },
+                "mac_dock_icon_size" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_icon_size = v.clamp(32, 64); },
                 "mac_dock_mag_pct" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_mag_pct = v.clamp(100, 185); },
                 "mac_dock_bounce" => cfg.mac_dock_bounce = parse_bool(val),
                 "mac_dock_dots" => cfg.mac_dock_dots = parse_bool(val),
@@ -9785,9 +9815,9 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(cli_port);
         assert_eq!(cli_dir, exe_dir.join("Data"));
 
-        // Convert to Portable creates portable.txt, copies subdirs, rewrites wallpaper path, and persists 32 pins + 88px icons + 18px label font
+        // Convert to Portable creates portable.txt, copies subdirs, rewrites wallpaper path, and persists 32 pins + 64px macOS max icons + 18px label font
         let mut cfg = AppConfig::default();
-        cfg.mac_dock_icon_size = 88;
+        cfg.mac_dock_icon_size = 64;
         cfg.w_apps.label_font_size_px = 18;
         cfg.wallpaper_path = src_data
             .join("wallpapers")
@@ -9820,10 +9850,10 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(auto_port);
         assert_eq!(auto_dir, dst_dir);
 
-        // Verify saved portable config.ini roundtrips all 32 pins, 88px icon size, 18px label font, and rewritten wallpaper path
+        // Verify saved portable config.ini roundtrips all 32 pins, 64px icon size, 18px label font, and rewritten wallpaper path
         let raw_ini = fs::read_to_string(dst_dir.join("config.ini")).unwrap();
         let parsed = parse_config_ini(&raw_ini).expect("portable config.ini must parse");
-        assert_eq!(parsed.mac_dock_icon_size, 88);
+        assert_eq!(parsed.mac_dock_icon_size, 64);
         assert_eq!(parsed.w_apps.label_font_size_px, 18);
         assert_eq!(parsed.mac_dock_pinned.len(), 32);
         assert_eq!(parsed.mac_dock_pinned[31].name, "App 31");
@@ -9835,15 +9865,25 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
             parsed.wallpaper_path
         );
 
-        // Clamp guard verification for icon size (32..=96) and label font size (10..=20)
+        // Clamp guard verification for macOS icon size (32..=64) and label font size (10..=20)
         let clamp_ini = "[Taskbar]\nmac_dock_icon_size=140\nw_apps_label_font_size=28\n";
         let (clamped_hi, _, _, _) = parse_config_body(clamp_ini, true);
-        assert_eq!(clamped_hi.mac_dock_icon_size, 96);
+        assert_eq!(clamped_hi.mac_dock_icon_size, 64);
         assert_eq!(clamped_hi.w_apps.label_font_size_px, 20);
         let clamp_lo_ini = "[Taskbar]\nmac_dock_icon_size=16\nw_apps_label_font_size=4\n";
         let (clamped_lo, _, _, _) = parse_config_body(clamp_lo_ini, true);
         assert_eq!(clamped_lo.mac_dock_icon_size, 32);
         assert_eq!(clamped_lo.w_apps.label_font_size_px, 10);
+
+        // Universal Top Bar support: defaults OFF on non-CleanMinimal docks (e.g. QuartzShellDock), but user can enable it explicitly!
+        let mut u_cfg = AppConfig::default();
+        u_cfg.apply_taskbar_theme_preset(TaskbarTheme::QuartzShellDock);
+        assert!(!u_cfg.is_clean_top_bar_active());
+        u_cfg.clean_top_bar_enabled = true;
+        assert!(u_cfg.is_clean_top_bar_active());
+        u_cfg.mac_dock_edge = MacDockEdge::Bottom;
+        u_cfg.set_clean_top_bar_edge(CleanTopBarEdge::Bottom);
+        assert_eq!(u_cfg.mac_dock_edge, MacDockEdge::Top);
 
         let _ = fs::remove_dir_all(&base);
     }

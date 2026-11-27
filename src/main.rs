@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
-    POINT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
+    POINT, RECT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateBitmap, CreateDIBSection, DeleteObject, EndPaint, FillRect, GetStockObject,
@@ -38,6 +38,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, OpenEventW, OpenProcess, ReleaseMutex, SetEvent,
@@ -56,15 +57,16 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetWindowLongW, IsWindowVisible, KillTimer,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SendMessageTimeoutW,
-    SetForegroundWindow, SetTimer, SetWindowPos, TrackPopupMenu, TranslateMessage, GWL_EXSTYLE,
-    GWL_STYLE, HICON, HMENU, HWND_TOP, ICONINFO, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
-    MSG, SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ENDSESSION,
-    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_QUERYENDSESSION, WM_RBUTTONUP, WM_SETTINGCHANGE,
-    WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_TOOLWINDOW, WS_POPUP,
+    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW, GetClassNameW,
+    GetCursorPos, GetForegroundWindow, GetMessageW, GetWindowLongW, GetWindowThreadProcessId,
+    IsWindowVisible, KillTimer, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SendMessageTimeoutW, SetForegroundWindow, SetTimer, SetWindowPos,
+    TrackPopupMenu, TranslateMessage, GWL_EXSTYLE, GWL_STYLE, HICON, HMENU, HWND_TOP, ICONINFO,
+    MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, SMTO_ABORTIFHUNG, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WM_APP, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_HOTKEY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_QUERYENDSESSION, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW,
+    WS_CHILD, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use config::{
@@ -104,6 +106,7 @@ const WM_APP_EXPORT_LOGS: u32 = WM_APP + 29;
 const WM_APP_OPEN_ONBOARDING: u32 = WM_APP + 30;
 const WM_APP_DOCK_ICON_READY: u32 = WM_APP + 31;
 const WM_APP_WP_STATE_CHANGED: u32 = WM_APP + 32;
+const WM_APP_TRAY_OVERFLOW_FALLBACK: u32 = mac_dock::WM_APP_TRAY_OVERFLOW_FALLBACK;
 
 const TIMER_SETTLE_HIDE: usize = 101;
 const TIMER_EVAL_DEBOUNCE: usize = 102;
@@ -179,6 +182,10 @@ struct AppState {
     viz_timer_ms: u32,
     dock_timer_ms: u32,
     game_mode_active: bool,
+    on_battery_or_saver: bool,
+    external_app_focused: bool,
+    last_dock_reserves: Vec<(RECT, taskbar_hide::TaskbarEdge, i32)>,
+    last_workarea_watchdog: Instant,
     shutting_down: bool,
     os_session_ending: bool,
     maintenance_ticks: u32,
@@ -304,7 +311,7 @@ fn run_watchdog(ppid: u32) {
         }
         if !clean {
             let restarted = run_emergency_restore(true);
-            let path = std::env::temp_dir().join("autumn_deck_status.txt");
+            let path = config::status_snapshot_path();
             let _ = fs::write(
                 path,
                 format!(
@@ -326,7 +333,11 @@ fn spawn_watchdog() -> HANDLE {
         CreateEventW(None, true, false, PCWSTR(ev_w.as_ptr())).unwrap_or_default()
     };
     let ppid_s = pid.to_string();
-    TaskbarStyler::spawn_detached_self(&["--watchdog", &ppid_s]);
+    if config::portable_cli_flag() {
+        TaskbarStyler::spawn_detached_self(&["--portable", "--watchdog", &ppid_s]);
+    } else {
+        TaskbarStyler::spawn_detached_self(&["--watchdog", &ppid_s]);
+    }
     h_ev
 }
 
@@ -351,6 +362,9 @@ fn is_instance_alive(hwnd: HWND) -> bool {
 }
 
 fn main() {
+    if std::env::args().any(|a| a.eq_ignore_ascii_case("--portable")) {
+        config::set_portable_cli_flag(true);
+    }
     if let Some(ppid) = parse_watchdog_arg() {
         run_watchdog(ppid);
         return;
@@ -494,6 +508,10 @@ fn main() {
         viz_timer_ms: 0,
         dock_timer_ms: 0,
         game_mode_active: false,
+        on_battery_or_saver: is_on_battery_or_power_saver(),
+        external_app_focused: false,
+        last_dock_reserves: Vec::new(),
+        last_workarea_watchdog: Instant::now() - Duration::from_secs(60),
         shutting_down: false,
         os_session_ending: false,
         maintenance_ticks: 0,
@@ -586,6 +604,8 @@ fn main() {
         )
     };
     boxed.hooks = [hook_show, hook_loc, hook_fg, hook_move, hook_min];
+    let win_events_ok = !hook_show.0.is_null() && !hook_fg.0.is_null();
+    boxed.mac_dock.set_win_event_hooks_active(win_events_ok);
     if boxed.hider.main_taskbar_exists() {
         evaluate_mode_and_apply(&mut boxed, true);
         write_status_snapshot("INIT", &boxed);
@@ -694,7 +714,7 @@ fn handle_cli_ipc() -> Option<bool> {
                 run_emergency_restore(false);
             }
             config::disable_startup_sync();
-            let _ = fs::remove_file(std::env::temp_dir().join("autumn_deck_status.txt"));
+            let _ = fs::remove_file(config::status_snapshot_path());
             return Some(true);
         }
         if low == "--restore" {
@@ -708,7 +728,7 @@ fn handle_cli_ipc() -> Option<bool> {
             }
             let restarted = run_emergency_restore(true);
             let tray_vis = if TaskbarHider::is_main_taskbar_visible() { 1 } else { 0 };
-            let path = std::env::temp_dir().join("autumn_deck_status.txt");
+            let path = config::status_snapshot_path();
             let _ = fs::write(
                 path,
                 format!(
@@ -1083,8 +1103,22 @@ unsafe extern "system" fn global_wnd_proc(
                     handle_dock_action(state, act);
                     return LRESULT(0);
                 }
+                0x0233 => {
+                    // WM_DROPFILES: drag-and-drop .exe/.lnk shortcuts directly onto dock to pin
+                    let act = state
+                        .mac_dock
+                        .handle_drop_files(hwnd, wparam, &mut state.config);
+                    handle_dock_action(state, act);
+                    return LRESULT(0);
+                }
                 0x0010 => return LRESULT(0),
                 0x007B => return LRESULT(0),
+                m if m == WM_APP_TRAY_OVERFLOW_FALLBACK => {
+                    if !state.shutting_down {
+                        state.mac_dock.show_pending_tray_overflow_fallback();
+                    }
+                    return LRESULT(0);
+                }
                 _ => return DefWindowProcW(hwnd, msg, wparam, lparam),
             }
         }
@@ -1451,6 +1485,12 @@ unsafe extern "system" fn global_wnd_proc(
             }
             LRESULT(0)
         }
+        WM_APP_TRAY_OVERFLOW_FALLBACK => {
+            if !state.shutting_down {
+                state.mac_dock.show_pending_tray_overflow_fallback();
+            }
+            LRESULT(0)
+        }
         WM_APP_WP_STATE_CHANGED => {
             if !state.shutting_down {
                 let _ = state.wallpaper.drain_static_load_results();
@@ -1651,6 +1691,16 @@ unsafe extern "system" fn global_wnd_proc(
                 TIMER_WIDGETS_TICK => {
                     state.maintenance_ticks = state.maintenance_ticks.wrapping_add(1);
                     if state.maintenance_ticks % 2 == 0 {
+                        let prev_bat = state.on_battery_or_saver;
+                        let prev_ext = state.external_app_focused;
+                        state.on_battery_or_saver = is_on_battery_or_power_saver();
+                        state.external_app_focused = is_external_app_focused();
+                        if (prev_bat != state.on_battery_or_saver
+                            || prev_ext != state.external_app_focused)
+                            && state.config.mac_dock_enabled
+                        {
+                            update_dock_timer(state);
+                        }
                         let has_max = has_maximized_or_fullscreen_window();
                         let game_fs =
                             state.config.game_mode_pause && is_fullscreen_game_or_app_active();
@@ -1690,15 +1740,24 @@ unsafe extern "system" fn global_wnd_proc(
                     state.widgets.tick();
                     if state.config.mac_dock_enabled {
                         sync_dock_snapshots(state);
-                        if state.maintenance_ticks % 6 == 0
-                            && state.mac_dock.is_active()
+                        if state.mac_dock.is_active()
                             && state.hider.is_hidden
                             && !state.hider.peek_visible
                             && !state.game_mode_active
                             && !mac_dock::is_tray_overflow_active()
                         {
                             let reserves = state.mac_dock.peek_work_area_reserves(&state.config);
-                            let _ = TaskbarHider::apply_dock_work_area(&reserves);
+                            let now_wa = Instant::now();
+                            let reserves_changed = reserves != state.last_dock_reserves;
+                            if should_run_workarea_watchdog(
+                                reserves_changed,
+                                state.last_workarea_watchdog,
+                                now_wa,
+                            ) {
+                                let _ = TaskbarHider::apply_dock_work_area(&reserves);
+                                state.last_dock_reserves = reserves;
+                                state.last_workarea_watchdog = now_wa;
+                            }
                         }
                     }
                     if state.settings.is_visible() {
@@ -1854,6 +1913,8 @@ unsafe extern "system" fn global_wnd_proc(
                 state.hider.refresh_geometry_cache();
             }
             state.styler.invalidate_cache();
+            state.last_dock_reserves.clear();
+            state.last_workarea_watchdog = Instant::now() - Duration::from_secs(60);
             state.settings.refresh_win_prefs();
             state.wallpaper.handle_display_change();
             if state.config.any_match_wallpaper() {
@@ -1912,6 +1973,10 @@ unsafe extern "system" fn global_wnd_proc(
                 state.hider.clear_monitor_cache();
             } else {
                 state.hider.refresh_geometry_cache();
+            }
+            if wparam.0 == SPI_SETWORKAREA_WP || setting_name.is_empty() {
+                state.last_dock_reserves.clear();
+                state.last_workarea_watchdog = Instant::now() - Duration::from_secs(60);
             }
             state.styler.invalidate_for_layout_change();
             state.settings.refresh_win_prefs();
@@ -2534,9 +2599,59 @@ fn handle_dock_action(state: &mut AppState, act: MacDockAction) {
     update_dock_timer(state);
 }
 
+fn is_desktop_shell_class(class_name: &str) -> bool {
+    let c = class_name.trim();
+    [
+        "Progman",
+        "WorkerW",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+    ]
+    .iter()
+    .any(|expected| c.eq_ignore_ascii_case(expected))
+}
+
+fn is_on_battery_or_power_saver() -> bool {
+    let mut pwr = SYSTEM_POWER_STATUS::default();
+    if unsafe { GetSystemPowerStatus(&mut pwr).is_ok() } {
+        pwr.ACLineStatus == 0 || pwr.SystemStatusFlag != 0
+    } else {
+        false
+    }
+}
+
+fn is_external_app_focused() -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+        let mut fg_pid = 0u32;
+        let _ = GetWindowThreadProcessId(fg, Some(&mut fg_pid));
+        if fg_pid == 0 || fg_pid == std::process::id() {
+            return false;
+        }
+        let mut cls_buf = [0u16; 96];
+        let n = GetClassNameW(fg, &mut cls_buf) as usize;
+        let cls = String::from_utf16_lossy(&cls_buf[..n]);
+        !is_desktop_shell_class(&cls)
+    }
+}
+
+fn should_run_workarea_watchdog(
+    reserves_changed: bool,
+    last_check: Instant,
+    now: Instant,
+) -> bool {
+    reserves_changed || now.duration_since(last_check) >= Duration::from_secs(15)
+}
+
 fn update_dock_timer(state: &mut AppState) {
+    let eff_fps = state
+        .config
+        .effective_anim_fps(state.on_battery_or_saver, state.external_app_focused);
     let want_ms = if state.config.mac_dock_enabled {
-        state.mac_dock.desired_timer_ms(&state.config)
+        state.mac_dock.desired_timer_ms_with_fps(&state.config, eff_fps)
     } else {
         0
     };
@@ -2607,8 +2722,11 @@ fn update_viz_timer(state: &mut AppState) {
             || dock_vu_enabled
             || state.widgets.wants_wasapi_loopback()))
         || settings_vis;
+    let eff_fps = state
+        .config
+        .effective_anim_fps(state.on_battery_or_saver, state.external_app_focused);
     state.widgets.set_viz_needed(viz_needed);
-    state.widgets.set_anim_fps(state.config.anim_fps);
+    state.widgets.set_anim_fps(eff_fps);
 
     let tb_ambient = tb_visible
         && tb_fx_on
@@ -2628,7 +2746,7 @@ fn update_viz_timer(state: &mut AppState) {
     let widgets_fx_30fps = widgets_fx && state.widgets.wants_fast_30fps();
 
     let want_ms = compute_viz_timer_ms(
-        state.config.anim_fps,
+        eff_fps,
         state.game_mode_active && !settings_vis,
         widgets_60fps,
         tb_ambient,
@@ -2672,6 +2790,9 @@ fn sync_studio_live(state: &mut AppState) {
         false
     };
     state.settings.sync_tap_fallback_status(state.styler.is_tap_fallback_active(&state.config));
+    state
+        .settings
+        .sync_wallpaper_decode_mode(state.wallpaper.decode_mode());
     state.settings.sync_live_state(
         state.widgets.media_snapshot(),
         state.widgets.cc_snapshot(),
@@ -2726,6 +2847,8 @@ fn evaluate_mode_and_apply(state: &mut AppState, force_style: bool) {
         if !expand_wa || !was_visible_tb {
             wa_mutated |= TaskbarHider::apply_dock_work_area(&dock_reserves);
         }
+        state.last_dock_reserves = dock_reserves;
+        state.last_workarea_watchdog = Instant::now();
         if wa_mutated {
             state.self_workarea_broadcast_until =
                 Some(Instant::now() + Duration::from_millis(1200));
@@ -2767,6 +2890,8 @@ fn evaluate_mode_and_apply(state: &mut AppState, force_style: bool) {
         state.mode_switch_settle_until =
             Some(Instant::now() + Duration::from_millis(550));
         state.mac_dock.disable();
+        state.last_dock_reserves.clear();
+        state.last_workarea_watchdog = Instant::now() - Duration::from_secs(60);
         // Avoid double WorkArea bounce + double refit_maximized_windows() when hider.show()
         // is immediately going to restore native taskbar WorkArea below.
         if should_hide || !restore_wa_on_show {
@@ -3303,8 +3428,7 @@ fn write_status_snapshot(tag: &str, state: &AppState) {
             *guard = Some(now);
         }
     }
-    let temp_dir = std::env::temp_dir();
-    let path: PathBuf = temp_dir.join("autumn_deck_status.txt");
+    let path: PathBuf = config::status_snapshot_path();
     let monitors = TaskbarHider::query_all_monitors();
     let tray_vis = unsafe {
         FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null())
@@ -3338,8 +3462,13 @@ fn write_status_snapshot(tag: &str, state: &AppState) {
     } else {
         tap_diag.last_stage_mode.as_str()
     };
+    let wp_gpu_str = if state.wallpaper.adapter_name().is_empty() {
+        "none"
+    } else {
+        state.wallpaper.adapter_name()
+    };
     let content = format!(
-        "tag={} hidden={} peek={} mode={} pill={} surface={} alpha={} amber={} tap={} tap_tried={} tap_hr={} tap_mode={} pills={} bar={} work={} tray_vis={} widgets={} widgets_gpu={} wp={} wp_active={} wp_bd={} wp_hw={} wp_bvis={} wp_lay={} wp_lwa={} wp_paint={} wp_vvis={} pid={}\r\n",
+        "tag={} hidden={} peek={} mode={} pill={} surface={} alpha={} amber={} tap={} tap_tried={} tap_hr={} tap_mode={} pills={} bar={} work={} tray_vis={} widgets={} widgets_gpu={} wp={} wp_active={} wp_decode={:?} wp_gpu={} wp_fps={} wp_bd={} wp_hw={} wp_bvis={} wp_lay={} wp_lwa={} wp_paint={} wp_vvis={} pid={}\r\n",
         tag,
         state.hider.is_hidden,
         state.hider.peek_visible,
@@ -3360,6 +3489,9 @@ fn write_status_snapshot(tag: &str, state: &AppState) {
         state.widgets.gpu_backend_label(),
         state.config.wallpaper_enabled,
         state.wallpaper.is_active(),
+        state.wallpaper.decode_mode(),
+        wp_gpu_str,
+        state.config.wallpaper_fps_cap.as_str(),
         wp_bd,
         wp_bvalid,
         wp_bvis,
@@ -3449,5 +3581,53 @@ mod tests {
             compute_viz_timer_ms(120, false, false, false, false, false, false, true, false, false, false, true),
             16
         );
+    }
+
+    #[test]
+    fn performance_mode_auto_throttles_and_workarea_watchdog_skips_redundant_calls() {
+        use crate::config::{parse_config_ini, serialize_config_ini, PerformanceMode};
+
+        // 1. PerformanceMode defaults to Balanced and round-trips through config.ini
+        let mut cfg = AppConfig::default();
+        assert_eq!(cfg.performance_mode, PerformanceMode::Balanced);
+        cfg.set_anim_fps(60);
+
+        // Smooth always keeps full 60 FPS
+        cfg.performance_mode = PerformanceMode::Smooth;
+        assert_eq!(cfg.effective_anim_fps(false, false), 60);
+        assert_eq!(cfg.effective_anim_fps(true, false), 60);
+        assert_eq!(cfg.effective_anim_fps(false, true), 60);
+
+        // Balanced runs 60 FPS on AC + desktop/Studio, auto-throttles to <=20 FPS on Battery or external app focus
+        cfg.performance_mode = PerformanceMode::Balanced;
+        assert_eq!(cfg.effective_anim_fps(false, false), 60);
+        assert_eq!(cfg.effective_anim_fps(true, false), 20);
+        assert_eq!(cfg.effective_anim_fps(false, true), 20);
+        assert_eq!(cfg.effective_anim_fps(true, true), 20);
+
+        // Eco always caps at <=18 FPS
+        cfg.performance_mode = PerformanceMode::Eco;
+        assert_eq!(cfg.effective_anim_fps(false, false), 18);
+        assert_eq!(cfg.effective_anim_fps(true, true), 18);
+
+        for mode in [PerformanceMode::Smooth, PerformanceMode::Balanced, PerformanceMode::Eco] {
+            cfg.performance_mode = mode;
+            let ini = serialize_config_ini(&cfg);
+            let parsed = parse_config_ini(&ini).expect("parse performance_mode ini");
+            assert_eq!(parsed.performance_mode, mode);
+        }
+
+        // 2. Desktop shell class detection for focus-based Balanced throttling
+        assert!(is_desktop_shell_class("Progman"));
+        assert!(is_desktop_shell_class("WorkerW"));
+        assert!(is_desktop_shell_class("Shell_TrayWnd"));
+        assert!(!is_desktop_shell_class("Chrome_WidgetWin_1"));
+        assert!(!is_desktop_shell_class("Notepad"));
+
+        // 3. Work-area watchdog skips redundant calls when reserves match within 15s
+        let now = Instant::now();
+        assert!(!should_run_workarea_watchdog(false, now - Duration::from_secs(3), now));
+        assert!(should_run_workarea_watchdog(true, now - Duration::from_secs(1), now));
+        assert!(should_run_workarea_watchdog(false, now - Duration::from_secs(16), now));
     }
 }

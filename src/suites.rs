@@ -221,7 +221,7 @@ fn suite_theme_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-pub const SUITE_INI_SCHEMA: u32 = 4;
+pub const SUITE_INI_SCHEMA: u32 = 5;
 
 pub fn suite_to_ini(suite: &SuitePreset) -> String {
     let b = |v: bool| if v { 1 } else { 0 };
@@ -861,17 +861,10 @@ pub fn suite_widget_preview_items(
         ));
     }
     for ext in suite.ext_specs {
-        let (bw, bh) = if ext.id == ExtWidgetId::Weather
-            && ext.theme == ExtWidgetTheme::CelestialSunDial
-        {
-            if ext.compact {
-                (336.0, 178.0)
-            } else {
-                (372.0, 214.0)
-            }
-        } else {
-            ext.id.base_size(ext.compact)
-        };
+        let mut ew = crate::widgets_extra::ExtWidgetConfig::default_for(ext.id);
+        ew.theme = ext.theme;
+        ew.compact_mode = ext.compact;
+        let (bw, bh) = ew.logical_size(ext.id);
         let sc = ext.scale_pct as f32 / 100.0;
         items.push((SuitePreviewWidgetKind::Ext(ext.id), ext.x, ext.y, bw * sc, bh * sc));
     }
@@ -5435,7 +5428,7 @@ pub const SUITES: [SuitePreset; 72] = [
         ext_specs: &[
             SuiteExtSpec {
                 id: ExtWidgetId::Weather,
-                x: 926,
+                x: 864,
                 y: 34,
                 theme: ExtWidgetTheme::HoroRoyalOak,
                 font_style: ExtFontStyle::GeometricBold,
@@ -5445,7 +5438,7 @@ pub const SUITES: [SuitePreset; 72] = [
             SuiteExtSpec {
                 id: ExtWidgetId::WorldClock,
                 x: 998,
-                y: 200,
+                y: 268,
                 theme: ExtWidgetTheme::HoroRoyalOak,
                 font_style: ExtFontStyle::GeometricBold,
                 scale_pct: 100,
@@ -5526,7 +5519,7 @@ pub const SUITES: [SuitePreset; 72] = [
             },
             SuiteExtSpec {
                 id: ExtWidgetId::Weather,
-                x: 926,
+                x: 876,
                 y: 36,
                 theme: ExtWidgetTheme::HoroPatekMoon,
                 font_style: ExtFontStyle::EditorialSerif,
@@ -5799,7 +5792,7 @@ pub const SUITES: [SuitePreset; 72] = [
             },
             SuiteExtSpec {
                 id: ExtWidgetId::Weather,
-                x: 856,
+                x: 794,
                 y: 36,
                 theme: ExtWidgetTheme::HoroSubmarinerEmerald,
                 font_style: ExtFontStyle::GeometricBold,
@@ -6263,7 +6256,7 @@ pub const SUITES: [SuitePreset; 72] = [
             },
             SuiteExtSpec {
                 id: ExtWidgetId::Weather,
-                x: 926,
+                x: 864,
                 y: 108,
                 theme: ExtWidgetTheme::HoroSapphireObsidian,
                 font_style: ExtFontStyle::DefaultSans,
@@ -6273,7 +6266,7 @@ pub const SUITES: [SuitePreset; 72] = [
             SuiteExtSpec {
                 id: ExtWidgetId::Clipboard,
                 x: 998,
-                y: 284,
+                y: 342,
                 theme: ExtWidgetTheme::HoroSapphireObsidian,
                 font_style: ExtFontStyle::DefaultSans,
                 scale_pct: 100,
@@ -6418,7 +6411,7 @@ pub const SUITES: [SuitePreset; 72] = [
         ext_specs: &[
             SuiteExtSpec {
                 id: ExtWidgetId::Weather,
-                x: 926,
+                x: 864,
                 y: 96,
                 theme: ExtWidgetTheme::HoroSubmarinerEmerald,
                 font_style: ExtFontStyle::GeometricBold,
@@ -6437,7 +6430,7 @@ pub const SUITES: [SuitePreset; 72] = [
             SuiteExtSpec {
                 id: ExtWidgetId::Calendar,
                 x: 980,
-                y: 268,
+                y: 330,
                 theme: ExtWidgetTheme::HoroSubmarinerEmerald,
                 font_style: ExtFontStyle::DefaultSans,
                 scale_pct: 100,
@@ -6691,7 +6684,7 @@ pub const SUITES: [SuitePreset; 72] = [
             },
             SuiteExtSpec {
                 id: ExtWidgetId::Weather,
-                x: 856,
+                x: 794,
                 y: 36,
                 theme: ExtWidgetTheme::HoroPatekMoon,
                 font_style: ExtFontStyle::EditorialSerif,
@@ -6701,7 +6694,7 @@ pub const SUITES: [SuitePreset; 72] = [
             SuiteExtSpec {
                 id: ExtWidgetId::Notes,
                 x: 910,
-                y: 212,
+                y: 270,
                 theme: ExtWidgetTheme::HoroPatekMoon,
                 font_style: ExtFontStyle::EditorialSerif,
                 scale_pct: 100,
@@ -6864,7 +6857,7 @@ pub const SUITES: [SuitePreset; 72] = [
             },
             SuiteExtSpec {
                 id: ExtWidgetId::Weather,
-                x: 926,
+                x: 864,
                 y: 32,
                 theme: ExtWidgetTheme::HoroSubmarinerEmerald,
                 font_style: ExtFontStyle::EditorialSerif,
@@ -6874,7 +6867,7 @@ pub const SUITES: [SuitePreset; 72] = [
             SuiteExtSpec {
                 id: ExtWidgetId::Notes,
                 x: 980,
-                y: 206,
+                y: 266,
                 theme: ExtWidgetTheme::HoroSubmarinerEmerald,
                 font_style: ExtFontStyle::EditorialSerif,
                 scale_pct: 100,

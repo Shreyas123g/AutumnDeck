@@ -46,7 +46,7 @@
 
 ## Features
 - **Native Windows 11 Taskbar Styler:** Blur, Acrylic, Clear, Split Pill, and Katana Smoked Glass via lightweight XAML TAP composition.
-- **Interactive & PBR Realistic Docks:** 90 curated themes including **20 Clean & Minimal** macOS Liquid Glass / Windhawk themes (Paired Top Menu Bar with Control Center & Calendar Popovers, Desktop-Only mode, Smart Titlebar Dodge, Pure Bottom Dock) plus smooth magnification, live app previews, tray overflow, and 12 baked PBR surface materials (Carbon, Titanium, Walnut, Silk, Marble, and more).
+- **Interactive & PBR Realistic Docks:** 90 curated themes including **20 Clean & Minimal** macOS Liquid Glass / Windhawk themes (Paired Top Menu Bar with Control Center & Calendar Popovers, easy **Top Menu Bar: ON/OFF** toggle in Themes & Dock context menus, Desktop-Only mode, Smart Titlebar Dodge, Pure Bottom Dock) plus **32–96 px Dock Icon Scaling**, **10–20 px Inline App Label Font Scaling**, **32 pinned apps** with drag-and-drop pinning & drag-to-reorder, locale-independent **Show Hidden Icons (`^`)**, and 12 baked PBR surface materials.
 - **Modular Desktop Widgets + Pen & Canvas 2.0:**
   - Clock & Script Date
   - Dynamic Island Capsule Music Player & Turntable with Live Visualizer
@@ -54,9 +54,9 @@
   - Telemetry Ring-Pill Vitals HUD
   - Control Center, Notes & To-Do, Pomodoro, Quick Apps & Extended Utility Suite (19 widgets total)
   - **10 Photorealistic Haute Horlogerie Themes** across all 19 widgets with distinct physical silhouettes, machined bezels, dial textures, and per-part material overrides
-  - Full per-element Move, Scale, Rotate, Font Picker, and Live Chameleon wallpaper color matching
-- **Live Wallpaper Engine:** Hardware-accelerated DXGI Flip-Model SwapChain for `.mp4`/`.mkv`/`.webm` video loops and high-res `.png`/`.jpg`/`.webp` static wallpapers with instant fullscreen/game auto-pause.
-- **72 Curated Suites & Portable Backup:** 8 curated Suite Gallery folders (including **18 Photorealistic Horology** flagship setups) with 1-click switching plus **Export / Import Setup (`.autumn`)** under App Settings (`⚙`).
+  - Full per-element Move, Scale, Rotate, Font Picker, **Reset Style vs Discard**, and Live Chameleon wallpaper color matching
+- **Live Wallpaper Engine & Performance Mode:** Hardware-accelerated DXGI Flip-Model SwapChain (triple-buffered with non-low-latency B-frame lookahead, **Auto / 60 / 30 FPS** cap, and async Chameleon GPU readback) for `.mp4`/`.mkv`/`.webm` video loops and `.png`/`.jpg`/`.webp` static wallpapers, background non-blocking telemetry worker, offscreen widget caching, and **Performance Mode (`Smooth` / `Balanced Auto-Eco` / `Eco`)**.
+- **72 Curated Suites & True Portable Mode:** 8 curated Suite Gallery folders (including **18 Photorealistic Horology** flagship setups) with 1-click switching, **Export / Import Setup (`.autumn`)**, and **True Portable Mode** (`portable.txt` / `--portable` storing everything inside `.\Data\`) under App Settings (`⚙`).
 
 ---
 
@@ -82,8 +82,9 @@
 > Official digitally signed store edition is also available via **[Option 1: Microsoft Store](https://apps.microsoft.com/detail/9P6NTH74WSMD)**.
 
 1. Download from **[GitHub Releases](https://github.com/Shreyas123g/AutumnDeck/releases)**:
-   - **Portable Edition:** `AutumnDeck-2.0.9-Portable.zip` (extract anywhere and run `AutumnDeck.exe`).
-   - **Installer:** `AutumnDeck-Setup-2.0.9.exe`
+   - **Portable Edition:** `AutumnDeck-2.1.0-Portable.zip` (extract anywhere and run `AutumnDeck.exe` — includes `portable.txt` to store settings inside `.\Data\`).
+   - **Installer:** `AutumnDeck-Setup-2.1.0.exe`
+   - **MSIX Package:** `AutumnDeck_2.1.0.0_x64.msix`
 2. Right-click the **AutumnDeck** tray icon (or press `Ctrl + Alt + T`) to open **AutumnDeck Studio**.
 3. Open **`⚙` App Settings** in the top-right header to toggle **Launch at Windows Login** or **Export / Import Setup**.
 

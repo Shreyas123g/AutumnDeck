@@ -4271,6 +4271,176 @@ pub unsafe fn draw_control_center_widget_live_with_viz(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cc_fg_key(
+    s: f32,
+    cfg: &AppConfig,
+    pal: &ThemePalette,
+    cc: &CcSnapshot,
+    scroll_y: f32,
+    hover: WidgetHitZone,
+    bright_t_override: Option<f32>,
+    vol_t_override: Option<(f32, bool)>,
+    has_custom_fonts: bool,
+) -> u64 {
+    let mut h = FgKeyHasher::new(0xC2);
+    h.mix_f32(s);
+    h.mix_pal(pal);
+    h.mix_u8(cfg.cc_tile_style);
+    h.mix_u8(cfg.cc_glass_alpha);
+    h.mix_u8(cfg.cc_rim_alpha);
+    h.mix_u8(cfg.cc_corner_radius);
+    h.mix_bool(cfg.cc_show_plate);
+    h.mix_bool(cfg.cc_show_tiles);
+    h.mix_bool(cfg.cc_show_bright);
+    h.mix_bool(cfg.cc_show_vol);
+    h.mix_bool(cfg.cc_show_labels);
+    h.mix_bool(cfg.cc_show_scrollbar);
+    h.mix_bool(cfg.cc_show_dividers);
+    h.mix_str(&cfg.cc_font_label);
+    h.mix_str(&cfg.cc_font_val);
+    h.mix_u8(cfg.cc_font_scale_pct);
+    h.mix_bool(cfg.cc_use_custom_color);
+    h.mix_bool(cfg.cc_match_wallpaper);
+    h.mix_u64(cfg.cc_accent_rgb as u64);
+    h.mix_u64(cfg.cc_text_rgb as u64);
+    h.mix_u64(cfg.cc_bg_rgb as u64);
+    for tr in &cfg.cc_elem_transforms {
+        h.mix_tr(tr);
+    }
+    for f in &cfg.cc_elem_fonts {
+        h.mix_str(f);
+    }
+    h.mix_horology(&cfg.cc_horology);
+    h.mix_bool(cc.wifi_on);
+    h.mix_str(&cc.wifi_name);
+    h.mix_u8(cc.wifi_signal);
+    h.mix_bool(cc.bt_on);
+    h.mix_str(&cc.bt_sub);
+    h.mix_bool(cc.air_on);
+    h.mix_bool(cc.acc_on);
+    h.mix_bool(cc.saver_on);
+    h.mix_bool(cc.cap_on);
+    h.mix_bool(cc.night_on);
+    h.mix_bool(cc.hot_on);
+    h.mix_bool(cc.near_on);
+    h.mix_bool(cc.disp_on);
+    h.mix_u8(cc.bright_pct);
+    h.mix_u8(cc.vol_pct);
+    h.mix_bool(cc.vol_muted);
+    h.mix_f32(scroll_y);
+    // Only include hover state when targeting Control Center so hovering other widgets hits cache
+    let cc_hov_id: u32 = match hover {
+        WidgetHitZone::CcBar => 1,
+        WidgetHitZone::CcTile(i, sub) => 10 + (i as u32) * 2 + u32::from(sub),
+        WidgetHitZone::CcBrightSlider => 40,
+        WidgetHitZone::CcVolSlider => 41,
+        WidgetHitZone::CcMuteBtn => 42,
+        WidgetHitZone::CcScrollUp => 43,
+        WidgetHitZone::CcScrollDown => 44,
+        WidgetHitZone::CcScrollTrack => 45,
+        _ => 0,
+    };
+    h.mix_u64(cc_hov_id as u64);
+    h.mix_u64(bright_t_override.map(|v| (v.to_bits() as u64) | (1u64 << 32)).unwrap_or(0));
+    h.mix_u64(
+        vol_t_override
+            .map(|(v, m)| ((v.to_bits() as u64) << 1) | u64::from(m) | (1u64 << 40))
+            .unwrap_or(0),
+    );
+    h.mix_bool(has_custom_fonts);
+    h.finish()
+}
+
+/// Cached Control Center renderer: composites the offscreen `ID2D1Bitmap` whenever toggles,
+/// sliders, hover state, and interactive hover FX are idle instead of re-tessellating every tick.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_control_center_widget_live_with_viz_cached(
+    rt: &ID2D1RenderTarget,
+    dw: &IDWriteFactory,
+    d2d: Option<&ID2D1Factory>,
+    custom_fonts: Option<&IDWriteFontCollection>,
+    x: f32,
+    y: f32,
+    s: f32,
+    cfg: &AppConfig,
+    cc: &CcSnapshot,
+    scroll_y: f32,
+    hover: WidgetHitZone,
+    bright_t_override: Option<f32>,
+    vol_t_override: Option<(f32, bool)>,
+    fx_viz: Option<&VizSnapshot>,
+    fg_cache: &mut WidgetFgCacheSlot,
+    cache_gen: u64,
+) {
+    if cfg.is_cc_all_elements_off() {
+        return;
+    }
+    let has_live_fx = fx_viz
+        .map(|v| {
+            v.hover_mix > 0.004
+                || v.hover_active
+                || v.ripples.iter().any(|r| r.active)
+                || (cfg.widgets_live_material
+                    && v.phase > 0.0001
+                    && crate::config::cc_style_horology(cfg.cc_tile_style)
+                        .map(|ht| ht.has_idle_motion())
+                        .unwrap_or(false))
+        })
+        .unwrap_or(false);
+    let max_elem_pad = crate::desktop_widgets::elem_transforms_pad(&cfg.cc_elem_transforms, s);
+    if has_live_fx || max_elem_pad > 64.0 * s {
+        draw_control_center_widget_live_with_viz(
+            rt,
+            dw,
+            d2d,
+            custom_fonts,
+            x,
+            y,
+            s,
+            cfg,
+            cc,
+            scroll_y,
+            hover,
+            bright_t_override,
+            vol_t_override,
+            fx_viz,
+        );
+        return;
+    }
+    let pal = resolve_palette_for(cfg, cfg.cc_match_wallpaper);
+    let key = cc_fg_key(
+        s,
+        cfg,
+        &pal,
+        cc,
+        scroll_y,
+        hover,
+        bright_t_override,
+        vol_t_override,
+        custom_fonts.is_some(),
+    );
+    let pad = (18.0 * s + max_elem_pad).min(80.0 * s);
+    fg_cache.draw_cached(rt, cache_gen, key, x, y, 388.0 * s, 298.0 * s, pad, |fg_rt| {
+        draw_control_center_widget_live_with_viz(
+            fg_rt,
+            dw,
+            d2d,
+            custom_fonts,
+            x,
+            y,
+            s,
+            cfg,
+            cc,
+            scroll_y,
+            hover,
+            bright_t_override,
+            vol_t_override,
+            fx_viz,
+        );
+    });
+}
+
 #[inline]
 fn tint_cc_pal(base: &ThemePalette, color_rgb: Option<u32>) -> ThemePalette {
     let mut p = *base;

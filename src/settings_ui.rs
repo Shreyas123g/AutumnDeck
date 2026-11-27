@@ -58,25 +58,28 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::config::{
     apply_win_explorer_pref, apply_win_explorer_pref_checked, apps_style_badge, apps_style_horology,
     apps_style_label, apps_style_subtitle, apps_styles_in_folder, cc_style_badge, cc_style_horology,
-    cc_style_label, cc_style_subtitle, cc_styles_in_folder, default_apps, default_dock_pinned,
-    discover_video_wallpapers, discover_wallpapers_fast_local, is_startup_enabled,
-    is_static_image_wallpaper_path, open_app_data_folder, open_kofi_support_page,
-    read_win_taskbar_prefs, set_startup_enabled, vitals_style_badge, vitals_style_horology,
+    cc_style_label, cc_style_subtitle, cc_styles_in_folder, convert_current_setup_to_portable,
+    default_dock_pinned, discover_video_wallpapers, discover_wallpapers_fast_local,
+    is_portable_mode, is_startup_enabled, is_static_image_wallpaper_path, open_app_data_folder,
+    open_kofi_support_page, portable_data_dir_display, read_win_taskbar_prefs, set_startup_enabled, vitals_style_badge, vitals_style_horology,
     vitals_style_label, vitals_style_subtitle, vitals_styles_in_folder, AppConfig, AppShortcut,
     AppsThemeFolder, CanvasStylePreset, CcThemeFolder, ClockAlign, ClockElemId, ClockElemTransform,
     ClockStyle, ClockThemeFolder, DockArtLayer, DockClockEngine, DockClockWheelAction,
     DockIndicatorStyle, DockLayoutKind, DockShelfShape, DockSlotCardStyle, HudTelemetryContent,
-    HudWingMode, MacDockEdge, MacDockHideMode, MusicStyle, MusicThemeFolder, PillMode,
-    StartBadgeStyle, SurfaceMode, TaskbarMode, TaskbarTheme, TaskbarThemeFolder, TaskbarVizStyle,
+    HudWingMode, MacDockEdge, MacDockHideMode, MusicStyle, MusicThemeFolder, PerformanceMode,
+    PillMode, StartBadgeStyle, SurfaceMode, TaskbarMode, TaskbarTheme, TaskbarThemeFolder,
+    TaskbarVizStyle,
     TaskbarWidgetTab, TrayAudioMeterStyle, TrayBatteryMeterStyle, TrayNetMeterStyle,
-    VideoWallpaperPreset, VitalsThemeFolder, VizColorMode, WidgetCanvasTarget, WinTaskbarPrefs,
-    KOFI_SUPPORT_URL,
+    VideoWallpaperPreset, VitalsThemeFolder, VizColorMode, WallpaperFpsCap, WidgetCanvasTarget,
+    WinTaskbarPrefs, KOFI_SUPPORT_URL,
 };
 use crate::horology_pbr::{
     HorologyBezelFinish, HorologyDialFinish, HorologyPartConfig, HorologyTheme,
     HOROLOGY_ACCENT_SWATCHES, HOROLOGY_BEZEL_SWATCHES, HOROLOGY_DIAL_SWATCHES,
 };
-use crate::taskbar_styler::{draw_taskbar_preview_card_with_viz, VizSnapshot};
+use crate::taskbar_styler::{
+    draw_taskbar_preview_card_with_viz, tap_portable_fallback_reason, VizSnapshot,
+};
 use crate::suites::{
     apply_suite_to_config, find_suite_by_id, suite_widget_preview_items, suites_in_category,
     SuiteCategory, SuitePreset, SuitePreviewWidgetKind, SUITES,
@@ -96,7 +99,7 @@ use crate::theme::{
     resolve_palette_for, rgb_to_hsl, rgb_to_u32, u32_to_rgb, FontCategory, FontEntry, ThemePalette,
 };
 use crate::video_wallpaper::{
-    decode_wallpaper_thumbnail_bgra, is_lively_running, pick_video_file,
+    decode_wallpaper_thumbnail_bgra, is_lively_running, pick_video_file, VideoDecodeMode,
 };
 use crate::widgets_extra::{
     draw_ext_widget_with_boxes, draw_ext_widget_with_viz, widget_feature_spec, ExtFontStyle,
@@ -514,6 +517,7 @@ enum SliderKind {
     WallpaperVolume,
     MacDockIconSize,
     MacDockMagPct,
+    MacDockLabelFontSize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1040,6 +1044,7 @@ enum HitZone {
     ToggleTbAmbientAnim,
     ToggleVizEcoFps,
     SetAnimFpsPreset(u8),
+    SetPerformanceMode(PerformanceMode),
     ToggleWallpaperQuick,
     ModeCard(TaskbarMode),
     PillBtn(PillMode),
@@ -1052,6 +1057,7 @@ enum HitZone {
     ToggleStartup,
     ToggleGameModePause,
     BtnExportDiagnostics,
+    BtnConvertPortable,
     BtnToggleNow,
     BtnQuitApp,
     OnboardStep(u8),
@@ -1180,6 +1186,7 @@ enum HitZone {
     // Desktop Widgets Customization
     BtnBackGallery,
     BtnResetWidget,
+    BtnDiscardWidget,
     BtnResetWidgetPos,
     BtnApplyWidgets,
     PillWidgets12h,
@@ -1276,6 +1283,7 @@ enum HitZone {
     ToggleWallpaperMaster,
     ToggleWallpaperPauseMax,
     ToggleWallpaperMute,
+    WallpaperFpsCap(WallpaperFpsCap),
     BtnBrowseWallpaper,
     BtnStopLively,
     BtnRefreshWallpapers,
@@ -1591,6 +1599,7 @@ pub struct SettingsController {
     wp_presets_shared: Arc<Mutex<Option<Vec<VideoWallpaperPreset>>>>,
     wallpaper_scroll: usize,
     wallpaper_status: String,
+    wallpaper_decode_mode: VideoDecodeMode,
     lively_running: bool,
     wp_thumbs: WallpaperThumbCache,
     applied_flash: bool,
@@ -1642,6 +1651,8 @@ pub struct SettingsController {
     last_live_preview_at: Option<Instant>,
     clock_style_profiles: HashMap<u8, ClockStyleProfile>,
     music_style_profiles: HashMap<u8, MusicStyleProfile>,
+    customize_baseline: Option<(WidgetCanvasTarget, AppConfig)>,
+    footer_discard_visible: std::cell::Cell<bool>,
 }
 
 fn create_settings_dc_rt(f: &ID2D1Factory) -> Option<ID2D1DCRenderTarget> {
@@ -1855,6 +1866,7 @@ impl SettingsController {
             wp_presets_shared: Arc::new(Mutex::new(None)),
             wallpaper_scroll: 0,
             wallpaper_status: "Disabled".to_string(),
+            wallpaper_decode_mode: VideoDecodeMode::Unknown,
             lively_running: false,
             wp_thumbs: WallpaperThumbCache::new(),
             applied_flash: false,
@@ -1906,6 +1918,8 @@ impl SettingsController {
             last_live_preview_at: None,
             clock_style_profiles: HashMap::new(),
             music_style_profiles: HashMap::new(),
+            customize_baseline: None,
+            footer_discard_visible: std::cell::Cell::new(false),
         }
     }
 
@@ -2299,6 +2313,17 @@ impl SettingsController {
                 || (prev.3.round() as i32) != (telemetry_ext.3.round() as i32)
                 || (prev.4.round() as i32) != (telemetry_ext.4.round() as i32);
             if (tel_changed || min_changed) && !self.is_widgets_anim_visible() {
+                unsafe {
+                    let _ = InvalidateRect(Some(self.hwnd), None, false);
+                }
+            }
+        }
+    }
+
+    pub fn sync_wallpaper_decode_mode(&mut self, mode: VideoDecodeMode) {
+        if self.wallpaper_decode_mode != mode {
+            self.wallpaper_decode_mode = mode;
+            if self.is_visible() && self.active_tab == StudioTab::Wallpaper {
                 unsafe {
                     let _ = InvalidateRect(Some(self.hwnd), None, false);
                 }
@@ -2979,6 +3004,12 @@ impl SettingsController {
     pub fn sync_from_config(&mut self, cfg: &AppConfig) {
         self.draft_cfg = cfg.clone();
         self.draft_initialized = true;
+        if self.is_in_customize_editor() {
+            self.customize_baseline = self.current_widget_canvas_target().map(|t| (t, cfg.clone()));
+        } else {
+            self.customize_baseline = None;
+        }
+        self.footer_discard_visible.set(false);
         let max_scroll = self.draft_cfg.apps.len().saturating_sub(3);
         if self.apps_scroll > max_scroll {
             self.apps_scroll = max_scroll;
@@ -3899,7 +3930,9 @@ impl SettingsController {
                         SettingsCommand::StyleUpdated
                     } else if matches!(
                         kind,
-                        SliderKind::MacDockIconSize | SliderKind::MacDockMagPct
+                        SliderKind::MacDockIconSize
+                            | SliderKind::MacDockMagPct
+                            | SliderKind::MacDockLabelFontSize
                     ) {
                         SettingsCommand::MacDockUpdated
                     } else if matches!(
@@ -4370,172 +4403,223 @@ impl SettingsController {
         }
     }
 
-    fn sync_canvas_target_to_live(&self, cfg: &mut AppConfig, target: WidgetCanvasTarget) {
-        let src = &self.draft_cfg;
-        cfg.widgets_enabled = src.widgets_enabled;
+    fn is_in_customize_editor(&self) -> bool {
+        matches!(
+            self.widget_page,
+            WidgetPage::CustomizeDateTime
+                | WidgetPage::CustomizeApps
+                | WidgetPage::CustomizeVitals
+                | WidgetPage::CustomizeMusic
+                | WidgetPage::CustomizeControlCenter
+                | WidgetPage::CustomizeExt(_)
+                | WidgetPage::EditWidgetCanvas(_)
+        )
+    }
+
+    fn canvas_target_differs(a: &AppConfig, b: &AppConfig, target: WidgetCanvasTarget) -> bool {
+        let mut pa = AppConfig::default();
+        let mut pb = AppConfig::default();
+        Self::copy_canvas_target_config(a, &mut pa, target);
+        Self::copy_canvas_target_config(b, &mut pb, target);
+        pa != pb
+    }
+
+    fn has_customize_session_changes(&self) -> bool {
+        if let Some((tgt, ref base)) = self.customize_baseline {
+            if self.current_widget_canvas_target() == Some(tgt) {
+                return Self::canvas_target_differs(&self.draft_cfg, base, tgt);
+            }
+        }
+        false
+    }
+
+    fn hit_test_custom_footer(&self, x: f32, y: f32) -> Option<HitZone> {
+        if in_rect(x, y, 26.0, 584.0, 146.0, 622.0) {
+            return Some(HitZone::BtnResetWidget);
+        }
+        if (self.footer_discard_visible.get() || self.has_customize_session_changes())
+            && in_rect(x, y, 154.0, 584.0, 248.0, 622.0)
+        {
+            return Some(HitZone::BtnDiscardWidget);
+        }
+        if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
+            return Some(HitZone::BtnBackGallery);
+        }
+        if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
+            return Some(HitZone::BtnApplyWidgets);
+        }
+        None
+    }
+
+    fn copy_canvas_target_config(src: &AppConfig, dst: &mut AppConfig, target: WidgetCanvasTarget) {
+        dst.widgets_enabled = src.widgets_enabled;
         match target {
             WidgetCanvasTarget::DateTime => {
-                cfg.show_datetime = src.show_datetime;
-                cfg.set_clock_24h(src.widgets_24h);
-                cfg.dt_x = src.dt_x;
-                cfg.dt_y = src.dt_y;
-                cfg.dt_scale_pct = src.dt_scale_pct;
-                cfg.dt_show_plate = src.dt_show_plate;
-                cfg.dt_show_clock = src.dt_show_clock;
-                cfg.dt_glass_alpha = src.dt_glass_alpha;
-                cfg.dt_rim_alpha = src.dt_rim_alpha;
-                cfg.dt_show_spine = src.dt_show_spine;
-                cfg.dt_show_orb = src.dt_show_orb;
-                cfg.dt_style = src.dt_style;
-                cfg.dt_align = src.dt_align;
-                cfg.dt_show_seconds = src.dt_show_seconds;
-                cfg.dt_show_ampm = src.dt_show_ampm;
-                cfg.dt_show_weekday = src.dt_show_weekday;
-                cfg.dt_show_date = src.dt_show_date;
-                cfg.dt_corner_radius = src.dt_corner_radius;
-                cfg.dt_letter_spacing = src.dt_letter_spacing;
-                cfg.dt_font_day = src.dt_font_day.clone();
-                cfg.dt_font_script = src.dt_font_script.clone();
-                cfg.dt_font_clock = src.dt_font_clock.clone();
-                cfg.dt_font_sub = src.dt_font_sub.clone();
-                cfg.dt_use_custom_color = src.dt_use_custom_color;
-                cfg.dt_accent_rgb = src.dt_accent_rgb;
-                cfg.dt_digits_rgb = src.dt_digits_rgb;
-                cfg.dt_script_rgb = src.dt_script_rgb;
-                cfg.dt_bg_rgb = src.dt_bg_rgb;
-                cfg.dt_elem_transforms = src.dt_elem_transforms;
-                cfg.dt_elem_fonts = src.dt_elem_fonts.clone();
-                cfg.dt_match_wallpaper = src.dt_match_wallpaper;
-                cfg.dt_hover_fx = src.dt_hover_fx;
-                cfg.dt_horology = src.dt_horology;
+                dst.show_datetime = src.show_datetime;
+                dst.set_clock_24h(src.widgets_24h);
+                dst.dt_x = src.dt_x;
+                dst.dt_y = src.dt_y;
+                dst.dt_scale_pct = src.dt_scale_pct;
+                dst.dt_show_plate = src.dt_show_plate;
+                dst.dt_show_clock = src.dt_show_clock;
+                dst.dt_glass_alpha = src.dt_glass_alpha;
+                dst.dt_rim_alpha = src.dt_rim_alpha;
+                dst.dt_show_spine = src.dt_show_spine;
+                dst.dt_show_orb = src.dt_show_orb;
+                dst.dt_style = src.dt_style;
+                dst.dt_align = src.dt_align;
+                dst.dt_show_seconds = src.dt_show_seconds;
+                dst.dt_show_ampm = src.dt_show_ampm;
+                dst.dt_show_weekday = src.dt_show_weekday;
+                dst.dt_show_date = src.dt_show_date;
+                dst.dt_corner_radius = src.dt_corner_radius;
+                dst.dt_letter_spacing = src.dt_letter_spacing;
+                dst.dt_font_day = src.dt_font_day.clone();
+                dst.dt_font_script = src.dt_font_script.clone();
+                dst.dt_font_clock = src.dt_font_clock.clone();
+                dst.dt_font_sub = src.dt_font_sub.clone();
+                dst.dt_use_custom_color = src.dt_use_custom_color;
+                dst.dt_accent_rgb = src.dt_accent_rgb;
+                dst.dt_digits_rgb = src.dt_digits_rgb;
+                dst.dt_script_rgb = src.dt_script_rgb;
+                dst.dt_bg_rgb = src.dt_bg_rgb;
+                dst.dt_elem_transforms = src.dt_elem_transforms;
+                dst.dt_elem_fonts = src.dt_elem_fonts.clone();
+                dst.dt_match_wallpaper = src.dt_match_wallpaper;
+                dst.dt_hover_fx = src.dt_hover_fx;
+                dst.dt_horology = src.dt_horology;
             }
             WidgetCanvasTarget::Apps => {
-                cfg.show_apps = src.show_apps;
-                cfg.apps_x = src.apps_x;
-                cfg.apps_y = src.apps_y;
-                cfg.apps_scale_pct = src.apps_scale_pct;
-                cfg.apps_glass_alpha = src.apps_glass_alpha;
-                cfg.apps_rim_alpha = src.apps_rim_alpha;
-                cfg.apps_show_add_tile = src.apps_show_add_tile;
-                cfg.apps_match_theme = src.apps_match_theme;
-                cfg.apps_individual_move = src.apps_individual_move;
-                cfg.apps_match_wallpaper = src.apps_match_wallpaper;
-                cfg.apps_hover_fx = src.apps_hover_fx;
-                cfg.apps_cols = src.apps_cols;
-                cfg.apps_tile_shape = src.apps_tile_shape;
-                cfg.apps_corner_radius = src.apps_corner_radius;
-                cfg.apps_show_plate = src.apps_show_plate;
-                cfg.apps_show_tiles = src.apps_show_tiles;
-                cfg.apps_show_labels = src.apps_show_labels;
-                cfg.apps_show_dots = src.apps_show_dots;
-                cfg.apps_font_label = src.apps_font_label.clone();
-                cfg.apps_font_scale_pct = src.apps_font_scale_pct;
-                cfg.apps_use_custom_color = src.apps_use_custom_color;
-                cfg.apps_accent_rgb = src.apps_accent_rgb;
-                cfg.apps_text_rgb = src.apps_text_rgb;
-                cfg.apps_bg_rgb = src.apps_bg_rgb;
-                cfg.apps_elem_transforms = src.apps_elem_transforms;
-                cfg.apps_elem_fonts = src.apps_elem_fonts.clone();
-                cfg.apps_horology = src.apps_horology;
-                cfg.apps = src.apps.clone();
+                dst.show_apps = src.show_apps;
+                dst.apps_x = src.apps_x;
+                dst.apps_y = src.apps_y;
+                dst.apps_scale_pct = src.apps_scale_pct;
+                dst.apps_glass_alpha = src.apps_glass_alpha;
+                dst.apps_rim_alpha = src.apps_rim_alpha;
+                dst.apps_show_add_tile = src.apps_show_add_tile;
+                dst.apps_match_theme = src.apps_match_theme;
+                dst.apps_individual_move = src.apps_individual_move;
+                dst.apps_match_wallpaper = src.apps_match_wallpaper;
+                dst.apps_hover_fx = src.apps_hover_fx;
+                dst.apps_cols = src.apps_cols;
+                dst.apps_tile_shape = src.apps_tile_shape;
+                dst.apps_corner_radius = src.apps_corner_radius;
+                dst.apps_show_plate = src.apps_show_plate;
+                dst.apps_show_tiles = src.apps_show_tiles;
+                dst.apps_show_labels = src.apps_show_labels;
+                dst.apps_show_dots = src.apps_show_dots;
+                dst.apps_font_label = src.apps_font_label.clone();
+                dst.apps_font_scale_pct = src.apps_font_scale_pct;
+                dst.apps_use_custom_color = src.apps_use_custom_color;
+                dst.apps_accent_rgb = src.apps_accent_rgb;
+                dst.apps_text_rgb = src.apps_text_rgb;
+                dst.apps_bg_rgb = src.apps_bg_rgb;
+                dst.apps_elem_transforms = src.apps_elem_transforms;
+                dst.apps_elem_fonts = src.apps_elem_fonts.clone();
+                dst.apps_horology = src.apps_horology;
+                dst.apps = src.apps.clone();
             }
             WidgetCanvasTarget::Vitals => {
-                cfg.show_vitals = src.show_vitals;
-                cfg.vitals_x = src.vitals_x;
-                cfg.vitals_y = src.vitals_y;
-                cfg.vitals_scale_pct = src.vitals_scale_pct;
-                cfg.vitals_glass_alpha = src.vitals_glass_alpha;
-                cfg.vitals_rim_alpha = src.vitals_rim_alpha;
-                cfg.vitals_show_cpu = src.vitals_show_cpu;
-                cfg.vitals_show_ram = src.vitals_show_ram;
-                cfg.vitals_show_power = src.vitals_show_power;
-                cfg.vitals_show_buttons = src.vitals_show_buttons;
-                cfg.vitals_match_wallpaper = src.vitals_match_wallpaper;
-                cfg.vitals_hover_fx = src.vitals_hover_fx;
-                cfg.vitals_style = src.vitals_style;
-                cfg.vitals_corner_radius = src.vitals_corner_radius;
-                cfg.vitals_show_plate = src.vitals_show_plate;
-                cfg.vitals_show_dividers = src.vitals_show_dividers;
-                cfg.vitals_show_bars = src.vitals_show_bars;
-                cfg.vitals_font_val = src.vitals_font_val.clone();
-                cfg.vitals_font_lbl = src.vitals_font_lbl.clone();
-                cfg.vitals_font_scale_pct = src.vitals_font_scale_pct;
-                cfg.vitals_use_custom_color = src.vitals_use_custom_color;
-                cfg.vitals_accent_rgb = src.vitals_accent_rgb;
-                cfg.vitals_text_rgb = src.vitals_text_rgb;
-                cfg.vitals_bg_rgb = src.vitals_bg_rgb;
-                cfg.vitals_elem_transforms = src.vitals_elem_transforms;
-                cfg.vitals_elem_fonts = src.vitals_elem_fonts.clone();
-                cfg.vitals_horology = src.vitals_horology;
+                dst.show_vitals = src.show_vitals;
+                dst.vitals_x = src.vitals_x;
+                dst.vitals_y = src.vitals_y;
+                dst.vitals_scale_pct = src.vitals_scale_pct;
+                dst.vitals_glass_alpha = src.vitals_glass_alpha;
+                dst.vitals_rim_alpha = src.vitals_rim_alpha;
+                dst.vitals_show_cpu = src.vitals_show_cpu;
+                dst.vitals_show_ram = src.vitals_show_ram;
+                dst.vitals_show_power = src.vitals_show_power;
+                dst.vitals_show_buttons = src.vitals_show_buttons;
+                dst.vitals_match_wallpaper = src.vitals_match_wallpaper;
+                dst.vitals_hover_fx = src.vitals_hover_fx;
+                dst.vitals_style = src.vitals_style;
+                dst.vitals_corner_radius = src.vitals_corner_radius;
+                dst.vitals_show_plate = src.vitals_show_plate;
+                dst.vitals_show_dividers = src.vitals_show_dividers;
+                dst.vitals_show_bars = src.vitals_show_bars;
+                dst.vitals_font_val = src.vitals_font_val.clone();
+                dst.vitals_font_lbl = src.vitals_font_lbl.clone();
+                dst.vitals_font_scale_pct = src.vitals_font_scale_pct;
+                dst.vitals_use_custom_color = src.vitals_use_custom_color;
+                dst.vitals_accent_rgb = src.vitals_accent_rgb;
+                dst.vitals_text_rgb = src.vitals_text_rgb;
+                dst.vitals_bg_rgb = src.vitals_bg_rgb;
+                dst.vitals_elem_transforms = src.vitals_elem_transforms;
+                dst.vitals_elem_fonts = src.vitals_elem_fonts.clone();
+                dst.vitals_horology = src.vitals_horology;
             }
             WidgetCanvasTarget::Music => {
-                cfg.show_music = src.show_music;
-                cfg.music_x = src.music_x;
-                cfg.music_y = src.music_y;
-                cfg.music_scale_pct = src.music_scale_pct;
-                cfg.music_glass_alpha = src.music_glass_alpha;
-                cfg.music_rim_alpha = src.music_rim_alpha;
-                cfg.music_show_viz = src.music_show_viz;
-                cfg.music_match_wallpaper = src.music_match_wallpaper;
-                cfg.music_hover_fx = src.music_hover_fx;
-                cfg.music_style = src.music_style;
-                cfg.music_corner_radius = src.music_corner_radius;
-                cfg.music_show_plate = src.music_show_plate;
-                cfg.music_show_cover = src.music_show_cover;
-                cfg.music_show_title = src.music_show_title;
-                cfg.music_show_artist = src.music_show_artist;
-                cfg.music_show_controls = src.music_show_controls;
-                cfg.music_show_badge = src.music_show_badge;
-                cfg.music_font_title = src.music_font_title.clone();
-                cfg.music_font_artist = src.music_font_artist.clone();
-                cfg.music_font_scale_pct = src.music_font_scale_pct;
-                cfg.music_use_custom_color = src.music_use_custom_color;
-                cfg.music_accent_rgb = src.music_accent_rgb;
-                cfg.music_text_rgb = src.music_text_rgb;
-                cfg.music_bg_rgb = src.music_bg_rgb;
-                cfg.music_elem_transforms = src.music_elem_transforms;
-                cfg.music_elem_fonts = src.music_elem_fonts.clone();
-                cfg.music_horology = src.music_horology;
+                dst.show_music = src.show_music;
+                dst.music_x = src.music_x;
+                dst.music_y = src.music_y;
+                dst.music_scale_pct = src.music_scale_pct;
+                dst.music_glass_alpha = src.music_glass_alpha;
+                dst.music_rim_alpha = src.music_rim_alpha;
+                dst.music_show_viz = src.music_show_viz;
+                dst.music_match_wallpaper = src.music_match_wallpaper;
+                dst.music_hover_fx = src.music_hover_fx;
+                dst.music_style = src.music_style;
+                dst.music_corner_radius = src.music_corner_radius;
+                dst.music_show_plate = src.music_show_plate;
+                dst.music_show_cover = src.music_show_cover;
+                dst.music_show_title = src.music_show_title;
+                dst.music_show_artist = src.music_show_artist;
+                dst.music_show_controls = src.music_show_controls;
+                dst.music_show_badge = src.music_show_badge;
+                dst.music_font_title = src.music_font_title.clone();
+                dst.music_font_artist = src.music_font_artist.clone();
+                dst.music_font_scale_pct = src.music_font_scale_pct;
+                dst.music_use_custom_color = src.music_use_custom_color;
+                dst.music_accent_rgb = src.music_accent_rgb;
+                dst.music_text_rgb = src.music_text_rgb;
+                dst.music_bg_rgb = src.music_bg_rgb;
+                dst.music_elem_transforms = src.music_elem_transforms;
+                dst.music_elem_fonts = src.music_elem_fonts.clone();
+                dst.music_horology = src.music_horology;
             }
             WidgetCanvasTarget::ControlCenter => {
-                cfg.show_cc = src.show_cc;
-                cfg.cc_x = src.cc_x;
-                cfg.cc_y = src.cc_y;
-                cfg.cc_scale_pct = src.cc_scale_pct;
-                cfg.cc_glass_alpha = src.cc_glass_alpha;
-                cfg.cc_rim_alpha = src.cc_rim_alpha;
-                cfg.cc_match_wallpaper = src.cc_match_wallpaper;
-                cfg.cc_hover_fx = src.cc_hover_fx;
-                cfg.cc_tile_style = src.cc_tile_style;
-                cfg.cc_corner_radius = src.cc_corner_radius;
-                cfg.cc_show_plate = src.cc_show_plate;
-                cfg.cc_show_tiles = src.cc_show_tiles;
-                cfg.cc_show_bright = src.cc_show_bright;
-                cfg.cc_show_vol = src.cc_show_vol;
-                cfg.cc_show_labels = src.cc_show_labels;
-                cfg.cc_show_scrollbar = src.cc_show_scrollbar;
-                cfg.cc_show_dividers = src.cc_show_dividers;
-                cfg.cc_font_label = src.cc_font_label.clone();
-                cfg.cc_font_val = src.cc_font_val.clone();
-                cfg.cc_font_scale_pct = src.cc_font_scale_pct;
-                cfg.cc_use_custom_color = src.cc_use_custom_color;
-                cfg.cc_accent_rgb = src.cc_accent_rgb;
-                cfg.cc_text_rgb = src.cc_text_rgb;
-                cfg.cc_bg_rgb = src.cc_bg_rgb;
-                cfg.cc_elem_transforms = src.cc_elem_transforms;
-                cfg.cc_elem_fonts = src.cc_elem_fonts.clone();
-                cfg.cc_horology = src.cc_horology;
+                dst.show_cc = src.show_cc;
+                dst.cc_x = src.cc_x;
+                dst.cc_y = src.cc_y;
+                dst.cc_scale_pct = src.cc_scale_pct;
+                dst.cc_glass_alpha = src.cc_glass_alpha;
+                dst.cc_rim_alpha = src.cc_rim_alpha;
+                dst.cc_match_wallpaper = src.cc_match_wallpaper;
+                dst.cc_hover_fx = src.cc_hover_fx;
+                dst.cc_tile_style = src.cc_tile_style;
+                dst.cc_corner_radius = src.cc_corner_radius;
+                dst.cc_show_plate = src.cc_show_plate;
+                dst.cc_show_tiles = src.cc_show_tiles;
+                dst.cc_show_bright = src.cc_show_bright;
+                dst.cc_show_vol = src.cc_show_vol;
+                dst.cc_show_labels = src.cc_show_labels;
+                dst.cc_show_scrollbar = src.cc_show_scrollbar;
+                dst.cc_show_dividers = src.cc_show_dividers;
+                dst.cc_font_label = src.cc_font_label.clone();
+                dst.cc_font_val = src.cc_font_val.clone();
+                dst.cc_font_scale_pct = src.cc_font_scale_pct;
+                dst.cc_use_custom_color = src.cc_use_custom_color;
+                dst.cc_accent_rgb = src.cc_accent_rgb;
+                dst.cc_text_rgb = src.cc_text_rgb;
+                dst.cc_bg_rgb = src.cc_bg_rgb;
+                dst.cc_elem_transforms = src.cc_elem_transforms;
+                dst.cc_elem_fonts = src.cc_elem_fonts.clone();
+                dst.cc_horology = src.cc_horology;
             }
             WidgetCanvasTarget::Ext(id) => {
-                cfg.ext_widgets[id.idx()] = src.ext_widgets[id.idx()].clone();
+                dst.ext_widgets[id.idx()] = src.ext_widgets[id.idx()].clone();
                 if id == ExtWidgetId::Notes {
-                    cfg.notes_title = src.notes_title.clone();
-                    cfg.notes_items = src.notes_items.clone();
+                    dst.notes_title = src.notes_title.clone();
+                    dst.notes_items = src.notes_items.clone();
                 } else if id == ExtWidgetId::WorldClock {
-                    cfg.world_clock_cities = src.world_clock_cities.clone();
+                    dst.world_clock_cities = src.world_clock_cities.clone();
                 }
             }
         }
+    }
+
+    fn sync_canvas_target_to_live(&self, cfg: &mut AppConfig, target: WidgetCanvasTarget) {
+        Self::copy_canvas_target_config(&self.draft_cfg, cfg, target);
     }
 
     fn filtered_font_indices(&self) -> Vec<usize> {
@@ -4780,7 +4864,9 @@ impl SettingsController {
     fn slider_track_bounds(kind: SliderKind) -> (f32, f32) {
         match kind {
             SliderKind::TaskbarOpacity => (232.0, 640.0),
-            SliderKind::MacDockIconSize | SliderKind::MacDockMagPct => (232.0, 640.0),
+            SliderKind::MacDockIconSize
+            | SliderKind::MacDockMagPct
+            | SliderKind::MacDockLabelFontSize => (232.0, 640.0),
             SliderKind::TbVizOpacity => (154.0, 314.0),
             SliderKind::TbVizHue => (154.0, 628.0),
             SliderKind::DtScale | SliderKind::HoroGlare => (136.0, 318.0),
@@ -4858,10 +4944,19 @@ impl SettingsController {
             return None;
         }
         if kind == SliderKind::MacDockIconSize {
-            let new_sz = (34.0 + t * 22.0).round() as u8;
+            let new_sz = (32.0 + t * 64.0).round() as u8;
             if new_sz != cfg.mac_dock_icon_size {
                 cfg.mac_dock_icon_size = new_sz;
                 self.draft_cfg.mac_dock_icon_size = new_sz;
+                return Some(SettingsCommand::MacDockPreview);
+            }
+            return None;
+        }
+        if kind == SliderKind::MacDockLabelFontSize {
+            let new_fs = (10.0 + t * 10.0).round() as u8;
+            if new_fs != cfg.w_apps.label_font_size_px {
+                cfg.w_apps.label_font_size_px = new_fs;
+                self.draft_cfg.w_apps.label_font_size_px = new_fs;
                 return Some(SettingsCommand::MacDockPreview);
             }
             return None;
@@ -5158,12 +5253,15 @@ impl SettingsController {
             | SliderKind::TbVizOpacity
             | SliderKind::TbVizHue
             | SliderKind::MacDockIconSize
-            | SliderKind::MacDockMagPct => {}
+            | SliderKind::MacDockMagPct
+            | SliderKind::MacDockLabelFontSize => {}
         }
         None
     }
 
     fn activate_zone(&mut self, zone: HitZone, cfg: &mut AppConfig) -> SettingsCommand {
+        let was_in_customize = self.is_in_customize_editor();
+        let prev_target = self.current_widget_canvas_target();
         let mut cmd = self.activate_zone_inner(zone, cfg);
         let is_ui_only = matches!(
             zone,
@@ -5171,6 +5269,7 @@ impl SettingsController {
                 | HitZone::TitleDrag
                 | HitZone::BtnMinimize
                 | HitZone::BtnClose
+                | HitZone::BtnDiscardWidget
                 | HitZone::OpenCustomizeDateTime
                 | HitZone::OpenDateTimeFolders
                 | HitZone::OpenDateTimeThemes
@@ -5249,6 +5348,22 @@ impl SettingsController {
                 self.applied_flash = true;
                 cmd = SettingsCommand::WidgetsConfigUpdated;
             }
+        }
+        let now_in_customize = self.is_in_customize_editor();
+        let next_target = self.current_widget_canvas_target();
+        if zone == HitZone::BtnApplyWidgets {
+            self.customize_baseline = if now_in_customize {
+                next_target.map(|t| (t, cfg.clone()))
+            } else {
+                None
+            };
+            self.footer_discard_visible.set(false);
+        } else if now_in_customize && (!was_in_customize || prev_target != next_target) {
+            self.customize_baseline = next_target.map(|t| (t, cfg.clone()));
+            self.footer_discard_visible.set(self.draft_cfg != *cfg);
+        } else if !now_in_customize && was_in_customize {
+            self.customize_baseline = None;
+            self.footer_discard_visible.set(false);
         }
         cmd
     }
@@ -5332,7 +5447,35 @@ impl SettingsController {
             }
             HitZone::BtnOpenConfigFolder => {
                 open_app_data_folder();
-                self.setup_feedback = Some((true, "Opened %APPDATA%\\AutumnDeck folder".to_string()));
+                self.setup_feedback = Some((
+                    true,
+                    format!("Opened {} folder", portable_data_dir_display()),
+                ));
+                SettingsCommand::None
+            }
+            HitZone::BtnConvertPortable => {
+                if is_portable_mode() {
+                    open_app_data_folder();
+                    self.setup_feedback = Some((
+                        true,
+                        format!("Portable Mode active: {}", portable_data_dir_display()),
+                    ));
+                } else {
+                    match convert_current_setup_to_portable(cfg) {
+                        Ok(dst) => {
+                            self.setup_feedback = Some((
+                                true,
+                                format!(
+                                    "Converted to Portable Mode → {}",
+                                    dst.to_string_lossy()
+                                ),
+                            ));
+                        }
+                        Err(e) => {
+                            self.setup_feedback = Some((false, e));
+                        }
+                    }
+                }
                 SettingsCommand::None
             }
             HitZone::BtnRunOnboarding => {
@@ -5468,6 +5611,11 @@ impl SettingsController {
                 };
                 cfg.set_anim_fps(next_fps);
                 self.draft_cfg.set_anim_fps(next_fps);
+                SettingsCommand::WidgetsConfigUpdated
+            }
+            HitZone::SetPerformanceMode(mode) => {
+                cfg.performance_mode = mode;
+                self.draft_cfg.performance_mode = mode;
                 SettingsCommand::WidgetsConfigUpdated
             }
             HitZone::ToggleWallpaperQuick => {
@@ -7348,10 +7496,15 @@ impl SettingsController {
                     WidgetPage::CustomizeDateTime
                     | WidgetPage::DateTimeFolders
                     | WidgetPage::DateTimeThemes => {
-                        self.draft_cfg.show_datetime = def.show_datetime;
-                        self.draft_cfg.dt_x = def.dt_x;
-                        self.draft_cfg.dt_y = def.dt_y;
-                        self.draft_cfg.set_clock_24h(def.widgets_24h);
+                        let cur_style = self.draft_cfg.dt_style;
+                        let keep_shown = self.draft_cfg.show_datetime;
+                        let keep_x = self.draft_cfg.dt_x;
+                        let keep_y = self.draft_cfg.dt_y;
+                        let keep_24h = self.draft_cfg.widgets_24h;
+                        self.draft_cfg.show_datetime = keep_shown;
+                        self.draft_cfg.dt_x = keep_x;
+                        self.draft_cfg.dt_y = keep_y;
+                        self.draft_cfg.set_clock_24h(keep_24h);
                         self.draft_cfg.dt_scale_pct = def.dt_scale_pct;
                         self.draft_cfg.dt_show_plate = def.dt_show_plate;
                         self.draft_cfg.dt_show_clock = def.dt_show_clock;
@@ -7359,7 +7512,6 @@ impl SettingsController {
                         self.draft_cfg.dt_rim_alpha = def.dt_rim_alpha;
                         self.draft_cfg.dt_show_spine = def.dt_show_spine;
                         self.draft_cfg.dt_show_orb = def.dt_show_orb;
-                        self.draft_cfg.dt_style = def.dt_style;
                         self.draft_cfg.dt_align = def.dt_align;
                         self.draft_cfg.dt_show_seconds = def.dt_show_seconds;
                         self.draft_cfg.dt_show_ampm = def.dt_show_ampm;
@@ -7381,13 +7533,17 @@ impl SettingsController {
                         self.draft_cfg.dt_match_wallpaper = def.dt_match_wallpaper;
                         self.draft_cfg.dt_hover_fx = def.dt_hover_fx;
                         self.draft_cfg.dt_horology = def.dt_horology;
-                        self.clock_style_profiles.remove(&(self.draft_cfg.dt_style as u8));
+                        self.draft_cfg.apply_clock_style_preset(cur_style);
+                        self.clock_style_profiles.remove(&(cur_style as u8));
                     }
                     WidgetPage::CustomizeApps
                     | WidgetPage::AppsFolders
                     | WidgetPage::AppsThemes => {
-                        self.draft_cfg.apps_x = def.apps_x;
-                        self.draft_cfg.apps_y = def.apps_y;
+                        let cur_shape = self.draft_cfg.apps_tile_shape;
+                        let keep_x = self.draft_cfg.apps_x;
+                        let keep_y = self.draft_cfg.apps_y;
+                        self.draft_cfg.apps_x = keep_x;
+                        self.draft_cfg.apps_y = keep_y;
                         self.draft_cfg.apps_scale_pct = def.apps_scale_pct;
                         self.draft_cfg.apps_glass_alpha = def.apps_glass_alpha;
                         self.draft_cfg.apps_rim_alpha = def.apps_rim_alpha;
@@ -7397,7 +7553,7 @@ impl SettingsController {
                         self.draft_cfg.apps_match_wallpaper = def.apps_match_wallpaper;
                         self.draft_cfg.apps_hover_fx = def.apps_hover_fx;
                         self.draft_cfg.apps_cols = def.apps_cols;
-                        self.draft_cfg.apps_tile_shape = def.apps_tile_shape;
+                        self.draft_cfg.apps_tile_shape = cur_shape;
                         self.draft_cfg.apps_corner_radius = def.apps_corner_radius;
                         self.draft_cfg.apps_show_plate = def.apps_show_plate;
                         self.draft_cfg.apps_show_tiles = def.apps_show_tiles;
@@ -7412,16 +7568,17 @@ impl SettingsController {
                         self.draft_cfg.apps_elem_transforms = def.apps_elem_transforms;
                         self.draft_cfg.apps_elem_fonts = def.apps_elem_fonts;
                         self.draft_cfg.apps_horology = def.apps_horology;
-                        self.draft_cfg.apps = default_apps();
-                        self.apps_scroll = 0;
                         self.editing_app_name = None;
                         self.preview_icons.invalidate();
                     }
                     WidgetPage::CustomizeVitals
                     | WidgetPage::VitalsFolders
                     | WidgetPage::VitalsThemes => {
-                        self.draft_cfg.vitals_x = def.vitals_x;
-                        self.draft_cfg.vitals_y = def.vitals_y;
+                        let cur_style = self.draft_cfg.vitals_style;
+                        let keep_x = self.draft_cfg.vitals_x;
+                        let keep_y = self.draft_cfg.vitals_y;
+                        self.draft_cfg.vitals_x = keep_x;
+                        self.draft_cfg.vitals_y = keep_y;
                         self.draft_cfg.vitals_scale_pct = def.vitals_scale_pct;
                         self.draft_cfg.vitals_glass_alpha = def.vitals_glass_alpha;
                         self.draft_cfg.vitals_rim_alpha = def.vitals_rim_alpha;
@@ -7431,7 +7588,7 @@ impl SettingsController {
                         self.draft_cfg.vitals_show_buttons = def.vitals_show_buttons;
                         self.draft_cfg.vitals_match_wallpaper = def.vitals_match_wallpaper;
                         self.draft_cfg.vitals_hover_fx = def.vitals_hover_fx;
-                        self.draft_cfg.vitals_style = def.vitals_style;
+                        self.draft_cfg.vitals_style = cur_style;
                         self.draft_cfg.vitals_corner_radius = def.vitals_corner_radius;
                         self.draft_cfg.vitals_show_plate = def.vitals_show_plate;
                         self.draft_cfg.vitals_show_dividers = def.vitals_show_dividers;
@@ -7450,15 +7607,17 @@ impl SettingsController {
                     WidgetPage::CustomizeMusic
                     | WidgetPage::MusicFolders
                     | WidgetPage::MusicThemes => {
-                        self.draft_cfg.music_x = def.music_x;
-                        self.draft_cfg.music_y = def.music_y;
+                        let cur_style = self.draft_cfg.music_style;
+                        let keep_x = self.draft_cfg.music_x;
+                        let keep_y = self.draft_cfg.music_y;
+                        self.draft_cfg.music_x = keep_x;
+                        self.draft_cfg.music_y = keep_y;
                         self.draft_cfg.music_scale_pct = def.music_scale_pct;
                         self.draft_cfg.music_glass_alpha = def.music_glass_alpha;
                         self.draft_cfg.music_rim_alpha = def.music_rim_alpha;
                         self.draft_cfg.music_show_viz = def.music_show_viz;
                         self.draft_cfg.music_match_wallpaper = def.music_match_wallpaper;
                         self.draft_cfg.music_hover_fx = def.music_hover_fx;
-                        self.draft_cfg.music_style = def.music_style;
                         self.draft_cfg.music_corner_radius = def.music_corner_radius;
                         self.draft_cfg.music_show_plate = def.music_show_plate;
                         self.draft_cfg.music_show_cover = def.music_show_cover;
@@ -7476,19 +7635,23 @@ impl SettingsController {
                         self.draft_cfg.music_elem_transforms = def.music_elem_transforms;
                         self.draft_cfg.music_elem_fonts = def.music_elem_fonts;
                         self.draft_cfg.music_horology = def.music_horology;
-                        self.music_style_profiles.remove(&(self.draft_cfg.music_style as u8));
+                        self.draft_cfg.apply_music_style_preset(cur_style);
+                        self.music_style_profiles.remove(&(cur_style as u8));
                     }
                     WidgetPage::CustomizeControlCenter
                     | WidgetPage::CcFolders
                     | WidgetPage::CcThemes => {
-                        self.draft_cfg.cc_x = def.cc_x;
-                        self.draft_cfg.cc_y = def.cc_y;
+                        let cur_style = self.draft_cfg.cc_tile_style;
+                        let keep_x = self.draft_cfg.cc_x;
+                        let keep_y = self.draft_cfg.cc_y;
+                        self.draft_cfg.cc_x = keep_x;
+                        self.draft_cfg.cc_y = keep_y;
                         self.draft_cfg.cc_scale_pct = def.cc_scale_pct;
                         self.draft_cfg.cc_glass_alpha = def.cc_glass_alpha;
                         self.draft_cfg.cc_rim_alpha = def.cc_rim_alpha;
                         self.draft_cfg.cc_match_wallpaper = def.cc_match_wallpaper;
                         self.draft_cfg.cc_hover_fx = def.cc_hover_fx;
-                        self.draft_cfg.cc_tile_style = def.cc_tile_style;
+                        self.draft_cfg.cc_tile_style = cur_style;
                         self.draft_cfg.cc_corner_radius = def.cc_corner_radius;
                         self.draft_cfg.cc_show_plate = def.cc_show_plate;
                         self.draft_cfg.cc_show_tiles = def.cc_show_tiles;
@@ -7511,15 +7674,49 @@ impl SettingsController {
                     WidgetPage::ExtFolders(id)
                     | WidgetPage::ExtThemes(id)
                     | WidgetPage::CustomizeExt(id) => {
-                        let was_enabled = self.draft_cfg.ext_widgets[id.idx()].enabled;
+                        let prev = &self.draft_cfg.ext_widgets[id.idx()];
+                        let was_enabled = prev.enabled;
+                        let cur_theme = prev.theme;
+                        let keep_x = prev.x;
+                        let keep_y = prev.y;
                         let mut reset = ExtWidgetConfig::default_for(id);
+                        reset.apply_theme_preset(cur_theme);
                         reset.enabled = was_enabled;
+                        reset.x = keep_x;
+                        reset.y = keep_y;
                         self.draft_cfg.ext_widgets[id.idx()] = reset;
                     }
                     WidgetPage::Gallery | WidgetPage::PickInstalledApp | WidgetPage::PickClockFont | WidgetPage::EditWidgetCanvas(_) => {}
                 }
                 self.applied_flash = false;
                 SettingsCommand::None
+            }
+            HitZone::BtnDiscardWidget => {
+                let mut live_reverted = false;
+                if let Some(tgt) = self.current_widget_canvas_target() {
+                    if Self::canvas_target_differs(&self.draft_cfg, cfg, tgt) {
+                        Self::copy_canvas_target_config(cfg, &mut self.draft_cfg, tgt);
+                    } else if let Some((btgt, base)) = self.customize_baseline.clone() {
+                        if btgt == tgt && Self::canvas_target_differs(&self.draft_cfg, &base, tgt) {
+                            Self::copy_canvas_target_config(&base, &mut self.draft_cfg, tgt);
+                            Self::copy_canvas_target_config(&base, cfg, tgt);
+                            live_reverted = true;
+                        }
+                    }
+                } else if self.draft_cfg != *cfg {
+                    self.draft_cfg = cfg.clone();
+                }
+                self.canvas_drag = None;
+                self.editing_app_name = None;
+                self.editing_note_slot = None;
+                self.preview_icons.invalidate();
+                self.applied_flash = false;
+                self.footer_discard_visible.set(false);
+                if live_reverted {
+                    SettingsCommand::WidgetsConfigUpdated
+                } else {
+                    SettingsCommand::None
+                }
             }
             HitZone::BtnApplyWidgets => {
                 // Keep taskbar settings in sync from live cfg, commit all widget edits in draft_cfg
@@ -8025,6 +8222,12 @@ impl SettingsController {
                 self.applied_flash = true;
                 SettingsCommand::WallpaperConfigUpdated
             }
+            HitZone::WallpaperFpsCap(cap) => {
+                self.draft_cfg.wallpaper_fps_cap = cap;
+                cfg.wallpaper_fps_cap = cap;
+                self.applied_flash = true;
+                SettingsCommand::WallpaperConfigUpdated
+            }
             HitZone::BtnBrowseWallpaper => {
                 if let Some(chosen) = pick_video_file(self.hwnd) {
                     self.draft_cfg.wallpaper_path = chosen.clone();
@@ -8069,6 +8272,7 @@ impl SettingsController {
                 merged.wallpaper_pause_maximized = self.draft_cfg.wallpaper_pause_maximized;
                 merged.wallpaper_mute = self.draft_cfg.wallpaper_mute;
                 merged.wallpaper_volume_pct = self.draft_cfg.wallpaper_volume_pct;
+                merged.wallpaper_fps_cap = self.draft_cfg.wallpaper_fps_cap;
                 *cfg = merged.clone();
                 self.draft_cfg = merged;
                 self.applied_flash = true;
@@ -8351,6 +8555,17 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 584.0, 186.0, 622.0) {
                         return HitZone::BtnExportDiagnostics;
                     }
+                    if self.draft_cfg.tb_theme.is_clean_minimal() {
+                        if in_rect(x, y, 194.0, 584.0, 266.0, 622.0) {
+                            return HitZone::ToggleCleanTopBar;
+                        }
+                        if in_rect(x, y, 269.0, 584.0, 308.0, 622.0) {
+                            return HitZone::CycleCleanTopBarEdge;
+                        }
+                        if in_rect(x, y, 311.0, 584.0, 354.0, 622.0) {
+                            return HitZone::ToggleCleanTopBarDesktopOnly;
+                        }
+                    }
                     if in_rect(x, y, 364.0, 584.0, 556.0, 622.0) {
                         return HitZone::BtnToggleNow;
                     }
@@ -8372,6 +8587,9 @@ impl SettingsController {
                         }
                     }
                     if in_rect(x, y, 428.0, 94.0, 594.0, 124.0) {
+                        if self.draft_cfg.tb_theme.is_clean_minimal() {
+                            return HitZone::ToggleCleanTopBar;
+                        }
                         return HitZone::ToggleWallpaperQuick;
                     }
                     if in_rect(x, y, 602.0, 94.0, 734.0, 124.0) {
@@ -8391,14 +8609,16 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 584.0, 186.0, 622.0) {
                         return HitZone::BtnExportDiagnostics;
                     }
-                    if self.tb_folder == TaskbarThemeFolder::CleanMinimal {
-                        if in_rect(x, y, 194.0, 584.0, 252.0, 622.0) {
+                    if self.tb_folder == TaskbarThemeFolder::CleanMinimal
+                        || self.draft_cfg.tb_theme.is_clean_minimal()
+                    {
+                        if in_rect(x, y, 194.0, 584.0, 266.0, 622.0) {
                             return HitZone::ToggleCleanTopBar;
                         }
-                        if in_rect(x, y, 255.0, 584.0, 298.0, 622.0) {
+                        if in_rect(x, y, 269.0, 584.0, 308.0, 622.0) {
                             return HitZone::CycleCleanTopBarEdge;
                         }
-                        if in_rect(x, y, 301.0, 584.0, 354.0, 622.0) {
+                        if in_rect(x, y, 311.0, 584.0, 354.0, 622.0) {
                             return HitZone::ToggleCleanTopBarDesktopOnly;
                         }
                     }
@@ -8459,13 +8679,16 @@ impl SettingsController {
                                 return HitZone::MacDockHideBtn(hm);
                             }
                         }
-                        if in_rect(x, y, 222.0, 268.0, 650.0, 296.0) {
+                        if in_rect(x, y, 222.0, 264.0, 650.0, 287.0) {
                             return HitZone::Slider(SliderKind::MacDockMagPct);
                         }
-                        if in_rect(x, y, 222.0, 300.0, 650.0, 328.0) {
+                        if in_rect(x, y, 222.0, 288.0, 650.0, 311.0) {
                             return HitZone::Slider(SliderKind::MacDockIconSize);
                         }
-                        if in_rect(x, y, 222.0, 332.0, 650.0, 360.0) {
+                        if in_rect(x, y, 222.0, 312.0, 650.0, 335.0) {
+                            return HitZone::Slider(SliderKind::MacDockLabelFontSize);
+                        }
+                        if in_rect(x, y, 222.0, 336.0, 650.0, 359.0) {
                             return HitZone::Slider(SliderKind::TaskbarOpacity);
                         }
                         if in_rect(x, y, 40.0, 364.0, 372.0, 391.0) {
@@ -9320,14 +9543,8 @@ impl SettingsController {
                         }
                     }
 
-                    if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
-                        return HitZone::BtnResetWidget;
-                    }
-                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
-                        return HitZone::BtnBackGallery;
-                    }
-                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
-                        return HitZone::BtnApplyWidgets;
+                    if let Some(hz) = self.hit_test_custom_footer(x, y) {
+                        return hz;
                     }
                 }
 
@@ -9474,14 +9691,8 @@ impl SettingsController {
                             }
                         }
                     }
-                    if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
-                        return HitZone::BtnResetWidget;
-                    }
-                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
-                        return HitZone::BtnBackGallery;
-                    }
-                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
-                        return HitZone::BtnApplyWidgets;
+                    if let Some(hz) = self.hit_test_custom_footer(x, y) {
+                        return hz;
                     }
                 }
 
@@ -9702,14 +9913,8 @@ impl SettingsController {
                         }
                     }
 
-                    if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
-                        return HitZone::BtnResetWidget;
-                    }
-                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
-                        return HitZone::BtnBackGallery;
-                    }
-                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
-                        return HitZone::BtnApplyWidgets;
+                    if let Some(hz) = self.hit_test_custom_footer(x, y) {
+                        return hz;
                     }
                 }
 
@@ -9817,14 +10022,8 @@ impl SettingsController {
                         }
                     }
 
-                    if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
-                        return HitZone::BtnResetWidget;
-                    }
-                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
-                        return HitZone::BtnBackGallery;
-                    }
-                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
-                        return HitZone::BtnApplyWidgets;
+                    if let Some(hz) = self.hit_test_custom_footer(x, y) {
+                        return hz;
                     }
                 }
 
@@ -9937,14 +10136,8 @@ impl SettingsController {
                         }
                     }
 
-                    if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
-                        return HitZone::BtnResetWidget;
-                    }
-                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
-                        return HitZone::BtnBackGallery;
-                    }
-                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
-                        return HitZone::BtnApplyWidgets;
+                    if let Some(hz) = self.hit_test_custom_footer(x, y) {
+                        return hz;
                     }
                 }
 
@@ -10062,14 +10255,8 @@ impl SettingsController {
                         }
                     }
 
-                    if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
-                        return HitZone::BtnResetWidget;
-                    }
-                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
-                        return HitZone::BtnBackGallery;
-                    }
-                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
-                        return HitZone::BtnApplyWidgets;
+                    if let Some(hz) = self.hit_test_custom_footer(x, y) {
+                        return hz;
                     }
                 }
 
@@ -10477,14 +10664,8 @@ impl SettingsController {
                         }
                     }
 
-                    if in_rect(x, y, 26.0, 584.0, 168.0, 622.0) {
-                        return HitZone::BtnResetWidget;
-                    }
-                    if in_rect(x, y, 422.0, 584.0, 546.0, 622.0) {
-                        return HitZone::BtnBackGallery;
-                    }
-                    if in_rect(x, y, 558.0, 584.0, 734.0, 622.0) {
-                        return HitZone::BtnApplyWidgets;
+                    if let Some(hz) = self.hit_test_custom_footer(x, y) {
+                        return hz;
                     }
                 }
             },
@@ -10530,6 +10711,15 @@ impl SettingsController {
                     }
                     if in_rect(x, y, 264.0, 490.0, 722.0, 526.0) {
                         return HitZone::Slider(SliderKind::WallpaperVolume);
+                    }
+                    if in_rect(x, y, 96.0, 534.0, 148.0, 562.0) {
+                        return HitZone::WallpaperFpsCap(WallpaperFpsCap::Auto);
+                    }
+                    if in_rect(x, y, 152.0, 534.0, 198.0, 562.0) {
+                        return HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps60);
+                    }
+                    if in_rect(x, y, 202.0, 534.0, 248.0, 562.0) {
+                        return HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps30);
                     }
                 }
                 if in_rect(x, y, 386.0, 584.0, 556.0, 622.0) {
@@ -10612,6 +10802,19 @@ impl SettingsController {
                 }
                 if in_rect(x, y, 500.0, 356.0, 722.0, 414.0) {
                     return HitZone::BtnRunOnboarding;
+                }
+                if in_rect(x, y, 556.0, 430.0, 716.0, 456.0) {
+                    return HitZone::BtnConvertPortable;
+                }
+                for (idx, mode) in [
+                    (0usize, PerformanceMode::Smooth),
+                    (1, PerformanceMode::Balanced),
+                    (2, PerformanceMode::Eco),
+                ] {
+                    let (px0, py0, px1, py1) = perf_mode_pill_rect(idx);
+                    if in_rect(x, y, px0, py0, px1, py1) {
+                        return HitZone::SetPerformanceMode(mode);
+                    }
                 }
 
                 // Footer (584..622)
@@ -11853,12 +12056,14 @@ impl SettingsController {
             if ex_saved { &r.sage } else { &r.cream },
         );
 
-        if self.taskbar_page == TaskbarPage::Themes
-            && self.tb_folder == TaskbarThemeFolder::CleanMinimal
+        if (self.taskbar_page == TaskbarPage::Themes
+            && (self.tb_folder == TaskbarThemeFolder::CleanMinimal
+                || cfg.tb_theme.is_clean_minimal()))
+            || (self.taskbar_page == TaskbarPage::Folders && cfg.tb_theme.is_clean_minimal())
         {
             let tb_on = cfg.clean_top_bar_enabled;
             let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
-            let tb_rr = rrect(194.0, 584.0, 252.0, 622.0, 9.0, u);
+            let tb_rr = rrect(194.0, 584.0, 266.0, 622.0, 9.0, u);
             rt.FillRoundedRectangle(
                 &tb_rr,
                 if tb_hov {
@@ -11892,14 +12097,14 @@ impl SettingsController {
             }
             draw_txt(
                 rt,
-                if tb_on { "Bar" } else { "Off" },
+                if tb_on { "Top: ON" } else { "Top: OFF" },
                 &r.tf_badge,
-                rect_f(208.0, 584.0, 250.0, 622.0, u),
+                rect_f(208.0, 584.0, 264.0, 622.0, u),
                 if tb_on { &r.sun_gold } else { &r.warm_sub },
             );
 
             let pos_hov = self.hovered == HitZone::CycleCleanTopBarEdge;
-            let pos_rr = rrect(255.0, 584.0, 298.0, 622.0, 9.0, u);
+            let pos_rr = rrect(269.0, 584.0, 308.0, 622.0, 9.0, u);
             rt.FillRoundedRectangle(&pos_rr, if pos_hov { &r.card_hover } else { &r.card_bg });
             rt.DrawRoundedRectangle(
                 &pos_rr,
@@ -11921,7 +12126,7 @@ impl SettingsController {
 
             let dk_on = cfg.clean_top_bar_desktop_only;
             let dk_hov = self.hovered == HitZone::ToggleCleanTopBarDesktopOnly;
-            let dk_rr = rrect(301.0, 584.0, 354.0, 622.0, 9.0, u);
+            let dk_rr = rrect(311.0, 584.0, 354.0, 622.0, 9.0, u);
             rt.FillRoundedRectangle(
                 &dk_rr,
                 if dk_hov {
@@ -12153,25 +12358,72 @@ impl SettingsController {
                 }
 
                 let wp_rr = rrect(428.0, 94.0, 594.0, 124.0, 8.0, u);
-                let wp_on = cfg.wallpaper_enabled;
-                let wp_hov = self.hovered == HitZone::ToggleWallpaperQuick;
-                rt.FillRoundedRectangle(
-                    &wp_rr,
-                    if wp_hov { &r.card_hover } else if wp_on { &r.amber_dim } else { &r.card_bg },
-                );
-                rt.DrawRoundedRectangle(
-                    &wp_rr,
-                    if wp_on || wp_hov { &r.sun_gold } else { &r.card_border },
-                    1.0 * u,
-                    None,
-                );
-                draw_txt(
-                    rt,
-                    if wp_on { "Live Wallpaper: ON" } else { "Test Live Wallpaper" },
-                    &r.tf_badge,
-                    wp_rr.rect,
-                    if wp_on { &r.sun_gold } else { &r.cream },
-                );
+                if cfg.tb_theme.is_clean_minimal() {
+                    let tb_on = cfg.clean_top_bar_enabled;
+                    let tb_hov = self.hovered == HitZone::ToggleCleanTopBar;
+                    rt.FillRoundedRectangle(
+                        &wp_rr,
+                        if tb_hov {
+                            &r.card_hover
+                        } else if tb_on {
+                            &r.amber_dim
+                        } else {
+                            &r.card_bg
+                        },
+                    );
+                    rt.DrawRoundedRectangle(
+                        &wp_rr,
+                        if tb_on || tb_hov { &r.sun_gold } else { &r.card_border },
+                        1.0 * u,
+                        None,
+                    );
+                    let dot_c = if tb_on {
+                        rgb_u8(102, 232, 146, 0.96)
+                    } else {
+                        rgb_u8(152, 124, 98, 0.45)
+                    };
+                    if let Some(ref db) = solid(rt, dot_c) {
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2 { X: 441.0 * u, Y: 109.0 * u },
+                                radiusX: 3.0 * u,
+                                radiusY: 3.0 * u,
+                            },
+                            db,
+                        );
+                    }
+                    draw_txt(
+                        rt,
+                        if tb_on {
+                            "Top Menu Bar: ON"
+                        } else {
+                            "Top Menu Bar: OFF"
+                        },
+                        &r.tf_badge,
+                        rect_f(446.0, 94.0, 590.0, 124.0, u),
+                        if tb_on { &r.sun_gold } else { &r.cream },
+                    );
+                } else {
+                    let wp_on = cfg.wallpaper_enabled;
+                    let wp_hov = self.hovered == HitZone::ToggleWallpaperQuick;
+                    rt.FillRoundedRectangle(
+                        &wp_rr,
+                        if wp_hov { &r.card_hover } else if wp_on { &r.amber_dim } else { &r.card_bg },
+                    );
+                    rt.DrawRoundedRectangle(
+                        &wp_rr,
+                        if wp_on || wp_hov { &r.sun_gold } else { &r.card_border },
+                        1.0 * u,
+                        None,
+                    );
+                    draw_txt(
+                        rt,
+                        if wp_on { "Live Wallpaper: ON" } else { "Test Live Wallpaper" },
+                        &r.tf_badge,
+                        wp_rr.rect,
+                        if wp_on { &r.sun_gold } else { &r.cream },
+                    );
+                }
 
                 let cust_rr = rrect(602.0, 94.0, 734.0, 124.0, 8.0, u);
                 let c_hov = self.hovered == HitZone::OpenCustomizeTaskbar;
@@ -12474,7 +12726,7 @@ impl SettingsController {
                         44.0,
                         232.0,
                         640.0,
-                        282.0,
+                        276.0,
                         t_mag,
                         &if cfg.mac_dock_mag_pct <= 102 {
                             "Off".to_string()
@@ -12484,7 +12736,7 @@ impl SettingsController {
                         self.dragging_slider == Some(SliderKind::MacDockMagPct)
                             || self.hovered == HitZone::Slider(SliderKind::MacDockMagPct),
                     );
-                    let t_sz = ((cfg.mac_dock_icon_size as f32 - 34.0) / 22.0).clamp(0.0, 1.0);
+                    let t_sz = ((cfg.mac_dock_icon_size as f32 - 32.0) / 64.0).clamp(0.0, 1.0);
                     draw_slider_row(
                         rt,
                         r,
@@ -12493,11 +12745,27 @@ impl SettingsController {
                         44.0,
                         232.0,
                         640.0,
-                        314.0,
+                        300.0,
                         t_sz,
                         &format!("{} px", cfg.mac_dock_icon_size),
                         self.dragging_slider == Some(SliderKind::MacDockIconSize)
                             || self.hovered == HitZone::Slider(SliderKind::MacDockIconSize),
+                    );
+                    let t_fs = ((cfg.w_apps.label_font_size_px.clamp(10, 20) as f32 - 10.0) / 10.0)
+                        .clamp(0.0, 1.0);
+                    draw_slider_row(
+                        rt,
+                        r,
+                        u,
+                        "App Name Font Size",
+                        44.0,
+                        232.0,
+                        640.0,
+                        324.0,
+                        t_fs,
+                        &format!("{} px", cfg.w_apps.label_font_size_px.clamp(10, 20)),
+                        self.dragging_slider == Some(SliderKind::MacDockLabelFontSize)
+                            || self.hovered == HitZone::Slider(SliderKind::MacDockLabelFontSize),
                     );
                     let pct = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
                     draw_slider_row(
@@ -12508,7 +12776,7 @@ impl SettingsController {
                         44.0,
                         232.0,
                         640.0,
-                        346.0,
+                        348.0,
                         pct,
                         &format!("{}%", (pct * 100.0).round() as i32),
                         self.dragging_slider == Some(SliderKind::TaskbarOpacity)
@@ -19118,6 +19386,8 @@ impl SettingsController {
                 rt.FillRoundedRectangle(&rrect(83.5, 132.0, 87.0, 144.0, 1.5, u), &r.warm_sub);
             }
         }
+        let sw_decode_warn =
+            self.draft_cfg.wallpaper_enabled && !cur_is_image && self.wallpaper_decode_mode.is_software_fallback();
         let chip_rr = rrect(44.0, 161.0, 120.0, 177.0, 5.0, u);
         if let Some(ref cb) = solid(rt, rgb_u8(14, 10, 8, 0.80)) {
             rt.FillRoundedRectangle(&chip_rr, cb);
@@ -19128,12 +19398,20 @@ impl SettingsController {
                 "OFF"
             } else if cur_is_image {
                 "● IMAGE"
+            } else if sw_decode_warn {
+                "⚠ SW DECODE"
             } else {
                 "● D3D11 GPU"
             },
             &r.tf_badge,
             chip_rr.rect,
-            if self.draft_cfg.wallpaper_enabled { &r.sun_gold } else { &r.muted_txt },
+            if !self.draft_cfg.wallpaper_enabled {
+                &r.muted_txt
+            } else if sw_decode_warn {
+                &r.coral
+            } else {
+                &r.sun_gold
+            },
         );
         rt.DrawRoundedRectangle(
             &ico,
@@ -19143,16 +19421,20 @@ impl SettingsController {
         );
 
         let wp_kind = classify_wallpaper_status(&self.wallpaper_status);
-        let hero_badge_rr = rrect(140.0, 109.0, 266.0, 126.0, 6.0, u);
+        let hero_badge_rr = rrect(140.0, 109.0, 316.0, 126.0, 6.0, u);
         if let Some(ref hbb) = solid(
             rt,
-            match wp_kind {
-                WallpaperStatusKind::Error => rgb_u8(226, 92, 82, 0.20),
-                WallpaperStatusKind::Loading => rgb_u8(245, 166, 66, 0.18),
-                WallpaperStatusKind::Active if self.draft_cfg.wallpaper_enabled => {
-                    rgb_u8(74, 178, 126, 0.16)
+            if sw_decode_warn {
+                rgb_u8(226, 92, 82, 0.22)
+            } else {
+                match wp_kind {
+                    WallpaperStatusKind::Error => rgb_u8(226, 92, 82, 0.20),
+                    WallpaperStatusKind::Loading => rgb_u8(245, 166, 66, 0.18),
+                    WallpaperStatusKind::Active if self.draft_cfg.wallpaper_enabled => {
+                        rgb_u8(74, 178, 126, 0.16)
+                    }
+                    _ => rgb_u8(168, 126, 84, 0.14),
                 }
-                _ => rgb_u8(168, 126, 84, 0.14),
             },
         ) {
             rt.FillRoundedRectangle(&hero_badge_rr, hbb);
@@ -19166,15 +19448,19 @@ impl SettingsController {
             } else if cur_is_image {
                 "STATIC IMAGE ENGINE"
             } else {
-                "HARDWARE DECODER"
+                self.wallpaper_decode_mode.badge_label()
             },
             &r.tf_badge,
             hero_badge_rr.rect,
-            match wp_kind {
-                WallpaperStatusKind::Error => &r.coral,
-                WallpaperStatusKind::Loading => &r.sun_gold,
-                WallpaperStatusKind::Active if self.draft_cfg.wallpaper_enabled => &r.sage,
-                _ => &r.warm_sub,
+            if sw_decode_warn {
+                &r.coral
+            } else {
+                match wp_kind {
+                    WallpaperStatusKind::Error => &r.coral,
+                    WallpaperStatusKind::Loading => &r.sun_gold,
+                    WallpaperStatusKind::Active if self.draft_cfg.wallpaper_enabled => &r.sage,
+                    _ => &r.warm_sub,
+                }
             },
         );
         draw_txt(rt, &cur_name, &r.tf_title, rect_f(140.0, 127.0, 528.0, 149.0, u), &r.cream);
@@ -19573,12 +19859,12 @@ impl SettingsController {
             }
         }
 
-        // Playback & Audio Panel (26..734, 434..566)
-        let pb = rrect(26.0, 434.0, 734.0, 566.0, 12.0, u);
+        // Playback & Audio Panel (26..734, 434..572)
+        let pb = rrect(26.0, 434.0, 734.0, 572.0, 12.0, u);
         if let Some(ref g) = create_grad(
             rt,
             Vector2 { X: 26.0 * u, Y: 434.0 * u },
-            Vector2 { X: 734.0 * u, Y: 566.0 * u },
+            Vector2 { X: 734.0 * u, Y: 572.0 * u },
             &[
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgb_u8(40, 28, 18, 0.94) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgb_u8(22, 16, 11, 0.98) },
@@ -19614,6 +19900,13 @@ impl SettingsController {
                 info_rr.rect,
                 &r.sage,
             );
+            draw_txt(
+                rt,
+                "Supports high-res PNG, JPG, WEBP & BMP alongside MP4/MKV/WEBM video wallpapers.",
+                &r.tf_sub,
+                rect_f(42.0, 536.0, 718.0, 562.0, u),
+                &r.warm_sub,
+            );
         } else {
             draw_inline_toggle(
                 rt,
@@ -19642,23 +19935,79 @@ impl SettingsController {
                 self.hovered == HitZone::Slider(SliderKind::WallpaperVolume)
                     || self.dragging_slider == Some(SliderKind::WallpaperVolume),
             );
-        }
 
-        let tip_txt = if cur_is_image {
-            "Supports high-res PNG, JPG, WEBP & BMP alongside MP4/MKV/WEBM video wallpapers."
-        } else if self.draft_cfg.wallpaper_pause_maximized {
-            "Maximized apps pause decode immediately while holding the live DXGI frame for instant resume."
-        } else {
-            "Video stays continuously playing behind maximized windows (only pauses in fullscreen games)."
-        };
-        draw_txt(rt, tip_txt, &r.tf_sub, rect_f(42.0, 534.0, 718.0, 558.0, u), &r.warm_sub);
+            // Row 3: Wallpaper FPS Cap (Auto / 60 / 30) + inline DXVA decode diagnostic pill
+            draw_txt(
+                rt,
+                "FPS Cap",
+                &r.tf_sub,
+                rect_f(40.0, 534.0, 94.0, 562.0, u),
+                &r.warm_sub,
+            );
+            let fps_pills = [
+                (WallpaperFpsCap::Auto, 96.0f32, 148.0f32),
+                (WallpaperFpsCap::Fps60, 152.0f32, 198.0f32),
+                (WallpaperFpsCap::Fps30, 202.0f32, 248.0f32),
+            ];
+            for (cap, px0, px1) in fps_pills {
+                let is_sel = self.draft_cfg.wallpaper_fps_cap == cap;
+                let is_hov = self.hovered == HitZone::WallpaperFpsCap(cap);
+                let prr = rrect(px0, 534.0, px1, 562.0, 7.0, u);
+                if is_sel {
+                    rt.FillRoundedRectangle(&prr, &r.sun_gold);
+                } else {
+                    rt.FillRoundedRectangle(&prr, if is_hov { &r.card_hover } else { &r.card_active });
+                    rt.DrawRoundedRectangle(&prr, &r.card_border, 1.0 * u, None);
+                }
+                draw_txt(
+                    rt,
+                    cap.short_label(),
+                    &r.tf_badge,
+                    prr.rect,
+                    if is_sel { &r.dark_ink } else { &r.cream },
+                );
+            }
+
+            if sw_decode_warn {
+                let warn_rr = rrect(258.0, 534.0, 722.0, 562.0, 7.0, u);
+                if let Some(ref wbg) = solid(rt, rgb_u8(226, 92, 82, 0.18)) {
+                    rt.FillRoundedRectangle(&warn_rr, wbg);
+                }
+                if let Some(ref wbr) = solid(rt, rgb_u8(226, 92, 82, 0.55)) {
+                    rt.DrawRoundedRectangle(&warn_rr, wbr, 1.0 * u, None);
+                }
+                draw_txt(
+                    rt,
+                    self.wallpaper_decode_mode
+                        .warning_pill_text()
+                        .unwrap_or("⚠ Software decode fallback active"),
+                    &r.tf_badge,
+                    warn_rr.rect,
+                    &r.coral,
+                );
+            } else {
+                let tip_txt = if self.draft_cfg.wallpaper_pause_maximized {
+                    "VSync triple-buffered Flip-Discard • pauses decode when covered."
+                } else {
+                    "VSync triple-buffered Flip-Discard • plays behind maximized apps."
+                };
+                draw_txt(
+                    rt,
+                    tip_txt,
+                    &r.tf_sub,
+                    rect_f(262.0, 534.0, 720.0, 562.0, u),
+                    &r.warm_sub,
+                );
+            }
+        }
 
         // Footer (584..622)
         let dirty = self.draft_cfg.wallpaper_enabled != cfg.wallpaper_enabled
             || self.draft_cfg.wallpaper_path != cfg.wallpaper_path
             || self.draft_cfg.wallpaper_pause_maximized != cfg.wallpaper_pause_maximized
             || self.draft_cfg.wallpaper_mute != cfg.wallpaper_mute
-            || self.draft_cfg.wallpaper_volume_pct != cfg.wallpaper_volume_pct;
+            || self.draft_cfg.wallpaper_volume_pct != cfg.wallpaper_volume_pct
+            || self.draft_cfg.wallpaper_fps_cap != cfg.wallpaper_fps_cap;
         let f_msg = if self.applied_flash {
             "✓ Wallpaper engine updated"
         } else if dirty {
@@ -20294,6 +20643,7 @@ impl SettingsController {
         );
 
         let ex_saved = self.export_flash_active();
+        let data_dir_sub = portable_data_dir_display();
         let tool_btns = [
             (
                 38.0f32,
@@ -20308,7 +20658,7 @@ impl SettingsController {
                 490.0,
                 HitZone::BtnOpenConfigFolder,
                 "Open Data Folder",
-                "%APPDATA%\\AutumnDeck",
+                data_dir_sub.as_str(),
                 false,
             ),
             (
@@ -20362,37 +20712,126 @@ impl SettingsController {
         let fb_rr = rrect(38.0, 426.0, 722.0, 460.0, 8.0, u);
         rt.FillRoundedRectangle(&fb_rr, &r.card_bg);
         rt.DrawRoundedRectangle(&fb_rr, &r.card_border, 1.0 * u, None);
+        let portable_on = is_portable_mode();
+        let default_status_txt = if portable_on {
+            if tap_portable_fallback_reason().is_some() {
+                format!(
+                    "Portable Mode: Active ({}) • Non-NTFS TapCache fallback",
+                    data_dir_sub
+                )
+            } else {
+                format!("Portable Mode: Active ({})", data_dir_sub)
+            }
+        } else {
+            "Config location: %APPDATA%\\AutumnDeck\\config.ini".to_string()
+        };
         let (fb_txt, fb_br) = match &self.setup_feedback {
             Some((true, msg)) => (msg.as_str(), &r.sage),
             Some((false, msg)) => (msg.as_str(), &r.coral),
             None => (
-                "Config location: %APPDATA%\\AutumnDeck\\config.ini",
-                &r.warm_sub,
+                default_status_txt.as_str(),
+                if portable_on { &r.sage } else { &r.warm_sub },
             ),
         };
-        draw_txt(rt, fb_txt, &r.tf_sub, rect_f(50.0, 428.0, 712.0, 458.0, u), fb_br);
+        draw_txt(rt, fb_txt, &r.tf_sub, rect_f(50.0, 428.0, 548.0, 458.0, u), fb_br);
 
-        let tips_rr = rrect(38.0, 470.0, 722.0, 526.0, 9.0, u);
-        rt.FillRoundedRectangle(&tips_rr, &r.card_bg);
-        rt.DrawRoundedRectangle(&tips_rr, &r.card_border, 1.0 * u, None);
+        let port_rr = rrect(556.0, 430.0, 716.0, 456.0, 7.0, u);
+        let port_hov = self.hovered == HitZone::BtnConvertPortable;
+        rt.FillRoundedRectangle(
+            &port_rr,
+            if port_hov {
+                &r.card_hover
+            } else if portable_on {
+                &r.card_active
+            } else {
+                &r.amber_dim
+            },
+        );
+        rt.DrawRoundedRectangle(
+            &port_rr,
+            if portable_on {
+                &r.sage
+            } else if port_hov {
+                &r.sun_gold
+            } else {
+                &r.card_border
+            },
+            1.0 * u,
+            None,
+        );
         draw_txt(
             rt,
-            "Quick Hotkey  •  Ctrl + Alt + T toggles Full Stealth Hide on Taskbar & Custom Dock",
-            &r.tf_sub,
-            rect_f(50.0, 476.0, 712.0, 498.0, u),
+            if portable_on {
+                "Portable: Active ✓"
+            } else {
+                "Convert to Portable"
+            },
+            &r.tf_badge,
+            port_rr.rect,
+            if portable_on { &r.sage } else { &r.sun_gold },
+        );
+
+        // Performance Mode Strip (Smooth / Balanced / Eco) (38..722, 470..528)
+        let perf_rr = rrect(38.0, 470.0, 722.0, 528.0, 9.0, u);
+        rt.FillRoundedRectangle(&perf_rr, &r.card_bg);
+        rt.DrawRoundedRectangle(&perf_rr, &r.card_border, 1.0 * u, None);
+        draw_txt(
+            rt,
+            "Performance Mode",
+            &r.tf_toggle,
+            rect_f(50.0, 474.0, 230.0, 494.0, u),
             &r.cream,
         );
         draw_txt(
             rt,
-            "Right-click any Dock slot or Desktop Widget for quick 12h/24h clock, style & hide toggles",
-            &r.tf_sub,
-            rect_f(50.0, 498.0, 712.0, 520.0, u),
-            &r.warm_sub,
+            cfg.performance_mode.description(),
+            &r.tf_right,
+            rect_f(230.0, 474.0, 710.0, 494.0, u),
+            &r.sun_gold,
         );
+        let perf_modes = [
+            (0usize, PerformanceMode::Smooth),
+            (1, PerformanceMode::Balanced),
+            (2, PerformanceMode::Eco),
+        ];
+        for (idx, mode) in perf_modes {
+            let lbl = mode.label();
+            let (px0, py0, px1, py1) = perf_mode_pill_rect(idx);
+            let prr = rrect(px0, py0, px1, py1, 7.0, u);
+            let active = cfg.performance_mode == mode;
+            let hov = self.hovered == HitZone::SetPerformanceMode(mode);
+            rt.FillRoundedRectangle(
+                &prr,
+                if active {
+                    &r.sun_gold
+                } else if hov {
+                    &r.card_hover
+                } else {
+                    &r.card_active
+                },
+            );
+            rt.DrawRoundedRectangle(
+                &prr,
+                if active || hov { &r.sun_gold } else { &r.card_border },
+                1.0 * u,
+                None,
+            );
+            draw_txt(
+                rt,
+                lbl,
+                &r.tf_badge,
+                prr.rect,
+                if active { &r.dark_ink } else { &r.cream },
+            );
+        }
 
         draw_txt(
             rt,
-            "AutumnDeck Studio v2.0.9 • Native Win32 + Direct2D + DirectComposition • Hotkey: Ctrl + Alt + T",
+            concat!(
+                "AutumnDeck Studio v",
+                env!("CARGO_PKG_VERSION"),
+                " • Native Win32 + Direct2D + DirectComposition • Hotkey: Ctrl + Alt + T"
+            ),
             &r.tf_sub,
             rect_f(40.0, 536.0, 720.0, 562.0, u),
             &r.muted_txt,
@@ -20489,17 +20928,32 @@ impl SettingsController {
         cfg: &AppConfig,
         u: f32,
     ) {
-        let rst_rr = rrect(26.0, 584.0, 168.0, 622.0, 9.0, u);
+        let rst_rr = rrect(26.0, 584.0, 146.0, 622.0, 9.0, u);
         let r_hov = self.hovered == HitZone::BtnResetWidget;
         rt.FillRoundedRectangle(&rst_rr, if r_hov { &r.card_hover } else { &r.card_bg });
-        rt.DrawRoundedRectangle(&rst_rr, &r.card_border, 1.0 * u, None);
-        draw_txt(rt, "Reset Defaults", &r.tf_btn, rst_rr.rect, &r.warm_sub);
+        rt.DrawRoundedRectangle(&rst_rr, if r_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+        draw_txt(rt, "Reset Style", &r.tf_btn, rst_rr.rect, &r.warm_sub);
 
-        let dirty = self.draft_cfg != *cfg;
+        let dirty = self
+            .current_widget_canvas_target()
+            .map(|t| Self::canvas_target_differs(&self.draft_cfg, cfg, t))
+            .unwrap_or_else(|| self.draft_cfg != *cfg);
+        let can_discard = dirty || self.has_customize_session_changes();
+        self.footer_discard_visible.set(can_discard);
+        if can_discard {
+            let disc_rr = rrect(154.0, 584.0, 248.0, 622.0, 9.0, u);
+            let d_hov = self.hovered == HitZone::BtnDiscardWidget;
+            rt.FillRoundedRectangle(&disc_rr, if d_hov { &r.card_hover } else { &r.card_bg });
+            rt.DrawRoundedRectangle(&disc_rr, if d_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+            draw_txt(rt, "Discard", &r.tf_btn, disc_rr.rect, if d_hov { &r.sun_gold } else { &r.cream });
+        }
+
         let status_txt = if self.applied_flash {
             "Applied ✓"
         } else if dirty {
-            "Unsaved changes — click Apply"
+            "Unsaved — click Apply"
+        } else if can_discard {
+            "Edited — Discard or Apply"
         } else {
             "In sync with Desktop"
         };
@@ -20507,7 +20961,7 @@ impl SettingsController {
             rt,
             status_txt,
             &r.tf_sub,
-            rect_f(180.0, 584.0, 412.0, 622.0, u),
+            rect_f(if can_discard { 256.0 } else { 158.0 }, 584.0, 414.0, 622.0, u),
             if self.applied_flash { &r.sage } else if dirty { &r.sun_gold } else { &r.muted_txt },
         );
 
@@ -21632,6 +22086,13 @@ fn anim_fps_preset_rect(idx: usize) -> (f32, f32, f32, f32) {
     let gap = 6.0f32;
     let x0 = 44.0 + (idx as f32) * (w + gap);
     (x0, 256.0, x0 + w, 288.0)
+}
+
+fn perf_mode_pill_rect(idx: usize) -> (f32, f32, f32, f32) {
+    let w = 216.0f32;
+    let gap = 8.0f32;
+    let x0 = 48.0 + (idx as f32) * (w + gap);
+    (x0, 496.0, x0 + w, 522.0)
 }
 
 fn suite_card_rect(slot: usize) -> (f32, f32, f32, f32) {
@@ -24350,7 +24811,45 @@ mod tests {
         assert_eq!(sc.hit_test(520.0, 463.0), HitZone::ToggleWallpaperPauseMax);
         assert_eq!(sc.hit_test(140.0, 508.0), HitZone::ToggleWallpaperMute);
         assert_eq!(sc.hit_test(480.0, 508.0), HitZone::Slider(SliderKind::WallpaperVolume));
+        assert_eq!(
+            sc.hit_test(122.0, 548.0),
+            HitZone::WallpaperFpsCap(WallpaperFpsCap::Auto)
+        );
+        assert_eq!(
+            sc.hit_test(175.0, 548.0),
+            HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps60)
+        );
+        assert_eq!(
+            sc.hit_test(225.0, 548.0),
+            HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps30)
+        );
         assert!(sc.render_d2d(&cfg), "Wallpaper Studio video mode must render cleanly");
+
+        // FPS Cap pills update both draft and live config immediately
+        assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Auto);
+        let c_fps60 = sc.activate_zone(HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps60), &mut cfg);
+        assert!(matches!(c_fps60, SettingsCommand::WallpaperConfigUpdated));
+        assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps60);
+        assert_eq!(sc.draft_cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps60);
+
+        let c_fps30 = sc.activate_zone(HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps30), &mut cfg);
+        assert!(matches!(c_fps30, SettingsCommand::WallpaperConfigUpdated));
+        assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps30);
+
+        // Software/WARP decode fallback renders inline diagnostic pill cleanly in Direct2D
+        for mode in [
+            VideoDecodeMode::HardwareDxva,
+            VideoDecodeMode::SoftwareCpu,
+            VideoDecodeMode::WarpSoftware,
+        ] {
+            sc.sync_wallpaper_decode_mode(mode);
+            assert!(
+                sc.render_d2d(&cfg),
+                "Wallpaper Studio must render cleanly for decode mode {:?}",
+                mode
+            );
+        }
+        sc.sync_wallpaper_decode_mode(VideoDecodeMode::Unknown);
 
         // Toggle Pause on Maximized (true -> false) applies immediately while wallpaper_trim_memory stays false
         assert!(!cfg.wallpaper_trim_memory, "wallpaper_trim_memory must default OFF");
@@ -24362,12 +24861,14 @@ mod tests {
         assert!(matches!(cmd, SettingsCommand::WallpaperConfigUpdated));
         assert!(!cfg.wallpaper_pause_maximized);
         assert!(!cfg.wallpaper_trim_memory, "wallpaper_trim_memory must remain OFF after Apply");
+        assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps30);
 
-        // Select Static Image preset: hides video audio controls, decodes real BMP thumb off-thread
+        // Select Static Image preset: hides video audio & FPS Cap controls, decodes real BMP thumb off-thread
         sc.draft_cfg.wallpaper_path = img_path.clone();
         cfg.wallpaper_path = img_path.clone();
         assert_eq!(sc.hit_test(140.0, 508.0), HitZone::None, "Static image mode hides video mute toggle");
         assert_eq!(sc.hit_test(480.0, 508.0), HitZone::None, "Static image mode hides video volume slider");
+        assert_eq!(sc.hit_test(122.0, 548.0), HitZone::None, "Static image mode hides video FPS cap pills");
         assert!(sc.render_d2d(&cfg), "First render queues async thumbnail decode");
 
         // Wait briefly for background thumbnail worker to finish decoding our tiny BMP
@@ -24559,6 +25060,22 @@ mod tests {
         assert_eq!(sc.hit_test(380.0, 385.0), HitZone::BtnOpenConfigFolder);
         assert_eq!(sc.hit_test(600.0, 385.0), HitZone::BtnRunOnboarding);
         assert_eq!(sc.hit_test(140.0, 445.0), HitZone::None);
+        for (idx, mode) in [
+            (0usize, PerformanceMode::Smooth),
+            (1, PerformanceMode::Balanced),
+            (2, PerformanceMode::Eco),
+        ] {
+            let (px0, py0, px1, py1) = perf_mode_pill_rect(idx);
+            assert_eq!(
+                sc.hit_test((px0 + px1) * 0.5, (py0 + py1) * 0.5),
+                HitZone::SetPerformanceMode(mode)
+            );
+            let cp = sc.activate_zone(HitZone::SetPerformanceMode(mode), &mut cfg);
+            assert!(matches!(cp, SettingsCommand::WidgetsConfigUpdated));
+            assert_eq!(cfg.performance_mode, mode);
+            assert_eq!(sc.draft_cfg.performance_mode, mode);
+        }
+        assert!(sc.render_d2d(&cfg), "Settings tab with Performance Mode selector must render cleanly");
         assert_eq!(sc.hit_test(100.0, 603.0), HitZone::BtnSettingsBack);
         assert_eq!(sc.hit_test(232.0, 603.0), HitZone::None);
         assert_eq!(sc.hit_test(391.0, 603.0), HitZone::BtnSupportKofi);
@@ -26572,6 +27089,280 @@ mod tests {
                 save_bmp(&sc.backbuf, &format!("{}/suite_horo_p{}.bmp", dump_dir, p + 1));
             }
         }
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn verify_customize_reset_style_vs_discard_and_splitstack_toggles() {
+        use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+        use crate::desktop_widgets::draw_datetime_widget_with_boxes;
+
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+
+        // 1. Reset Style preserves active style (HoroRoyalOak stays HoroRoyalOak, not AutumnSignature)
+        let mut cfg = AppConfig::default();
+        cfg.apply_clock_style_preset(ClockStyle::HoroRoyalOak);
+        cfg.dt_x = 120;
+        cfg.dt_y = 88;
+        cfg.widgets_24h = false;
+        cfg.apply_music_style_preset(MusicStyle::HoroPatekMoonDeck);
+        cfg.ext_widgets[ExtWidgetId::Weather.idx()].apply_theme_preset(ExtWidgetTheme::HoroRoyalOak);
+        cfg.ext_widgets[ExtWidgetId::Weather.idx()].enabled = true;
+
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(760, 648));
+        sc.sync_from_config(&cfg);
+        sc.active_tab = StudioTab::DesktopWidgets;
+        sc.widget_page = WidgetPage::DateTimeThemes;
+
+        // Enter CustomizeDateTime via OpenCustomizeDateTimeDirect so customize_baseline is captured
+        let _ = sc.activate_zone(HitZone::OpenCustomizeDateTimeDirect, &mut cfg);
+        assert_eq!(sc.widget_page, WidgetPage::CustomizeDateTime);
+        assert_eq!(sc.hit_test(80.0, 600.0), HitZone::BtnResetWidget);
+        assert_ne!(sc.hit_test(200.0, 600.0), HitZone::BtnDiscardWidget);
+
+        // Toggle orb off (live-syncs into cfg) and verify Discard appears and reverts session edits
+        let _ = sc.activate_zone(HitZone::ToggleDtOrb, &mut cfg);
+        assert!(!sc.draft_cfg.dt_show_orb);
+        assert!(!cfg.dt_show_orb);
+        assert_eq!(sc.hit_test(200.0, 600.0), HitZone::BtnDiscardWidget);
+
+        let discard_cmd = sc.activate_zone(HitZone::BtnDiscardWidget, &mut cfg);
+        assert!(matches!(discard_cmd, SettingsCommand::WidgetsConfigUpdated));
+        assert!(sc.draft_cfg.dt_show_orb, "Discard must revert draft_cfg to Customize session entry");
+        assert!(cfg.dt_show_orb, "Discard must revert live cfg to Customize session entry");
+
+        // Now modify style options and click Reset Style -> must keep HoroRoyalOak & position!
+        sc.draft_cfg.dt_scale_pct = 135;
+        sc.draft_cfg.dt_show_orb = false;
+        sc.draft_cfg.dt_use_custom_color = true;
+        let _ = sc.activate_zone(HitZone::BtnResetWidget, &mut cfg);
+        assert_eq!(
+            sc.draft_cfg.dt_style,
+            ClockStyle::HoroRoyalOak,
+            "Reset Style must keep HoroRoyalOak instead of reverting to Autumn Signature"
+        );
+        assert_eq!(sc.draft_cfg.dt_scale_pct, 100);
+        assert!(sc.draft_cfg.dt_show_orb);
+        assert!(!sc.draft_cfg.dt_use_custom_color);
+        assert_eq!((sc.draft_cfg.dt_x, sc.draft_cfg.dt_y), (120, 88));
+
+        // Uncommitted draft_cfg != cfg Discard path (rendered via render_d2d)
+        sc.draft_cfg.dt_scale_pct = 140;
+        assert!(sc.render_d2d(&cfg));
+        assert_eq!(sc.hit_test(200.0, 600.0), HitZone::BtnDiscardWidget);
+        let _ = sc.activate_zone(HitZone::BtnDiscardWidget, &mut cfg);
+        assert_eq!(sc.draft_cfg.dt_scale_pct, cfg.dt_scale_pct);
+
+        // Reset Style on Music and Extended Weather keeps active Horology styles
+        sc.widget_page = WidgetPage::CustomizeMusic;
+        sc.draft_cfg.music_scale_pct = 130;
+        let _ = sc.activate_zone(HitZone::BtnResetWidget, &mut cfg);
+        assert_eq!(sc.draft_cfg.music_style, MusicStyle::HoroPatekMoonDeck);
+        assert_eq!(sc.draft_cfg.music_scale_pct, 100);
+
+        sc.widget_page = WidgetPage::CustomizeExt(ExtWidgetId::Weather);
+        sc.draft_cfg.ext_widgets[ExtWidgetId::Weather.idx()].scale_pct = 140;
+        let _ = sc.activate_zone(HitZone::BtnResetWidget, &mut cfg);
+        assert_eq!(sc.draft_cfg.ext_widgets[ExtWidgetId::Weather.idx()].theme, ExtWidgetTheme::HoroRoyalOak);
+        assert_eq!(sc.draft_cfg.ext_widgets[ExtWidgetId::Weather.idx()].scale_pct, 100);
+
+        // 2. Pixel & box verification of SplitStack divider + AM/PM + fixed spine styles
+        let bw = 420;
+        let bh = 240;
+        assert!(sc.backbuf.ensure_size(bw, bh));
+        let dw = sc.dwrite_factory.as_ref().expect("DW factory").clone();
+        let dc_rt = sc.dc_rt.as_ref().expect("D2D DC RT").clone();
+        let rt: windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = dc_rt.clone().into();
+        let bind_rc = RECT { left: 0, top: 0, right: bw, bottom: bh };
+        let clear_zero = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+
+        let count_nonzero_alpha = |buf: &DibBuffer| -> usize {
+            let raw = unsafe {
+                std::slice::from_raw_parts(buf.bits as *const u8, (buf.width * buf.height * 4) as usize)
+            };
+            raw.chunks_exact(4).filter(|px| px[3] > 0).count()
+        };
+
+        // 2a. SplitStack with ALL toggles OFF must paint ZERO pixels (no phantom vertical divider!)
+        let mut ss_off = AppConfig::default();
+        ss_off.apply_clock_style_preset(ClockStyle::SplitStack);
+        ss_off.widgets_24h = false;
+        ss_off.dt_show_plate = false;
+        ss_off.dt_show_clock = false;
+        ss_off.dt_show_spine = false;
+        ss_off.dt_show_orb = false;
+        ss_off.dt_show_weekday = false;
+        ss_off.dt_show_date = false;
+        ss_off.dt_show_seconds = false;
+        ss_off.dt_show_ampm = false;
+        let mut boxes = [ClockElemBox::default(); 8];
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_datetime_widget_with_boxes(&rt, &dw, None, 20.0, 20.0, 1.0, &ss_off, false, Some(&mut boxes));
+            rt.EndDraw(None, None).unwrap();
+        }
+        assert_eq!(
+            count_nonzero_alpha(&sc.backbuf),
+            0,
+            "SplitStack with all toggles OFF must not render a phantom vertical divider"
+        );
+
+        // 2b. SplitStack with ONLY Show AM / PM Badge ON must render the AM/PM badge cleanly
+        let mut ss_ampm = ss_off.clone();
+        ss_ampm.dt_show_ampm = true;
+        let mut boxes_ampm = [ClockElemBox::default(); 8];
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_datetime_widget_with_boxes(&rt, &dw, None, 20.0, 20.0, 1.0, &ss_ampm, false, Some(&mut boxes_ampm));
+            rt.EndDraw(None, None).unwrap();
+        }
+        let ap_box = boxes_ampm[ClockElemId::AmPm.idx()];
+        assert!(ap_box.visible && !ap_box.elem_hidden, "SplitStack must render AmPm box when dt_show_ampm=true");
+        assert!(
+            count_nonzero_alpha(&sc.backbuf) > 40,
+            "SplitStack must draw visible AM/PM badge pixels when dt_show_ampm=true"
+        );
+
+        // 2c. SplitStack with Accent Bar Divider ON must paint divider pixels
+        let mut ss_spine = ss_off.clone();
+        ss_spine.dt_show_spine = true;
+        unsafe {
+            dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&clear_zero));
+            draw_datetime_widget_with_boxes(&rt, &dw, None, 20.0, 20.0, 1.0, &ss_spine, false, None);
+            rt.EndDraw(None, None).unwrap();
+        }
+        assert!(
+            count_nonzero_alpha(&sc.backbuf) > 40,
+            "SplitStack with dt_show_spine=true must render Accent Bar Divider"
+        );
+
+        // 2d. Formerly dead dt_show_spine styles must now honor ClockElemId::Spine honestly
+        for st in [
+            ClockStyle::GlassRibbon,
+            ClockStyle::ChronoDial,
+            ClockStyle::OrbitalEclipse,
+            ClockStyle::WaterCausticsClock,
+            ClockStyle::LeatherFieldClock,
+        ] {
+            let mut c_on = AppConfig::default();
+            c_on.apply_clock_style_preset(st);
+            c_on.dt_show_spine = true;
+            let mut b_on = [ClockElemBox::default(); 8];
+            let mut c_off = c_on.clone();
+            c_off.dt_show_spine = false;
+            let mut b_off = [ClockElemBox::default(); 8];
+            unsafe {
+                dc_rt.BindDC(sc.backbuf.mem_dc, &bind_rc).unwrap();
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_datetime_widget_with_boxes(&rt, &dw, None, 20.0, 20.0, 1.0, &c_on, false, Some(&mut b_on));
+                rt.EndDraw(None, None).unwrap();
+
+                rt.BeginDraw();
+                rt.Clear(Some(&clear_zero));
+                draw_datetime_widget_with_boxes(&rt, &dw, None, 20.0, 20.0, 1.0, &c_off, false, Some(&mut b_off));
+                rt.EndDraw(None, None).unwrap();
+            }
+            assert!(
+                b_on[ClockElemId::Spine.idx()].visible && !b_on[ClockElemId::Spine.idx()].elem_hidden,
+                "{:?} must emit visible Spine element when dt_show_spine=true",
+                st
+            );
+            assert!(
+                !b_off[ClockElemId::Spine.idx()].visible || b_off[ClockElemId::Spine.idx()].elem_hidden,
+                "{:?} must hide Spine element when dt_show_spine=false",
+                st
+            );
+        }
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn verify_top_bar_all_themes_pill_label_font_slider_and_portable_ui() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassDark);
+        assert!(cfg.tb_theme.is_clean_minimal());
+        assert!(cfg.clean_top_bar_enabled);
+
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.win_w = 760;
+        sc.win_h = 640;
+        sc.u = 1.0;
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(760, 640));
+        sc.draft_cfg = cfg.clone();
+
+        // 1. Top Menu Bar pill is visible & clickable in Taskbar Studio -> Themes across ALL folders (including All Themes)
+        sc.active_tab = StudioTab::Taskbar;
+        sc.taskbar_page = TaskbarPage::Themes;
+        sc.tb_folder = TaskbarThemeFolder::All;
+        assert_eq!(
+            sc.hit_test(510.0, 109.0),
+            HitZone::ToggleCleanTopBar,
+            "All Themes header must expose Top Menu Bar ON/OFF toggle when Clean & Minimal theme is active"
+        );
+        assert_eq!(
+            sc.hit_test(230.0, 603.0),
+            HitZone::ToggleCleanTopBar,
+            "Footer Top Bar pill must stay reachable inside All Themes when Clean & Minimal theme is active"
+        );
+        assert!(sc.render_d2d(&cfg), "All Themes view with Top Menu Bar ON pill must render cleanly");
+
+        let cmd_tb = sc.activate_zone(HitZone::ToggleCleanTopBar, &mut cfg);
+        assert!(matches!(cmd_tb, SettingsCommand::MacDockUpdated));
+        assert!(!cfg.clean_top_bar_enabled);
+        assert!(!sc.draft_cfg.clean_top_bar_enabled);
+        assert!(sc.render_d2d(&cfg), "All Themes view with Top Menu Bar OFF pill must render cleanly");
+
+        // 2. Customize page exposes expanded 32..=96 px Icon Size slider AND 10..=20 px App Name Font Size slider
+        sc.taskbar_page = TaskbarPage::Customize;
+        assert_eq!(
+            sc.hit_test(400.0, 300.0),
+            HitZone::Slider(SliderKind::MacDockIconSize)
+        );
+        assert_eq!(
+            sc.hit_test(400.0, 324.0),
+            HitZone::Slider(SliderKind::MacDockLabelFontSize)
+        );
+        // Drag Icon Size near right end -> 88..=96 px
+        let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 640.0, &mut cfg);
+        assert_eq!(cfg.mac_dock_icon_size, 96);
+        let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 589.0, &mut cfg);
+        assert!((87..=89).contains(&cfg.mac_dock_icon_size), "Expected ~88px, got {}", cfg.mac_dock_icon_size);
+        // Drag App Name Font Size -> 18 px
+        let cmd_fs = sc.update_slider_from_x(SliderKind::MacDockLabelFontSize, 558.4, &mut cfg);
+        assert!(matches!(cmd_fs, Some(SettingsCommand::MacDockPreview)));
+        assert_eq!(cfg.w_apps.label_font_size_px, 18);
+        assert_eq!(sc.draft_cfg.w_apps.label_font_size_px, 18);
+        assert!(sc.render_d2d(&cfg), "Dock Customize page with 88px icon + 18px label font must render cleanly");
+
+        // 3. Settings tab exposes Portable Mode status + Convert to Portable pill without disturbing (140, 445)
+        sc.active_tab = StudioTab::Settings;
+        assert_eq!(sc.hit_test(140.0, 445.0), HitZone::None);
+        assert_eq!(sc.hit_test(636.0, 443.0), HitZone::BtnConvertPortable);
+        assert!(sc.render_d2d(&cfg), "Settings tab with Portable Mode pill must render cleanly");
 
         sc.release_idle_resources();
         unsafe {

@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use windows::core::{w, Interface, PCWSTR};
@@ -23,20 +24,21 @@ use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter3, IDXGIFactory4, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
     DXGI_QUERY_VIDEO_MEMORY_INFO,
 };
-use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetLogicalDrives};
+use windows::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Performance::{
-    PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterValue, PdhOpenQueryW,
-    PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
+    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterValue,
+    PdhOpenQueryW, PDH_FMT_COUNTERVALUE, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
 };
 use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::SystemInformation::{GetSystemTime, GetTickCount64};
 use windows::Win32::System::Threading::{
-    OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    PROCESS_VM_READ,
+    GetCurrentThread, OpenProcess, SetThreadPriority, TerminateProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
+    THREAD_PRIORITY_BELOW_NORMAL,
 };
 use windows::Win32::UI::Shell::{
     SHEmptyRecycleBinW, SHQueryRecycleBinW, ShellExecuteW, SHERB_NOCONFIRMATION,
@@ -1781,10 +1783,8 @@ pub struct ExtRuntimeState {
     pub net_history: [f32; 32],
     pub ping_ms: u32,
     pub local_ip: String,
-    pdh_net_query: isize,
-    pdh_rx_counter: isize,
-    pdh_tx_counter: isize,
-    pdh_net_attempted: bool,
+    net_ever_received: bool,
+    last_net_poll: Instant,
 
     // GPU
     pub gpu_name: String,
@@ -1825,12 +1825,384 @@ pub struct ExtRuntimeState {
     pub bin_items: u64,
     pub bin_bytes: u64,
 
+    bg_telemetry: Option<BgTelemetryWorker>,
     last_slow_poll: Instant,
     tick_counter: u32,
     live_weather: Arc<Mutex<Option<WeatherSnap>>>,
     weather_fetching: Arc<std::sync::atomic::AtomicBool>,
     weather_started: bool,
     last_weather_refresh: Instant,
+}
+
+const DRIVE_REMOVABLE_TYPE: u32 = 2;
+const DRIVE_FIXED_TYPE: u32 = 3;
+const DRIVE_RAMDISK_TYPE: u32 = 6;
+
+/// Returns `true` only for local fixed/removable/RAM volumes, skipping disconnected network
+/// shares (`DRIVE_REMOTE = 4`), optical drives (`DRIVE_CDROM = 5`), and unmounted/unknown roots
+/// that can block `GetDiskFreeSpaceExW` for seconds.
+pub(crate) fn should_probe_drive_type(drive_type: u32) -> bool {
+    matches!(
+        drive_type,
+        DRIVE_REMOVABLE_TYPE | DRIVE_FIXED_TYPE | DRIVE_RAMDISK_TYPE
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BgTelemetryRequest {
+    want_net: bool,
+    want_drives: bool,
+    want_procs: bool,
+    want_bin: bool,
+}
+
+impl BgTelemetryRequest {
+    fn is_empty(&self) -> bool {
+        !self.want_net && !self.want_drives && !self.want_procs && !self.want_bin
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.want_net |= other.want_net;
+        self.want_drives |= other.want_drives;
+        self.want_procs |= other.want_procs;
+        self.want_bin |= other.want_bin;
+    }
+}
+
+#[derive(Default)]
+struct BgTelemetrySnapshot {
+    net_bps: Option<(f32, f32)>,
+    drives: Option<Vec<DriveInfo>>,
+    top_procs: Option<Vec<ProcInfo>>,
+    bin: Option<(u64, u64)>,
+}
+
+/// Single reusable low-priority background thread that runs all blocking OS telemetry probes
+/// (`PdhOpenQueryW`/`PdhCollectQueryData`, `GetDiskFreeSpaceExW`, `CreateToolhelp32Snapshot`,
+/// and `SHQueryRecycleBinW`) so the UI `WndProc` never stalls.
+struct BgTelemetryWorker {
+    req_tx: Option<mpsc::Sender<BgTelemetryRequest>>,
+    snapshot: Arc<Mutex<BgTelemetrySnapshot>>,
+    has_update: Arc<AtomicBool>,
+    in_flight: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl BgTelemetryWorker {
+    fn spawn() -> Self {
+        let (req_tx, req_rx) = mpsc::channel::<BgTelemetryRequest>();
+        let snapshot = Arc::new(Mutex::new(BgTelemetrySnapshot::default()));
+        let has_update = Arc::new(AtomicBool::new(false));
+        let in_flight = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let snap_c = Arc::clone(&snapshot);
+        let upd_c = Arc::clone(&has_update);
+        let busy_c = Arc::clone(&in_flight);
+        let stop_c = Arc::clone(&stop);
+
+        let _ = std::thread::Builder::new()
+            .name("autumn-ext-telemetry".to_string())
+            .spawn(move || {
+                unsafe {
+                    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                }
+                let mut pdh_attempted = false;
+                let mut pdh_query: isize = 0;
+                let mut pdh_rx: isize = 0;
+                let mut pdh_tx: isize = 0;
+
+                while let Ok(mut req) = req_rx.recv() {
+                    if stop_c.load(Ordering::Acquire) {
+                        break;
+                    }
+                    // Coalesce burst requests into a single background pass
+                    while let Ok(more) = req_rx.try_recv() {
+                        req.merge(more);
+                    }
+                    if req.is_empty() {
+                        busy_c.store(false, Ordering::Release);
+                        continue;
+                    }
+
+                    let net_bps = if req.want_net {
+                        poll_pdh_net_bg(
+                            &mut pdh_attempted,
+                            &mut pdh_query,
+                            &mut pdh_rx,
+                            &mut pdh_tx,
+                        )
+                    } else {
+                        None
+                    };
+                    let drives = if req.want_drives && !stop_c.load(Ordering::Acquire) {
+                        Some(poll_drives_bg())
+                    } else {
+                        None
+                    };
+                    let top_procs = if req.want_procs && !stop_c.load(Ordering::Acquire) {
+                        Some(poll_procs_bg())
+                    } else {
+                        None
+                    };
+                    let bin = if req.want_bin && !stop_c.load(Ordering::Acquire) {
+                        poll_recycle_bin_bg()
+                    } else {
+                        None
+                    };
+
+                    if let Ok(mut out) = snap_c.lock() {
+                        if let Some(n) = net_bps {
+                            out.net_bps = Some(n);
+                        }
+                        if let Some(d) = drives {
+                            if !d.is_empty() {
+                                out.drives = Some(d);
+                            }
+                        }
+                        if let Some(p) = top_procs {
+                            if !p.is_empty() {
+                                out.top_procs = Some(p);
+                            }
+                        }
+                        if let Some(b) = bin {
+                            out.bin = Some(b);
+                        }
+                    }
+                    upd_c.store(true, Ordering::Release);
+                    busy_c.store(false, Ordering::Release);
+                }
+
+                if pdh_query != 0 {
+                    unsafe {
+                        let _ = PdhCloseQuery(PDH_HQUERY(pdh_query as *mut c_void));
+                    }
+                }
+            });
+
+        Self {
+            req_tx: Some(req_tx),
+            snapshot,
+            has_update,
+            in_flight,
+            stop,
+        }
+    }
+
+    fn request(&mut self, req: BgTelemetryRequest) {
+        if req.is_empty() {
+            return;
+        }
+        if let Some(ref tx) = self.req_tx {
+            self.in_flight.store(true, Ordering::Release);
+            let _ = tx.send(req);
+        }
+    }
+
+    fn take_snapshot(&self) -> Option<BgTelemetrySnapshot> {
+        if !self.has_update.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        if let Ok(mut g) = self.snapshot.try_lock() {
+            Some(std::mem::take(&mut *g))
+        } else {
+            // Re-arm so next tick drains once unlocked without ever blocking UI thread
+            self.has_update.store(true, Ordering::Release);
+            None
+        }
+    }
+}
+
+impl Drop for BgTelemetryWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.req_tx.take();
+    }
+}
+
+fn poll_pdh_net_bg(
+    attempted: &mut bool,
+    query_raw: &mut isize,
+    rx_raw: &mut isize,
+    tx_raw: &mut isize,
+) -> Option<(f32, f32)> {
+    unsafe {
+        if !*attempted {
+            *attempted = true;
+            let mut q = PDH_HQUERY::default();
+            if PdhOpenQueryW(PCWSTR::null(), 0, &mut q) == 0 {
+                let mut rx = PDH_HCOUNTER::default();
+                let mut tx = PDH_HCOUNTER::default();
+                let r1 = PdhAddEnglishCounterW(
+                    q,
+                    w!(r"\Network Interface(*)\Bytes Received/sec"),
+                    0,
+                    &mut rx,
+                );
+                let r2 = PdhAddEnglishCounterW(
+                    q,
+                    w!(r"\Network Interface(*)\Bytes Sent/sec"),
+                    0,
+                    &mut tx,
+                );
+                if r1 == 0 && r2 == 0 {
+                    let _ = PdhCollectQueryData(q);
+                    *query_raw = q.0 as isize;
+                    *rx_raw = rx.0 as isize;
+                    *tx_raw = tx.0 as isize;
+                } else {
+                    let _ = PdhCloseQuery(q);
+                }
+            }
+        }
+        if *query_raw == 0 {
+            return None;
+        }
+        let q = PDH_HQUERY(*query_raw as *mut c_void);
+        if PdhCollectQueryData(q) != 0 {
+            return None;
+        }
+        let rx = PDH_HCOUNTER(*rx_raw as *mut c_void);
+        let tx = PDH_HCOUNTER(*tx_raw as *mut c_void);
+        let mut ct = 0u32;
+        let mut v_rx = PDH_FMT_COUNTERVALUE::default();
+        let mut v_tx = PDH_FMT_COUNTERVALUE::default();
+        if PdhGetFormattedCounterValue(rx, PDH_FMT_DOUBLE, Some(&mut ct), &mut v_rx) == 0
+            && PdhGetFormattedCounterValue(tx, PDH_FMT_DOUBLE, Some(&mut ct), &mut v_tx) == 0
+        {
+            let r = (v_rx.Anonymous.doubleValue as f32).max(0.0);
+            let t = (v_tx.Anonymous.doubleValue as f32).max(0.0);
+            if r.is_finite() && t.is_finite() {
+                return Some((r, t));
+            }
+        }
+    }
+    None
+}
+
+fn poll_drives_bg() -> Vec<DriveInfo> {
+    let mut drives = Vec::new();
+    let mask = unsafe { GetLogicalDrives() };
+    for i in 0..26u32 {
+        if (mask & (1 << i)) != 0 {
+            let letter = (b'A' + i as u8) as char;
+            let root: Vec<u16> = format!("{}:\\", letter)
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let drive_type = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
+            if !should_probe_drive_type(drive_type) {
+                continue;
+            }
+            let mut free_caller = 0u64;
+            let mut total = 0u64;
+            let mut total_free = 0u64;
+            let ok = unsafe {
+                GetDiskFreeSpaceExW(
+                    PCWSTR(root.as_ptr()),
+                    Some(&mut free_caller),
+                    Some(&mut total),
+                    Some(&mut total_free),
+                )
+                .is_ok()
+            };
+            if ok && total > 0 {
+                let tot_gb = (total as f64 / 1_073_741_824.0) as f32;
+                let free_gb = (total_free as f64 / 1_073_741_824.0) as f32;
+                let used_gb = (tot_gb - free_gb).max(0.0);
+                let pct = ((used_gb / tot_gb.max(0.1)) * 100.0).clamp(0.0, 100.0);
+                drives.push(DriveInfo {
+                    letter,
+                    used_gb,
+                    total_gb: tot_gb,
+                    pct,
+                });
+            }
+        }
+    }
+    drives
+}
+
+fn poll_procs_bg() -> Vec<ProcInfo> {
+    let self_pid = std::process::id();
+    let mut procs = Vec::new();
+    unsafe {
+        if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            let mut pe = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            if Process32FirstW(snap, &mut pe).is_ok() {
+                loop {
+                    let pid = pe.th32ProcessID;
+                    if pid > 4 && pid != self_pid {
+                        let len = pe
+                            .szExeFile
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(pe.szExeFile.len());
+                        let raw_name = String::from_utf16_lossy(&pe.szExeFile[..len]);
+                        let clean_name = raw_name
+                            .strip_suffix(".exe")
+                            .or_else(|| raw_name.strip_suffix(".EXE"))
+                            .unwrap_or(&raw_name)
+                            .to_string();
+                        if !clean_name.eq_ignore_ascii_case("System")
+                            && !clean_name.eq_ignore_ascii_case("Registry")
+                            && !clean_name.eq_ignore_ascii_case("MemCompression")
+                            && !clean_name.eq_ignore_ascii_case("svchost")
+                        {
+                            if let Ok(hp) = OpenProcess(
+                                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                                false,
+                                pid,
+                            ) {
+                                let mut pmc = PROCESS_MEMORY_COUNTERS {
+                                    cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+                                    ..Default::default()
+                                };
+                                if K32GetProcessMemoryInfo(hp, &mut pmc, pmc.cb).as_bool() {
+                                    let mb = (pmc.WorkingSetSize as f64 / (1024.0 * 1024.0)) as f32;
+                                    if mb >= 12.0 {
+                                        procs.push(ProcInfo {
+                                            pid,
+                                            name: clean_name,
+                                            mem_mb: mb,
+                                        });
+                                    }
+                                }
+                                let _ = CloseHandle(hp);
+                            }
+                        }
+                    }
+                    if Process32NextW(snap, &mut pe).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snap);
+        }
+    }
+    procs.sort_by(|a, b| {
+        b.mem_mb
+            .partial_cmp(&a.mem_mb)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    procs.truncate(6);
+    procs
+}
+
+fn poll_recycle_bin_bg() -> Option<(u64, u64)> {
+    unsafe {
+        let mut rbi = SHQUERYRBINFO {
+            cbSize: size_of::<SHQUERYRBINFO>() as u32,
+            ..Default::default()
+        };
+        if SHQueryRecycleBinW(PCWSTR::null(), &mut rbi).is_ok() {
+            return Some((rbi.i64NumItems.max(0) as u64, rbi.i64Size.max(0) as u64));
+        }
+    }
+    None
 }
 
 pub const DAILY_QUOTE_POOL_LEN: usize = 31;
@@ -2106,10 +2478,8 @@ impl ExtRuntimeState {
             ],
             ping_ms: 14,
             local_ip: "192.168.1.104".to_string(),
-            pdh_net_query: 0,
-            pdh_rx_counter: 0,
-            pdh_tx_counter: 0,
-            pdh_net_attempted: false,
+            net_ever_received: false,
+            last_net_poll: Instant::now() - Duration::from_secs(10),
             gpu_name: "DirectX 12 GPU".to_string(),
             gpu_load_pct: 24.0,
             vram_used_mb: 1840.0,
@@ -2145,6 +2515,7 @@ impl ExtRuntimeState {
             top_procs: Vec::new(),
             bin_items: 0,
             bin_bytes: 0,
+            bg_telemetry: None,
             last_slow_poll: Instant::now() - Duration::from_secs(60),
             tick_counter: 0,
             live_weather,
@@ -2212,32 +2583,59 @@ impl ExtRuntimeState {
         (w.city.clone(), w.temp_c, w.condition)
     }
 
-    fn init_pdh_net(&mut self) {
-        unsafe {
-            let mut q = PDH_HQUERY::default();
-            if PdhOpenQueryW(PCWSTR::null(), 0, &mut q) == 0 {
-                let mut rx = PDH_HCOUNTER::default();
-                let mut tx = PDH_HCOUNTER::default();
-                let r1 = PdhAddEnglishCounterW(
-                    q,
-                    w!(r"\Network Interface(*)\Bytes Received/sec"),
-                    0,
-                    &mut rx,
-                );
-                let r2 = PdhAddEnglishCounterW(
-                    q,
-                    w!(r"\Network Interface(*)\Bytes Sent/sec"),
-                    0,
-                    &mut tx,
-                );
-                if r1 == 0 && r2 == 0 {
-                    let _ = PdhCollectQueryData(q);
-                    self.pdh_net_query = q.0 as isize;
-                    self.pdh_rx_counter = rx.0 as isize;
-                    self.pdh_tx_counter = tx.0 as isize;
-                }
+    fn request_bg_telemetry(&mut self, req: BgTelemetryRequest) {
+        if req.is_empty() {
+            return;
+        }
+        let worker = self
+            .bg_telemetry
+            .get_or_insert_with(BgTelemetryWorker::spawn);
+        worker.request(req);
+    }
+
+    fn apply_bg_telemetry_snapshot(&mut self) -> bool {
+        let Some(snap) = self.bg_telemetry.as_ref().and_then(|w| w.take_snapshot()) else {
+            return false;
+        };
+        let mut changed = false;
+        if let Some((r, t)) = snap.net_bps {
+            self.down_bps = if self.net_ever_received {
+                self.down_bps * 0.35 + r * 0.65
+            } else {
+                r
+            };
+            self.up_bps = if self.net_ever_received {
+                self.up_bps * 0.35 + t * 0.65
+            } else {
+                t
+            };
+            self.net_ever_received = true;
+            self.net_history.rotate_left(1);
+            let norm = (self.down_bps / 2_500_000.0).sqrt().clamp(0.06, 0.98);
+            self.net_history[self.net_history.len() - 1] = norm;
+            self.ping_ms = (12.0 + ((self.tick_counter as f32 * 0.3).sin().abs() * 6.0)) as u32;
+            changed = true;
+        }
+        if let Some(drives) = snap.drives {
+            if !drives.is_empty() {
+                self.drives = drives;
+                changed = true;
             }
         }
+        if let Some(procs) = snap.top_procs {
+            if !procs.is_empty() {
+                self.top_procs = procs;
+                changed = true;
+            }
+        }
+        if let Some((items, bytes)) = snap.bin {
+            if items != self.bin_items || bytes != self.bin_bytes {
+                self.bin_items = items;
+                self.bin_bytes = bytes;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Updates `quote_idx` automatically whenever the local calendar date crosses midnight.
@@ -2254,6 +2652,11 @@ impl ExtRuntimeState {
     pub fn tick(&mut self, cfg: &AppConfig, cpu_pct: f32) -> bool {
         let mut changed = false;
         self.tick_counter = self.tick_counter.wrapping_add(1);
+
+        // Drain any completed snapshots from the low-priority background telemetry worker (non-blocking).
+        if self.apply_bg_telemetry_snapshot() {
+            changed = true;
+        }
 
         // 0. Daily Quote midnight rollover detection
         let now_local = chrono_local();
@@ -2318,52 +2721,25 @@ impl ExtRuntimeState {
             }
         }
 
-        // 2. Network bandwidth (lazily initialize PDH only if Network widget is enabled)
+        let mut bg_req = BgTelemetryRequest::default();
+        let now = Instant::now();
+
+        // 2. Network bandwidth (strictly off-thread PDH worker; zero UI-thread PDH stalls)
         if cfg.ext_widgets[ExtWidgetId::Network.idx()].enabled {
-            if !self.pdh_net_attempted {
-                self.pdh_net_attempted = true;
-                self.init_pdh_net();
+            if now.duration_since(self.last_net_poll) >= Duration::from_millis(1200) {
+                self.last_net_poll = now;
+                bg_req.want_net = true;
             }
-            let mut got_net = false;
-            if self.pdh_net_query != 0 {
-                unsafe {
-                    let q = PDH_HQUERY(self.pdh_net_query as *mut c_void);
-                    if PdhCollectQueryData(q) == 0 {
-                        let rx = PDH_HCOUNTER(self.pdh_rx_counter as *mut c_void);
-                        let tx = PDH_HCOUNTER(self.pdh_tx_counter as *mut c_void);
-                        let mut ct = 0u32;
-                        let mut v_rx = PDH_FMT_COUNTERVALUE::default();
-                        let mut v_tx = PDH_FMT_COUNTERVALUE::default();
-                        if PdhGetFormattedCounterValue(rx, PDH_FMT_DOUBLE, Some(&mut ct), &mut v_rx)
-                            == 0
-                            && PdhGetFormattedCounterValue(
-                                tx,
-                                PDH_FMT_DOUBLE,
-                                Some(&mut ct),
-                                &mut v_tx,
-                            ) == 0
-                        {
-                            let r = (v_rx.Anonymous.doubleValue as f32).max(0.0);
-                            let t = (v_tx.Anonymous.doubleValue as f32).max(0.0);
-                            if r.is_finite() && t.is_finite() {
-                                self.down_bps = self.down_bps * 0.35 + r * 0.65;
-                                self.up_bps = self.up_bps * 0.35 + t * 0.65;
-                                got_net = true;
-                            }
-                        }
-                    }
-                }
-            }
-            if !got_net {
+            if !self.net_ever_received {
                 let phase = self.tick_counter as f32 * 0.45;
                 self.down_bps = 85_000.0 + (phase.sin().abs() * 340_000.0);
                 self.up_bps = 18_000.0 + ((phase * 0.7).cos().abs() * 64_000.0);
+                self.net_history.rotate_left(1);
+                let norm = (self.down_bps / 2_500_000.0).sqrt().clamp(0.06, 0.98);
+                self.net_history[self.net_history.len() - 1] = norm;
+                self.ping_ms = (12.0 + ((self.tick_counter as f32 * 0.3).sin().abs() * 6.0)) as u32;
+                changed = true;
             }
-            self.net_history.rotate_left(1);
-            let norm = (self.down_bps / 2_500_000.0).sqrt().clamp(0.06, 0.98);
-            self.net_history[self.net_history.len() - 1] = norm;
-            self.ping_ms = (12.0 + ((self.tick_counter as f32 * 0.3).sin().abs() * 6.0)) as u32;
-            changed = true;
         }
 
         // 3. GPU & VRAM Telemetry (refresh cached DXGI adapter ~every 2s; drop when disabled)
@@ -2385,25 +2761,29 @@ impl ExtRuntimeState {
             }
         }
         if let Some((_, at)) = self.clip_copied_flash {
-            if Instant::now().duration_since(at) > Duration::from_millis(1200) {
+            if now.duration_since(at) > Duration::from_millis(1200) {
                 self.clip_copied_flash = None;
                 changed = true;
             }
         }
 
-        // 5. Slow metrics (Drives, Processes, Recycle Bin) every 4 seconds, or immediately if newly enabled
+        // 5. Slow metrics (Drives, Processes, Recycle Bin) queued to low-priority background worker
         let need_drives = cfg.ext_widgets[ExtWidgetId::Drives.idx()].enabled;
         let need_procs = cfg.ext_widgets[ExtWidgetId::Processes.idx()].enabled;
         let need_bin = cfg.ext_widgets[ExtWidgetId::RecycleBin.idx()].enabled;
         let missing_initial =
             (need_drives && self.drives.is_empty()) || (need_procs && self.top_procs.is_empty());
         if (need_drives || need_procs || need_bin)
-            && (missing_initial
-                || Instant::now().duration_since(self.last_slow_poll) >= Duration::from_secs(4))
+            && (missing_initial || now.duration_since(self.last_slow_poll) >= Duration::from_secs(4))
         {
-            self.poll_slow_metrics_masked(need_drives, need_procs, need_bin);
-            self.last_slow_poll = Instant::now();
-            changed = true;
+            bg_req.want_drives = need_drives;
+            bg_req.want_procs = need_procs;
+            bg_req.want_bin = need_bin;
+            self.last_slow_poll = now;
+        }
+
+        if !bg_req.is_empty() {
+            self.request_bg_telemetry(bg_req);
         }
 
         changed
@@ -2534,139 +2914,19 @@ impl ExtRuntimeState {
         }
     }
 
+    /// Non-blocking refresh: queues slow OS probes (Drives, Processes, Recycle Bin) onto the
+    /// reusable low-priority background telemetry worker so the UI thread never stalls.
     pub fn poll_slow_metrics(&mut self) {
         self.poll_slow_metrics_masked(true, true, true);
     }
 
     pub fn poll_slow_metrics_masked(&mut self, poll_drives: bool, poll_procs: bool, poll_bin: bool) {
-        // 1. Drives
-        if poll_drives {
-            let mut drives = Vec::new();
-            let mask = unsafe { GetLogicalDrives() };
-            for i in 0..26u32 {
-                if (mask & (1 << i)) != 0 {
-                    let letter = (b'A' + i as u8) as char;
-                    let root: Vec<u16> = format!("{}:\\", letter)
-                        .encode_utf16()
-                        .chain(std::iter::once(0))
-                        .collect();
-                    let mut free_caller = 0u64;
-                    let mut total = 0u64;
-                    let mut total_free = 0u64;
-                    let ok = unsafe {
-                        GetDiskFreeSpaceExW(
-                            PCWSTR(root.as_ptr()),
-                            Some(&mut free_caller),
-                            Some(&mut total),
-                            Some(&mut total_free),
-                        )
-                        .is_ok()
-                    };
-                    if ok && total > 0 {
-                        let tot_gb = (total as f64 / 1_073_741_824.0) as f32;
-                        let free_gb = (total_free as f64 / 1_073_741_824.0) as f32;
-                        let used_gb = (tot_gb - free_gb).max(0.0);
-                        let pct = ((used_gb / tot_gb.max(0.1)) * 100.0).clamp(0.0, 100.0);
-                        drives.push(DriveInfo {
-                            letter,
-                            used_gb,
-                            total_gb: tot_gb,
-                            pct,
-                        });
-                    }
-                }
-            }
-            if !drives.is_empty() {
-                self.drives = drives;
-            }
-        }
-
-        // 2. Top Processes by Working Set RAM (never list AutumnDeck itself)
-        if poll_procs {
-            let self_pid = std::process::id();
-            let mut procs = Vec::new();
-            unsafe {
-                if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
-                    let mut pe = PROCESSENTRY32W {
-                        dwSize: size_of::<PROCESSENTRY32W>() as u32,
-                        ..Default::default()
-                    };
-                    if Process32FirstW(snap, &mut pe).is_ok() {
-                        loop {
-                            let pid = pe.th32ProcessID;
-                            if pid > 4 && pid != self_pid {
-                                let len = pe
-                                    .szExeFile
-                                    .iter()
-                                    .position(|&c| c == 0)
-                                    .unwrap_or(pe.szExeFile.len());
-                                let raw_name = String::from_utf16_lossy(&pe.szExeFile[..len]);
-                                let clean_name = raw_name
-                                    .strip_suffix(".exe")
-                                    .or_else(|| raw_name.strip_suffix(".EXE"))
-                                    .unwrap_or(&raw_name)
-                                    .to_string();
-                                if !clean_name.eq_ignore_ascii_case("System")
-                                    && !clean_name.eq_ignore_ascii_case("Registry")
-                                    && !clean_name.eq_ignore_ascii_case("MemCompression")
-                                    && !clean_name.eq_ignore_ascii_case("svchost")
-                                {
-                                    if let Ok(hp) = OpenProcess(
-                                        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-                                        false,
-                                        pid,
-                                    ) {
-                                        let mut pmc = PROCESS_MEMORY_COUNTERS {
-                                            cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
-                                            ..Default::default()
-                                        };
-                                        if K32GetProcessMemoryInfo(hp, &mut pmc, pmc.cb).as_bool() {
-                                            let mb = (pmc.WorkingSetSize as f64 / (1024.0 * 1024.0))
-                                                as f32;
-                                            if mb >= 12.0 {
-                                                procs.push(ProcInfo {
-                                                    pid,
-                                                    name: clean_name,
-                                                    mem_mb: mb,
-                                                });
-                                            }
-                                        }
-                                        let _ = CloseHandle(hp);
-                                    }
-                                }
-                            }
-                            if Process32NextW(snap, &mut pe).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    let _ = CloseHandle(snap);
-                }
-            }
-            procs.sort_by(|a, b| {
-                b.mem_mb
-                    .partial_cmp(&a.mem_mb)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            procs.truncate(6);
-            if !procs.is_empty() {
-                self.top_procs = procs;
-            }
-        }
-
-        // 3. Recycle Bin
-        if poll_bin {
-            unsafe {
-                let mut rbi = SHQUERYRBINFO {
-                    cbSize: size_of::<SHQUERYRBINFO>() as u32,
-                    ..Default::default()
-                };
-                if SHQueryRecycleBinW(PCWSTR::null(), &mut rbi).is_ok() {
-                    self.bin_items = rbi.i64NumItems.max(0) as u64;
-                    self.bin_bytes = rbi.i64Size.max(0) as u64;
-                }
-            }
-        }
+        self.request_bg_telemetry(BgTelemetryRequest {
+            want_net: false,
+            want_drives: poll_drives,
+            want_procs: poll_procs,
+            want_bin: poll_bin,
+        });
     }
 
     pub fn execute_search(&mut self, cfg: &AppConfig) {
@@ -4034,12 +4294,14 @@ unsafe fn draw_ext_widget_with_boxes_inner(
         let (lw, lh) = wcfg.logical_size(id);
         let w = lw * s;
         let h = lh * s;
-        let card_hov = matches!(hover_zone, WidgetHitZone::ExtCard(hid) if hid == id)
-            || matches!(hover_zone, WidgetHitZone::ExtBtn(hid, _) if hid == id);
-        let anim_active = ht.has_idle_motion()
-            || card_hov
-            || wcfg.hover_fx != TaskbarVizStyle::Off
-            || fx_viz.map(|v| v.hover_mix > 0.004 || v.hover_active).unwrap_or(false);
+        let anim_active = (cfg.widgets_live_material && ht.has_idle_motion())
+            || fx_viz
+                .map(|v| {
+                    v.hover_mix > 0.004
+                        || v.hover_active
+                        || v.ripples.iter().any(|r| r.active)
+                })
+                .unwrap_or(false);
         if out_boxes.is_none() && !anim_active {
             if let Some((slot, cache_gen)) = fg_cache {
                 let pal = resolve_palette_for(cfg, wcfg.match_wallpaper);
@@ -8010,5 +8272,66 @@ mod weather_geo_tests {
                 WidgetHitZone::ExtBtn(ExtWidgetId::Processes, row)
             );
         }
+    }
+
+    #[test]
+    fn bg_telemetry_worker_filters_drives_and_publishes_non_blocking() {
+        // 1. Drive filter must probe only local volumes (fixed/removable/RAM) and skip
+        // disconnected network shares (4), optical drives (5), and unknown/unmounted roots (0/1).
+        assert!(!should_probe_drive_type(0));
+        assert!(!should_probe_drive_type(1));
+        assert!(should_probe_drive_type(2));
+        assert!(should_probe_drive_type(3));
+        assert!(!should_probe_drive_type(4));
+        assert!(!should_probe_drive_type(5));
+        assert!(should_probe_drive_type(6));
+
+        // 2. Request coalescing merges flags cleanly
+        let mut r = BgTelemetryRequest {
+            want_net: true,
+            want_drives: false,
+            want_procs: false,
+            want_bin: false,
+        };
+        r.merge(BgTelemetryRequest {
+            want_net: false,
+            want_drives: true,
+            want_procs: true,
+            want_bin: false,
+        });
+        assert!(r.want_net && r.want_drives && r.want_procs && !r.want_bin);
+
+        // 3. ExtRuntimeState::tick dispatches drives/procs to the reusable background worker
+        // without blocking UI thread, then applies published snapshot on a subsequent tick.
+        let mut st = ExtRuntimeState::new();
+        assert!(st.bg_telemetry.is_none());
+        let mut cfg = AppConfig::default();
+        cfg.ext_widgets[ExtWidgetId::Drives.idx()].enabled = true;
+        cfg.ext_widgets[ExtWidgetId::Processes.idx()].enabled = true;
+
+        let t0 = Instant::now();
+        let _ = st.tick(&cfg, 18.0);
+        assert!(
+            t0.elapsed() < Duration::from_millis(200),
+            "ExtRuntimeState::tick must return non-blockingly without running OS probes on UI thread"
+        );
+        assert!(st.bg_telemetry.is_some(), "Reusable background telemetry worker must be spawned");
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            let _ = st.tick(&cfg, 18.0);
+            if !st.drives.is_empty() && !st.top_procs.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !st.drives.is_empty(),
+            "Background telemetry worker must publish local drives snapshot"
+        );
+        assert!(
+            !st.top_procs.is_empty(),
+            "Background telemetry worker must publish top processes snapshot"
+        );
     }
 }

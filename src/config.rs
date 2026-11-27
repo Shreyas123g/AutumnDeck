@@ -4,6 +4,7 @@ use std::io::Write;
 use std::mem::size_of;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use windows::core::{w, Interface, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, PROPERTYKEY, RECT, WPARAM};
@@ -3710,6 +3711,92 @@ pub struct VideoWallpaperPreset {
     pub path: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PerformanceMode {
+    Smooth,
+    Balanced,
+    Eco,
+}
+
+impl Default for PerformanceMode {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
+impl PerformanceMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Smooth => "smooth",
+            Self::Balanced => "balanced",
+            Self::Eco => "eco",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "smooth" | "high" | "performance" => Self::Smooth,
+            "eco" | "low" | "battery" => Self::Eco,
+            _ => Self::Balanced,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Smooth => "Smooth",
+            Self::Balanced => "Balanced (Auto-Eco)",
+            Self::Eco => "Eco (Low CPU)",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Smooth => "Always full FPS across widgets & docks",
+            Self::Balanced => "Auto-Eco (≤20 FPS) on Battery or background apps",
+            Self::Eco => "Low-CPU cap (≤18 FPS) for max battery life",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WallpaperFpsCap {
+    Auto,
+    Fps60,
+    Fps30,
+}
+
+impl Default for WallpaperFpsCap {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl WallpaperFpsCap {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Fps60 => "60",
+            Self::Fps30 => "30",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "60" | "fps60" | "60fps" => Self::Fps60,
+            "30" | "fps30" | "30fps" => Self::Fps30,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Fps60 => "60",
+            Self::Fps30 => "30",
+        }
+    }
+}
+
 pub fn is_video_wallpaper_path(path: &str) -> bool {
     Path::new(path)
         .extension()
@@ -4021,6 +4108,7 @@ pub struct AppConfig {
     pub tb_show_fx: bool,
     pub viz_eco_fps: bool,
     pub anim_fps: u32,
+    pub performance_mode: PerformanceMode,
     pub dt_hover_fx: TaskbarVizStyle,
     pub apps_hover_fx: TaskbarVizStyle,
     pub vitals_hover_fx: TaskbarVizStyle,
@@ -4192,6 +4280,7 @@ pub struct AppConfig {
     pub wallpaper_trim_memory: bool,
     pub wallpaper_mute: bool,
     pub wallpaper_volume_pct: u8,
+    pub wallpaper_fps_cap: WallpaperFpsCap,
     pub game_mode_pause: bool,
     pub onboarding_done: bool,
 
@@ -5350,6 +5439,8 @@ impl DockShelfFrameConfig {
     }
 }
 
+pub const MAX_PINNED_APPS: usize = 32;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DockAppWidgetConfig {
     pub theme_override: Option<TaskbarTheme>,
@@ -5357,6 +5448,8 @@ pub struct DockAppWidgetConfig {
     pub indicator_override: Option<DockIndicatorStyle>,
     pub divider_style: DockDividerStyle,
     pub label_mode: DockRunningLabelMode,
+    /// Inline app name font size on themed taskbars/docks (`10..=20 px`, default `12`).
+    pub label_font_size_px: u8,
     pub per_app_brand_glow: bool,
     pub custom_glow_rgb: Option<u32>,
     pub show_window_count_badge: bool,
@@ -5376,6 +5469,7 @@ impl Default for DockAppWidgetConfig {
             indicator_override: None,
             divider_style: DockDividerStyle::InheritTheme,
             label_mode: DockRunningLabelMode::InheritTheme,
+            label_font_size_px: 12,
             per_app_brand_glow: false,
             custom_glow_rgb: None,
             show_window_count_badge: false,
@@ -5590,6 +5684,7 @@ impl Default for AppConfig {
             tb_show_fx: true,
             viz_eco_fps: false,
             anim_fps: AppConfig::DEFAULT_ANIM_FPS,
+            performance_mode: PerformanceMode::Balanced,
             dt_hover_fx: TaskbarVizStyle::Off,
             apps_hover_fx: TaskbarVizStyle::Off,
             vitals_hover_fx: TaskbarVizStyle::Off,
@@ -5752,6 +5847,7 @@ impl Default for AppConfig {
             wallpaper_trim_memory: false,
             wallpaper_mute: true,
             wallpaper_volume_pct: 0,
+            wallpaper_fps_cap: WallpaperFpsCap::Auto,
             game_mode_pause: true,
             onboarding_done: false,
 
@@ -5868,6 +5964,26 @@ impl AppConfig {
     pub fn set_anim_fps(&mut self, fps: u32) {
         self.anim_fps = Self::clamp_anim_fps(fps);
         self.viz_eco_fps = self.anim_fps <= 24;
+    }
+
+    /// Computes effective animation FPS after applying `PerformanceMode` auto-throttling:
+    /// - `Smooth`: always runs at `anim_fps`.
+    /// - `Balanced`: drops to `<= 20 FPS` automatically on Battery/Power Saver or while focused
+    ///   in another application.
+    /// - `Eco`: always caps animations to `<= 18 FPS`.
+    pub fn effective_anim_fps(&self, on_battery_or_saver: bool, external_app_focused: bool) -> u32 {
+        let base = Self::clamp_anim_fps(self.anim_fps);
+        match self.performance_mode {
+            PerformanceMode::Smooth => base,
+            PerformanceMode::Balanced => {
+                if on_battery_or_saver || external_app_focused {
+                    base.min(20)
+                } else {
+                    base
+                }
+            }
+            PerformanceMode::Eco => base.min(18),
+        }
     }
 
     /// Unifies 12h/24h clock format across desktop widgets and the taskbar/dock clock.
@@ -6533,7 +6649,7 @@ impl AppConfig {
                 self.dt_align = ClockAlign::Left;
             }
             ClockStyle::SplitStack => {
-                self.dt_show_spine = false;
+                self.dt_show_spine = true;
                 self.dt_show_orb = true;
                 self.dt_corner_radius = 22;
                 self.dt_align = ClockAlign::Center;
@@ -6730,11 +6846,151 @@ pub struct WinTaskbarPrefs {
     pub show_widgets: bool,
 }
 
+static PORTABLE_CLI_FLAG: AtomicBool = AtomicBool::new(false);
+
+pub fn set_portable_cli_flag(enabled: bool) {
+    PORTABLE_CLI_FLAG.store(enabled, Ordering::Release);
+}
+
+pub fn portable_cli_flag() -> bool {
+    PORTABLE_CLI_FLAG.load(Ordering::Acquire)
+}
+
+/// Pure testable resolver for AutumnDeck's active data root.
+/// Returns `(data_dir, is_portable)`. Portable mode activates automatically when
+/// `--portable` is passed OR `<exe_dir>\portable.txt` exists beside the executable.
+pub fn resolve_app_data_dir(
+    exe_dir: Option<&Path>,
+    cli_portable: bool,
+    appdata_env: Option<&Path>,
+) -> (PathBuf, bool) {
+    if let Some(dir) = exe_dir {
+        if cli_portable || dir.join("portable.txt").is_file() {
+            return (dir.join("Data"), true);
+        }
+    }
+    let base = appdata_env
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    (base.join("AutumnDeck"), false)
+}
+
+pub fn is_portable_mode() -> bool {
+    let exe = self_exe_path();
+    let appdata = std::env::var("APPDATA").ok().map(PathBuf::from);
+    resolve_app_data_dir(exe.parent(), portable_cli_flag(), appdata.as_deref()).1
+}
+
 pub fn app_data_dir() -> PathBuf {
-    let base = std::env::var("APPDATA")
+    let exe = self_exe_path();
+    let appdata = std::env::var("APPDATA").ok().map(PathBuf::from);
+    resolve_app_data_dir(exe.parent(), portable_cli_flag(), appdata.as_deref()).0
+}
+
+pub fn status_snapshot_path() -> PathBuf {
+    if is_portable_mode() {
+        let dir = app_data_dir();
+        let _ = fs::create_dir_all(&dir);
+        dir.join("autumn_deck_status.txt")
+    } else {
+        std::env::temp_dir().join("autumn_deck_status.txt")
+    }
+}
+
+pub fn portable_data_dir_display() -> String {
+    if is_portable_mode() {
+        let p = app_data_dir();
+        let s = p.to_string_lossy().into_owned();
+        if s.len() > 42 {
+            "<exe_dir>\\Data".to_string()
+        } else {
+            s
+        }
+    } else {
+        "%APPDATA%\\AutumnDeck".to_string()
+    }
+}
+
+/// Converts a standard installation into True Portable Mode inside `exe_dir`:
+/// creates `portable.txt`, migrates `config.ini`, backups, `pill_cache.ini`, `Themes/`,
+/// `wallpapers/`, and `Diagnostics/` into `<exe_dir>\Data\`, and rewrites embedded
+/// `src_data_dir` references in `config.ini` to the portable `Data` directory.
+pub fn convert_to_portable_in(
+    exe_dir: &Path,
+    src_data_dir: &Path,
+    cfg: &AppConfig,
+) -> Result<PathBuf, String> {
+    let dst_data_dir = exe_dir.join("Data");
+    fs::create_dir_all(&dst_data_dir)
+        .map_err(|e| format!("Cannot create portable Data folder: {}", e))?;
+
+    let marker = exe_dir.join("portable.txt");
+    let marker_body = "AutumnDeck Portable Mode\r\nKeep this file beside AutumnDeck.exe to store all settings, themes, wallpapers, and logs inside .\\Data\\\r\n";
+    fs::write(&marker, marker_body)
+        .map_err(|e| format!("Cannot write portable.txt (folder may be read-only): {}", e))?;
+
+    if !src_data_dir.eq_ignore_ascii_case_path(&dst_data_dir) && src_data_dir.exists() {
+        for sub in ["Themes", "wallpapers", "Diagnostics"] {
+            let s = src_data_dir.join(sub);
+            if s.is_dir() {
+                copy_dir_recursive_if_missing(&s, &dst_data_dir.join(sub));
+            }
+        }
+        for fname in ["pill_cache.ini", "config.ini.bak"] {
+            let s = src_data_dir.join(fname);
+            let d = dst_data_dir.join(fname);
+            if s.is_file() && !d.exists() {
+                let _ = fs::copy(&s, &d);
+            }
+        }
+    }
+
+    let src_str = src_data_dir.to_string_lossy().to_string();
+    let dst_str = dst_data_dir.to_string_lossy().to_string();
+    let mut portable_cfg = cfg.clone();
+    if !src_str.is_empty() && !src_str.eq_ignore_ascii_case(&dst_str) {
+        if portable_cfg
+            .wallpaper_path
+            .to_ascii_lowercase()
+            .starts_with(&src_str.to_ascii_lowercase())
+        {
+            let tail = &portable_cfg.wallpaper_path[src_str.len()..];
+            portable_cfg.wallpaper_path = format!("{}{}", dst_str, tail);
+        }
+    }
+    let ini = serialize_config_ini(&portable_cfg);
+    let dst_ini = dst_data_dir.join("config.ini");
+    write_atomic_synced(&dst_ini, &ini)
+        .map_err(|e| format!("Failed writing portable config.ini: {}", e))?;
+    let _ = write_atomic_synced(&dst_data_dir.join("config.ini.bak"), &ini);
+    Ok(dst_data_dir)
+}
+
+trait PathEqIgnoreCase {
+    fn eq_ignore_ascii_case_path(&self, other: &Path) -> bool;
+}
+
+impl PathEqIgnoreCase for Path {
+    fn eq_ignore_ascii_case_path(&self, other: &Path) -> bool {
+        self.to_string_lossy()
+            .eq_ignore_ascii_case(&other.to_string_lossy())
+    }
+}
+
+pub fn convert_current_setup_to_portable(cfg: &AppConfig) -> Result<PathBuf, String> {
+    let exe = self_exe_path();
+    let Some(exe_dir) = exe.parent() else {
+        return Err("Unable to determine AutumnDeck executable directory.".to_string());
+    };
+    let appdata = std::env::var("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
-    base.join("AutumnDeck")
+    let src_dir = if is_portable_mode() {
+        app_data_dir()
+    } else {
+        appdata.join("AutumnDeck")
+    };
+    convert_to_portable_in(exe_dir, &src_dir, cfg)
 }
 
 fn copy_dir_recursive_if_missing(src: &Path, dst: &Path) {
@@ -6758,6 +7014,9 @@ fn copy_dir_recursive_if_missing(src: &Path, dst: &Path) {
 /// One-time seamless migration from legacy `%APPDATA%\AutumnTaskbar` to `%APPDATA%\AutumnDeck`.
 /// Preserves the legacy directory untouched as a backup while updating copied cached paths.
 pub fn migrate_legacy_appdata_if_needed() {
+    if is_portable_mode() {
+        return;
+    }
     let new_dir = app_data_dir();
     if new_dir.join("config.ini").exists() {
         return;
@@ -7010,7 +7269,7 @@ pub fn read_windows_taskbar_pins() -> Vec<AppShortcut> {
                 })
                 .collect();
             lnks.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
-            for (name, path) in lnks.into_iter().take(16) {
+            for (name, path) in lnks.into_iter().take(MAX_PINNED_APPS) {
                 out.push(AppShortcut {
                     name,
                     path,
@@ -7340,7 +7599,8 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
     let mut dynamic_slots: Vec<(String, String, i32, i32)> =
         vec![(String::new(), String::new(), 0, 0); 12];
     let mut dock_pin_count: Option<usize> = None;
-    let mut dock_pin_slots: Vec<(String, String)> = vec![(String::new(), String::new()); 16];
+    let mut dock_pin_slots: Vec<(String, String)> =
+        vec![(String::new(), String::new()); MAX_PINNED_APPS];
     let mut legacy_slots: [(String, String); 3] = Default::default();
     let mut saw_legacy = false;
     let mut saw_per_widget_match = false;
@@ -7407,6 +7667,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                         saw_anim_fps = true;
                     }
                 }
+                "performance_mode" => cfg.performance_mode = PerformanceMode::from_str(val),
                 "viz_eco_fps" => {
                     if !saw_anim_fps {
                         cfg.viz_eco_fps = parse_bool(val);
@@ -7640,6 +7901,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "wallpaper_trim_memory" => cfg.wallpaper_trim_memory = parse_bool(val),
                 "wallpaper_mute" => cfg.wallpaper_mute = parse_bool(val),
                 "wallpaper_volume_pct" => if let Ok(v) = val.parse::<u8>() { cfg.wallpaper_volume_pct = v.min(100); },
+                "wallpaper_fps_cap" => cfg.wallpaper_fps_cap = WallpaperFpsCap::from_str(val),
                 "game_mode_pause" => cfg.game_mode_pause = parse_bool(val),
                 "onboarding_done" => {
                     cfg.onboarding_done = parse_bool(val);
@@ -7648,7 +7910,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "mac_dock_enabled" => cfg.mac_dock_enabled = parse_bool(val),
                 "mac_dock_edge" => cfg.mac_dock_edge = MacDockEdge::from_str(val),
                 "mac_dock_hide" => cfg.mac_dock_hide = MacDockHideMode::from_str(val),
-                "mac_dock_icon_size" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_icon_size = v.clamp(34, 56); },
+                "mac_dock_icon_size" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_icon_size = v.clamp(32, 96); },
                 "mac_dock_mag_pct" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_mag_pct = v.clamp(100, 185); },
                 "mac_dock_bounce" => cfg.mac_dock_bounce = parse_bool(val),
                 "mac_dock_dots" => cfg.mac_dock_dots = parse_bool(val),
@@ -7662,7 +7924,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 }
                 "dock_pin_count" => {
                     if let Ok(n) = val.parse::<usize>() {
-                        dock_pin_count = Some(n.min(16));
+                        dock_pin_count = Some(n.min(MAX_PINNED_APPS));
                     }
                 }
                 // Phase 6: Modular Per-Widget Hyper-Customization keys
@@ -7681,6 +7943,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "w_apps_indicator" => cfg.w_apps.indicator_override = DockIndicatorStyle::from_opt_str(val),
                 "w_apps_divider" => cfg.w_apps.divider_style = DockDividerStyle::from_str(val),
                 "w_apps_labels" => cfg.w_apps.label_mode = DockRunningLabelMode::from_str(val),
+                "w_apps_label_font_size" => if let Ok(v) = val.parse::<u8>() { cfg.w_apps.label_font_size_px = v.clamp(10, 20); },
                 "w_apps_brand_glow" => cfg.w_apps.per_app_brand_glow = parse_bool(val),
                 "w_apps_custom_glow" => cfg.w_apps.custom_glow_rgb = parse_hex_rgb(val),
                 "w_apps_count_badge" => cfg.w_apps.show_window_count_badge = parse_bool(val),
@@ -8108,6 +8371,7 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("tb_show_rim={}\n", b(cfg.tb_show_rim)));
     out.push_str(&format!("tb_show_fx={}\n", b(cfg.tb_show_fx)));
     out.push_str(&format!("viz_eco_fps={}\n", b(cfg.viz_eco_fps)));
+    out.push_str(&format!("performance_mode={}\n", cfg.performance_mode.as_str()));
     out.push_str(&format!("dt_hover_fx={}\n", cfg.dt_hover_fx.as_str()));
     out.push_str(&format!("apps_hover_fx={}\n", cfg.apps_hover_fx.as_str()));
     out.push_str(&format!("vitals_hover_fx={}\n", cfg.vitals_hover_fx.as_str()));
@@ -8293,6 +8557,7 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("wallpaper_trim_memory={}\n", b(cfg.wallpaper_trim_memory)));
     out.push_str(&format!("wallpaper_mute={}\n", b(cfg.wallpaper_mute)));
     out.push_str(&format!("wallpaper_volume_pct={}\n", cfg.wallpaper_volume_pct));
+    out.push_str(&format!("wallpaper_fps_cap={}\n", cfg.wallpaper_fps_cap.as_str()));
     out.push_str(&format!("game_mode_pause={}\n", b(cfg.game_mode_pause)));
     out.push_str(&format!("onboarding_done={}\n", b(cfg.onboarding_done)));
     for (i, ew) in cfg.ext_widgets.iter().enumerate() {
@@ -8333,7 +8598,7 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("clean_top_bar_style={}\n", cfg.clean_top_bar_style.as_str()));
     out.push_str(&format!("clean_top_bar_desktop_only={}\n", b(cfg.clean_top_bar_desktop_only)));
     out.push_str(&format!("dock_sync_win_pins={}\n", b(cfg.dock_sync_win_pins)));
-    let dcnt = cfg.mac_dock_pinned.len().min(16);
+    let dcnt = cfg.mac_dock_pinned.len().min(MAX_PINNED_APPS);
     out.push_str(&format!("dock_pin_count={}\n", dcnt));
     for (i, app) in cfg.mac_dock_pinned.iter().take(dcnt).enumerate() {
         out.push_str(&format!("dock_pin_{}_name={}\n", i, clean(&app.name)));
@@ -8361,6 +8626,7 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("w_apps_indicator={}\n", cfg.w_apps.indicator_override.map(|x| x.as_str()).unwrap_or("inherit")));
     out.push_str(&format!("w_apps_divider={}\n", cfg.w_apps.divider_style.as_str()));
     out.push_str(&format!("w_apps_labels={}\n", cfg.w_apps.label_mode.as_str()));
+    out.push_str(&format!("w_apps_label_font_size={}\n", cfg.w_apps.label_font_size_px.clamp(10, 20)));
     out.push_str(&format!("w_apps_brand_glow={}\n", b(cfg.w_apps.per_app_brand_glow)));
     out.push_str(&format!("w_apps_custom_glow={}\n", opt_hex(cfg.w_apps.custom_glow_rgb)));
     out.push_str(&format!("w_apps_count_badge={}\n", b(cfg.w_apps.show_window_count_badge)));
@@ -8434,8 +8700,10 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
 
 pub fn ensure_theme_folders_on_disk() {
     let mut roots = vec![app_data_dir().join("Themes")];
-    if let Some(exe_dir) = self_exe_path().parent() {
-        roots.push(exe_dir.join("Themes"));
+    if !is_portable_mode() {
+        if let Some(exe_dir) = self_exe_path().parent() {
+            roots.push(exe_dir.join("Themes"));
+        }
     }
     for root in roots {
         let tb_live_dir = root.join("Taskbar_Live_Themes");
@@ -9485,6 +9753,99 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(TaskbarTheme::PillsDetached.is_independent_tile_dock());
         assert!(TaskbarTheme::RosePineTiles.is_independent_tile_dock());
         assert!(!TaskbarTheme::Os26LiquidGlassDark.is_independent_tile_dock());
+    }
+
+    #[test]
+    fn portable_mode_paths_conversion_and_32_pin_roundtrip() {
+        let base = std::env::temp_dir().join(format!(
+            "autumn_portable_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let exe_dir = base.join("AppBin");
+        let fake_appdata = base.join("FakeAppData");
+        let src_data = fake_appdata.join("AutumnDeck");
+        fs::create_dir_all(&exe_dir).unwrap();
+        fs::create_dir_all(src_data.join("Themes")).unwrap();
+        fs::create_dir_all(src_data.join("wallpapers")).unwrap();
+        fs::create_dir_all(src_data.join("Diagnostics")).unwrap();
+        fs::write(src_data.join("Themes").join("custom.ini"), "ok=1\n").unwrap();
+        fs::write(src_data.join("wallpapers").join("sample.mp4"), b"vid").unwrap();
+        fs::write(src_data.join("pill_cache.ini"), "cache\n").unwrap();
+
+        // Standard mode (no portable.txt, no --portable) uses APPDATA\AutumnDeck
+        let (std_dir, std_port) =
+            resolve_app_data_dir(Some(&exe_dir), false, Some(&fake_appdata));
+        assert!(!std_port);
+        assert_eq!(std_dir, src_data);
+
+        // --portable CLI flag activates <exe_dir>\Data without touching APPDATA
+        let (cli_dir, cli_port) =
+            resolve_app_data_dir(Some(&exe_dir), true, Some(&fake_appdata));
+        assert!(cli_port);
+        assert_eq!(cli_dir, exe_dir.join("Data"));
+
+        // Convert to Portable creates portable.txt, copies subdirs, rewrites wallpaper path, and persists 32 pins + 88px icons + 18px label font
+        let mut cfg = AppConfig::default();
+        cfg.mac_dock_icon_size = 88;
+        cfg.w_apps.label_font_size_px = 18;
+        cfg.wallpaper_path = src_data
+            .join("wallpapers")
+            .join("sample.mp4")
+            .to_string_lossy()
+            .into_owned();
+        cfg.mac_dock_pinned = (0..MAX_PINNED_APPS)
+            .map(|i| AppShortcut {
+                name: format!("App {:02}", i),
+                path: format!(r"C:\Tools\app_{:02}.exe", i),
+                offset_x: 0,
+                offset_y: 0,
+            })
+            .collect();
+        assert_eq!(MAX_PINNED_APPS, 32);
+
+        let dst_dir = convert_to_portable_in(&exe_dir, &src_data, &cfg)
+            .expect("convert_to_portable_in must succeed");
+        assert_eq!(dst_dir, exe_dir.join("Data"));
+        assert!(exe_dir.join("portable.txt").is_file());
+        assert!(dst_dir.join("config.ini").is_file());
+        assert!(dst_dir.join("config.ini.bak").is_file());
+        assert!(dst_dir.join("Themes").join("custom.ini").is_file());
+        assert!(dst_dir.join("wallpapers").join("sample.mp4").is_file());
+        assert!(dst_dir.join("pill_cache.ini").is_file());
+
+        // Now resolve_app_data_dir automatically detects portable.txt without CLI flag
+        let (auto_dir, auto_port) =
+            resolve_app_data_dir(Some(&exe_dir), false, Some(&fake_appdata));
+        assert!(auto_port);
+        assert_eq!(auto_dir, dst_dir);
+
+        // Verify saved portable config.ini roundtrips all 32 pins, 88px icon size, 18px label font, and rewritten wallpaper path
+        let raw_ini = fs::read_to_string(dst_dir.join("config.ini")).unwrap();
+        let parsed = parse_config_ini(&raw_ini).expect("portable config.ini must parse");
+        assert_eq!(parsed.mac_dock_icon_size, 88);
+        assert_eq!(parsed.w_apps.label_font_size_px, 18);
+        assert_eq!(parsed.mac_dock_pinned.len(), 32);
+        assert_eq!(parsed.mac_dock_pinned[31].name, "App 31");
+        assert!(
+            parsed
+                .wallpaper_path
+                .starts_with(&dst_dir.to_string_lossy().to_string()),
+            "Portable conversion must rewrite cached wallpaper path into portable Data folder: {}",
+            parsed.wallpaper_path
+        );
+
+        // Clamp guard verification for icon size (32..=96) and label font size (10..=20)
+        let clamp_ini = "[Taskbar]\nmac_dock_icon_size=140\nw_apps_label_font_size=28\n";
+        let (clamped_hi, _, _, _) = parse_config_body(clamp_ini, true);
+        assert_eq!(clamped_hi.mac_dock_icon_size, 96);
+        assert_eq!(clamped_hi.w_apps.label_font_size_px, 20);
+        let clamp_lo_ini = "[Taskbar]\nmac_dock_icon_size=16\nw_apps_label_font_size=4\n";
+        let (clamped_lo, _, _, _) = parse_config_body(clamp_lo_ini, true);
+        assert_eq!(clamped_lo.mac_dock_icon_size, 32);
+        assert_eq!(clamped_lo.w_apps.label_font_size_px, 10);
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
 

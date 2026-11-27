@@ -9145,20 +9145,71 @@ pub fn is_packaged_windowsapps_path(path: &std::path::Path) -> bool {
     lower.contains(r"\windowsapps\") || lower.contains("/windowsapps/")
 }
 
-fn tap_staging_cache_dir(sibling_dll: &std::path::Path) -> PathBuf {
+static TAP_PORTABLE_FALLBACK_NOTE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn set_tap_portable_fallback_note(note: Option<String>) {
+    let lock = TAP_PORTABLE_FALLBACK_NOTE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = lock.lock() {
+        *g = note;
+    }
+}
+
+/// Returns a human-readable diagnostic explanation when Portable Mode's `<exe_dir>\Data\TapCache`
+/// could not accept Windows `ALL APPLICATION PACKAGES (S-1-15-2-1)` NTFS ACLs (e.g. FAT32/exFAT USB)
+/// and gracefully fell back to a local NTFS cache folder for Explorer XAML injection.
+pub fn tap_portable_fallback_reason() -> Option<String> {
+    let lock = TAP_PORTABLE_FALLBACK_NOTE.get_or_init(|| Mutex::new(None));
+    lock.lock().ok().and_then(|g| g.clone())
+}
+
+fn tap_non_portable_cache_dir(
+    sibling_dll: &std::path::Path,
+    userprofile: Option<&std::path::Path>,
+    localappdata: Option<&std::path::Path>,
+) -> PathBuf {
     if is_packaged_windowsapps_path(sibling_dll) {
-        if let Ok(profile) = std::env::var("USERPROFILE") {
-            if !profile.trim().is_empty() {
-                return PathBuf::from(profile).join(".autumndeck").join("TapCache");
-            }
+        if let Some(profile) = userprofile.filter(|p| !p.as_os_str().is_empty()) {
+            return profile.join(".autumndeck").join("TapCache");
         }
     }
-    if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
-        if !local_app.trim().is_empty() {
-            return PathBuf::from(local_app).join("AutumnDeck").join("TapCache");
-        }
+    if let Some(local_app) = localappdata.filter(|p| !p.as_os_str().is_empty()) {
+        return local_app.join("AutumnDeck").join("TapCache");
     }
     std::env::temp_dir().join("AutumnDeckTap")
+}
+
+pub(crate) fn resolve_tap_staging_cache_dir(
+    sibling_dll: &std::path::Path,
+    portable_data_dir: Option<&std::path::Path>,
+    userprofile: Option<&std::path::Path>,
+    localappdata: Option<&std::path::Path>,
+) -> PathBuf {
+    if let Some(data_dir) = portable_data_dir {
+        return data_dir.join("TapCache");
+    }
+    tap_non_portable_cache_dir(sibling_dll, userprofile, localappdata)
+}
+
+fn tap_staging_cache_dir(sibling_dll: &std::path::Path) -> PathBuf {
+    let portable_dir = if crate::config::is_portable_mode() {
+        Some(crate::config::app_data_dir())
+    } else {
+        None
+    };
+    let profile = std::env::var("USERPROFILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from);
+    let local_app = std::env::var("LOCALAPPDATA")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from);
+    resolve_tap_staging_cache_dir(
+        sibling_dll,
+        portable_dir.as_deref(),
+        profile.as_deref(),
+        local_app.as_deref(),
+    )
 }
 
 fn format_acl_summary(res: Result<bool, u32>) -> String {
@@ -9175,16 +9226,14 @@ fn ensure_tap_rx_acls(path: &std::path::Path) -> Result<bool, u32> {
     Ok(a || b)
 }
 
-fn stage_tap_dll_to_writable_cache(
-    sibling_dll: &std::path::Path,
-) -> Result<(PathBuf, String), String> {
-    let src_bytes =
-        std::fs::read(sibling_dll).map_err(|e| format!("read sibling dll failed: {}", e))?;
-    let cache_dir = tap_staging_cache_dir(sibling_dll);
-    std::fs::create_dir_all(&cache_dir)
+fn stage_tap_dll_into_dir(
+    cache_dir: &std::path::Path,
+    src_bytes: &[u8],
+) -> Result<(PathBuf, Result<bool, u32>), String> {
+    std::fs::create_dir_all(cache_dir)
         .map_err(|e| format!("create cache dir {} failed: {}", cache_dir.display(), e))?;
-    let real_dir = resolve_physical_path(&cache_dir);
-    let _ = ensure_tap_rx_acls(&real_dir);
+    let real_dir = resolve_physical_path(cache_dir);
+    let dir_acl = ensure_tap_rx_acls(&real_dir);
 
     let len = src_bytes.len();
     let mut chosen: Option<PathBuf> = None;
@@ -9198,13 +9247,13 @@ fn stage_tap_dll_to_writable_cache(
                     break;
                 }
             }
-            if std::fs::write(&cand, &src_bytes).is_ok() {
+            if std::fs::write(&cand, src_bytes).is_ok() {
                 chosen = Some(cand);
                 break;
             }
             continue;
         }
-        if std::fs::write(&cand, &src_bytes).is_ok() {
+        if std::fs::write(&cand, src_bytes).is_ok() {
             chosen = Some(cand);
             break;
         }
@@ -9228,8 +9277,53 @@ fn stage_tap_dll_to_writable_cache(
         }
     }
 
-    let acl_status = format_acl_summary(ensure_tap_rx_acls(&real_dll));
-    Ok((real_dll, acl_status))
+    let dll_acl = ensure_tap_rx_acls(&real_dll);
+    let combined_acl = match (dir_acl, dll_acl) {
+        (Ok(a), Ok(b)) => Ok(a || b),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    };
+    Ok((real_dll, combined_acl))
+}
+
+fn stage_tap_dll_to_writable_cache(
+    sibling_dll: &std::path::Path,
+) -> Result<(PathBuf, String), String> {
+    let src_bytes =
+        std::fs::read(sibling_dll).map_err(|e| format!("read sibling dll failed: {}", e))?;
+    let primary_dir = tap_staging_cache_dir(sibling_dll);
+    let portable = crate::config::is_portable_mode();
+
+    match stage_tap_dll_into_dir(&primary_dir, &src_bytes) {
+        Ok((real_dll, Ok(changed))) => {
+            set_tap_portable_fallback_note(None);
+            Ok((real_dll, format_acl_summary(Ok(changed))))
+        }
+        Ok((real_dll, Err(acl_err))) if portable => {
+            // Non-NTFS portable volume (FAT32/exFAT USB): S-1-15-2-1 RX ACL cannot be applied on
+            // the removable drive, so gracefully fall back to a local NTFS cache for Explorer XAML.
+            let profile = std::env::var("USERPROFILE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from);
+            let local_app = std::env::var("LOCALAPPDATA")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from);
+            let fb_dir =
+                tap_non_portable_cache_dir(sibling_dll, profile.as_deref(), local_app.as_deref());
+            set_tap_portable_fallback_note(Some(format!(
+                "Portable drive lacks NTFS ACLs (win32={}); TapCache fell back to local NTFS cache for Explorer XAML.",
+                acl_err
+            )));
+            if let Ok((fb_dll, fb_acl)) = stage_tap_dll_into_dir(&fb_dir, &src_bytes) {
+                Ok((fb_dll, format!("{} [portable FAT32/exFAT fallback]", format_acl_summary(fb_acl))))
+            } else {
+                Ok((real_dll, format_acl_summary(Err(acl_err))))
+            }
+        }
+        Ok((real_dll, acl_res)) => Ok((real_dll, format_acl_summary(acl_res))),
+        Err(e) => Err(e),
+    }
 }
 
 /// Returns `(path, acl_status)` for the currently staged writable TAP DLL if present.
@@ -9830,5 +9924,29 @@ mod tests {
         assert_eq!(ensure_tap_rx_acls(&tmp), Ok(false));
 
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn portable_tap_cache_resolves_into_data_dir_and_falls_back_cleanly() {
+        let sibling = std::path::Path::new(r"E:\USB\AutumnDeck\AutumnXamlTap.dll");
+        let portable_data = std::path::Path::new(r"E:\USB\AutumnDeck\Data");
+        let profile = std::path::Path::new(r"C:\Users\Demo");
+        let local = std::path::Path::new(r"C:\Users\Demo\AppData\Local");
+
+        assert_eq!(
+            resolve_tap_staging_cache_dir(sibling, Some(portable_data), Some(profile), Some(local)),
+            PathBuf::from(r"E:\USB\AutumnDeck\Data\TapCache")
+        );
+        assert_eq!(
+            resolve_tap_staging_cache_dir(sibling, None, Some(profile), Some(local)),
+            PathBuf::from(r"C:\Users\Demo\AppData\Local\AutumnDeck\TapCache")
+        );
+        let msix_sibling = std::path::Path::new(
+            r"C:\Program Files\WindowsApps\Shreyas123g.AutumnDeck_2.1.0.0_x64__abc\AutumnXamlTap.dll",
+        );
+        assert_eq!(
+            resolve_tap_staging_cache_dir(msix_sibling, None, Some(profile), Some(local)),
+            PathBuf::from(r"C:\Users\Demo\.autumndeck\TapCache")
+        );
     }
 }

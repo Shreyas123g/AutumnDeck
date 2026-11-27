@@ -108,8 +108,9 @@ use crate::widgets_extra::{
     ExtRuntimeState, ExtWidgetId, EXT_WIDGET_COUNT,
 };
 use crate::widgets_phase2::{
-    cc_tile_pos, draw_control_center_widget_live_with_viz, draw_music_widget_with_viz_cached,
-    music_logical_size, music_transport_rects, CoverBitmapCache, CC_MAX_SCROLL,
+    cc_tile_pos, draw_control_center_widget_live_with_viz_cached,
+    draw_music_widget_with_viz_cached, music_logical_size, music_transport_rects,
+    CoverBitmapCache, CC_MAX_SCROLL,
 };
 
 const EMBED_FONTS: [&[u8]; 9] = [
@@ -1165,15 +1166,26 @@ unsafe fn load_shell_item_pixels(
     let wide = to_wide(parsing_path);
     let factory: IShellItemImageFactory =
         SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None).ok()?;
-    // Try icon-only first for Win32/LNKs, then fall back to BIGGERSIZEOK / 0 for UWP/Store
-    // items where SIIGBF_ICONONLY returns E_PENDING (0x8000000A).
+    // For Store/UWP shell:AppsFolder items, prefer BIGGERSIZEOK first for crisp official package
+    // logos (SIIGBF_ICONONLY can return E_PENDING or generic tiles on packaged apps); for Win32
+    // EXEs/LNKs prefer ICONONLY first. Request 256px so large 88-96px docks stay razor-sharp.
+    let is_shell_uri = parsing_path.to_ascii_lowercase().starts_with("shell:");
+    let flag_order = if is_shell_uri {
+        [
+            SIIGBF_BIGGERSIZEOK,
+            SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+            SIIGBF(0),
+        ]
+    } else {
+        [
+            SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+            SIIGBF_BIGGERSIZEOK,
+            SIIGBF(0),
+        ]
+    };
     let mut hbm_opt = None;
-    for flags in [
-        SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
-        SIIGBF_BIGGERSIZEOK,
-        SIIGBF(0),
-    ] {
-        if let Ok(hbm) = factory.GetImage(SIZE { cx: 128, cy: 128 }, flags) {
+    for flags in flag_order {
+        if let Ok(hbm) = factory.GetImage(SIZE { cx: 256, cy: 256 }, flags) {
             hbm_opt = Some(hbm);
             break;
         }
@@ -1755,6 +1767,9 @@ pub struct WidgetFgBmpCache {
     pub cache_gen: u64,
     pub clock: WidgetFgCacheSlot,
     pub clock_sec: [WidgetFgCacheSlot; 2],
+    pub apps: WidgetFgCacheSlot,
+    pub vitals: WidgetFgCacheSlot,
+    pub cc: WidgetFgCacheSlot,
     pub music: WidgetFgCacheSlot,
     pub ext: [WidgetFgCacheSlot; EXT_WIDGET_COUNT],
 }
@@ -1765,6 +1780,9 @@ impl Default for WidgetFgBmpCache {
             cache_gen: 1,
             clock: WidgetFgCacheSlot::default(),
             clock_sec: [WidgetFgCacheSlot::default(), WidgetFgCacheSlot::default()],
+            apps: WidgetFgCacheSlot::default(),
+            vitals: WidgetFgCacheSlot::default(),
+            cc: WidgetFgCacheSlot::default(),
             music: WidgetFgCacheSlot::default(),
             ext: std::array::from_fn(|_| WidgetFgCacheSlot::default()),
         }
@@ -1778,11 +1796,75 @@ impl WidgetFgBmpCache {
         for s in &mut self.clock_sec {
             s.clear();
         }
+        self.apps.clear();
+        self.vitals.clear();
+        self.cc.clear();
         self.music.clear();
         for slot in &mut self.ext {
             slot.clear();
         }
     }
+}
+
+/// Computes the extra bounding margin required by Pen Canvas per-element offsets/scales.
+pub fn elem_transforms_pad(transforms: &[ClockElemTransform], s: f32) -> f32 {
+    let mut max_off = 0.0f32;
+    for tr in transforms {
+        if tr.visible {
+            let off = (tr.dx.abs().max(tr.dy.abs()) as f32) * s;
+            let scale_extra = ((tr.scale_pct as f32 / 100.0) - 1.0).max(0.0) * 48.0 * s;
+            max_off = max_off.max(off + scale_extra);
+        }
+    }
+    max_off
+}
+
+/// Builds a tight axis-aligned clip rectangle around a widget (respecting Pen Canvas element
+/// offsets) so GPU rasterization and glows never span across the full-monitor overlay surface.
+pub fn widget_clip_rect_with_transforms(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    base_pad: f32,
+    transforms: &[ClockElemTransform],
+    s: f32,
+) -> D2D_RECT_F {
+    let mut x0 = x - base_pad;
+    let mut y0 = y - base_pad;
+    let mut x1 = x + w + base_pad;
+    let mut y1 = y + h + base_pad;
+    for tr in transforms {
+        if tr.visible && (tr.dx != 0 || tr.dy != 0 || tr.scale_pct != 100) {
+            let tx = tr.dx as f32 * s;
+            let ty = tr.dy as f32 * s;
+            let epad = base_pad * (tr.scale_pct as f32 / 100.0).max(1.0);
+            x0 = x0.min(x + tx - epad);
+            y0 = y0.min(y + ty - epad);
+            x1 = x1.max(x + w + tx + epad);
+            y1 = y1.max(y + h + ty + epad);
+        }
+    }
+    D2D_RECT_F {
+        left: x0.floor(),
+        top: y0.floor(),
+        right: x1.ceil(),
+        bottom: y1.ceil(),
+    }
+}
+
+fn widget_viz_has_active_motion(
+    fx_viz: Option<&VizSnapshot>,
+    live_material_anim: bool,
+) -> bool {
+    fx_viz
+        .map(|v| {
+            v.hover_mix > 0.004
+                || v.hover_active
+                || v.ripples.iter().any(|r| r.active)
+                || (live_material_anim && v.phase > 0.0001)
+        })
+        .unwrap_or(false)
 }
 
 pub fn dt_logical_size(cfg: &AppConfig) -> (f32, f32) {
@@ -3096,7 +3178,7 @@ unsafe fn draw_datetime_widget_inner(
                 end_elem_xf(rt, xf);
             }
 
-            {
+            if cfg.dt_show_spine {
                 let mut nb: Option<&mut [ClockElemBox]> = None;
                 let g_card = begin_elem_xf_slot(rt, ClockElemId::Card.idx(), tr_card, card_rect, s, &mut nb);
                 let div_p0 = Vector2 { X: x + 136.0 * s, Y: y + 22.0 * s };
@@ -3373,7 +3455,7 @@ unsafe fn draw_datetime_widget_inner(
                 );
                 draw_sun_orb_bar(rt, x + 24.0 * s, y + 86.0 * s, dt_w - 48.0 * s, 3.2 * s, now.second, s, &pal);
                 end_elem_xf(rt, xf);
-            } else {
+            } else if cfg.dt_show_spine {
                 let mut nb: Option<&mut [ClockElemBox]> = None;
                 let g_card = begin_elem_xf_slot(rt, ClockElemId::Card.idx(), tr_card, card_rect, s, &mut nb);
                 if let Ok(hr) = rt.CreateSolidColorBrush(&elem_col_rgba(tr_card.border_rgb, 0.34, pal.text_col(0.16)), None) {
@@ -3508,7 +3590,7 @@ unsafe fn draw_datetime_widget_inner(
                 end_elem_xf(rt, xf);
             }
 
-            {
+            if cfg.dt_show_spine {
                 let mut nb: Option<&mut [ClockElemBox]> = None;
                 let g_card = begin_elem_xf_slot(rt, ClockElemId::Card.idx(), tr_card, card_rect, s, &mut nb);
                 if let Ok(div) = rt.CreateSolidColorBrush(&elem_col_rgba(tr_card.border_rgb, 0.45, pal.accent_col(0.32)), None) {
@@ -3914,10 +3996,17 @@ unsafe fn draw_datetime_widget_inner(
                 end_elem_xf(rt, xf);
             }
 
-            {
+            if cfg.dt_show_spine {
                 let mut nb: Option<&mut [ClockElemBox]> = None;
                 let g_card = begin_elem_xf_slot(rt, ClockElemId::Card.idx(), tr_card, card_rect, s, &mut nb);
-                if let Ok(div) = rt.CreateSolidColorBrush(&elem_col_rgba(tr_card.border_rgb, 0.34, pal.text_col(0.18)), None) {
+                let div_c = elem_col_rgba(
+                    cfg.dt_elem_transforms[ClockElemId::Spine.idx()]
+                        .color_rgb
+                        .or(tr_card.border_rgb),
+                    0.34,
+                    pal.text_col(0.18),
+                );
+                if let Ok(div) = rt.CreateSolidColorBrush(&div_c, None) {
                     rt.DrawLine(Vector2 { X: x + 136.0 * s, Y: y + 22.0 * s }, Vector2 { X: x + 136.0 * s, Y: y + dt_h - 22.0 * s }, &div, 1.0 * s, None);
                 }
                 end_elem_xf_slot(rt, g_card);
@@ -3943,6 +4032,61 @@ unsafe fn draw_datetime_widget_inner(
                     &mut out_boxes,
                 );
                 draw_text_spaced(&day_num_str, tf, x + 150.0 * s, y + 14.0 * s, 130.0 * s, 68.0 * s, br, sh_date.as_ref(), 1.5 * s, false);
+                end_elem_xf(rt, xf);
+            }
+            if !cfg.widgets_24h && cfg.dt_show_ampm {
+                let (ax0, ax1) = if cfg.dt_align == ClockAlign::Right {
+                    (x + 150.0 * s, x + 190.0 * s)
+                } else {
+                    (x + 244.0 * s, x + 284.0 * s)
+                };
+                let ap_rect = D2D_RECT_F {
+                    left: ax0,
+                    top: y + 20.0 * s,
+                    right: ax1,
+                    bottom: y + 39.0 * s,
+                };
+                let xf = begin_elem_xf(
+                    rt,
+                    ClockElemId::AmPm,
+                    (ap_rect.left, ap_rect.top, ap_rect.right, ap_rect.bottom),
+                    s,
+                    cfg,
+                    &mut out_boxes,
+                );
+                let am_tr = cfg.dt_elem_transforms[ClockElemId::AmPm.idx()];
+                let ap_rr = D2D1_ROUNDED_RECT {
+                    rect: ap_rect,
+                    radiusX: 5.5 * s,
+                    radiusY: 5.5 * s,
+                };
+                if let Ok(bg) = rt.CreateSolidColorBrush(
+                    &elem_col_rgba(am_tr.color_rgb, 0.22, pal.accent_col(0.18)),
+                    None,
+                ) {
+                    rt.FillRoundedRectangle(&ap_rr, &bg);
+                }
+                let rim_c = elem_col_rgba(
+                    am_tr.border_rgb.or(am_tr.color_rgb),
+                    0.72,
+                    pal.accent_col(0.48),
+                );
+                if let Ok(rb) = rt.CreateSolidColorBrush(&rim_c, None) {
+                    rt.DrawRoundedRectangle(&ap_rr, &rb, 1.0 * s, None);
+                }
+                let tf_am = make_resolved_tf_named(
+                    dw,
+                    custom_fonts,
+                    &font_sub,
+                    &[w!("SF Pro Display"), w!("Segoe UI")],
+                    8.0 * PT_TO_PX * s,
+                    DWRITE_FONT_WEIGHT_BOLD,
+                    DWRITE_TEXT_ALIGNMENT_CENTER,
+                    DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                );
+                if let (Some(tf), Some(br)) = (&tf_am, &br_accent) {
+                    draw_shadowed_text(rt, ampm_str, tf, ap_rect, br, None, 0.0, true);
+                }
                 end_elem_xf(rt, xf);
             }
             if cfg.dt_show_weekday {
@@ -5195,6 +5339,53 @@ unsafe fn draw_datetime_widget_inner(
             };
             draw_clock_plate_rr(rt, pill_rect, 43.0 * s, cfg, &pal, is_hovered, 1.0, 1.1 * s);
 
+            if cfg.dt_show_spine {
+                let xf = begin_elem_xf(
+                    rt,
+                    ClockElemId::Spine,
+                    (x + 105.0 * s, y + 48.0 * s, x + 126.0 * s, y + 66.0 * s),
+                    s,
+                    cfg,
+                    &mut out_boxes,
+                );
+                let sp_tr = cfg.dt_elem_transforms[ClockElemId::Spine.idx()];
+                let seam_c = elem_col_rgba(sp_tr.color_rgb.or(sp_tr.border_rgb), 0.78, pal.accent_col(0.68));
+                if let Ok(sb) = rt.CreateSolidColorBrush(&seam_c, None) {
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: x + 107.0 * s,
+                                top: y + 55.5 * s,
+                                right: x + 124.0 * s,
+                                bottom: y + 58.5 * s,
+                            },
+                            radiusX: 1.5 * s,
+                            radiusY: 1.5 * s,
+                        },
+                        &sb,
+                    );
+                }
+                let frame_c = elem_col_rgba(sp_tr.border_rgb.or(sp_tr.color_rgb), 0.36, pal.accent_col(0.32));
+                if let Ok(fb) = rt.CreateSolidColorBrush(&frame_c, None) {
+                    rt.DrawRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: pill_rect.left + 4.0 * s,
+                                top: pill_rect.top + 4.0 * s,
+                                right: pill_rect.right - 4.0 * s,
+                                bottom: pill_rect.bottom - 4.0 * s,
+                            },
+                            radiusX: 39.0 * s,
+                            radiusY: 39.0 * s,
+                        },
+                        &fb,
+                        1.0 * s,
+                        None,
+                    );
+                }
+                end_elem_xf(rt, xf);
+            }
+
             let tf_clock = make_resolved_tf_named(
                 dw,
                 custom_fonts,
@@ -5422,19 +5613,18 @@ unsafe fn draw_datetime_widget_inner(
             let w_cy = y + 74.0 * s;
             let w_r = 64.0 * s;
             draw_clock_plate_circle(rt, w_cx, w_cy, w_r, cfg, &pal, is_hovered, 1.16, 1.8 * s, true);
-            if cfg.dt_show_orb {
+            if cfg.dt_show_spine {
                 let xf = begin_elem_xf(
                     rt,
-                    ClockElemId::Orb,
+                    ClockElemId::Spine,
                     (w_cx - w_r - 2.0 * s, w_cy - w_r - 2.0 * s, w_cx + w_r + 7.5 * s, w_cy + w_r + 2.0 * s),
                     s,
                     cfg,
                     &mut out_boxes,
                 );
-                let orb_tr = cfg.dt_elem_transforms[ClockElemId::Orb.idx()];
-                let (oc1, oc2, _ang) = resolve_elem_grad_colors(Some(&orb_tr), 0.96, pal.accent_col(0.96), pal.light_col(0.96));
+                let sp_tr = cfg.dt_elem_transforms[ClockElemId::Spine.idx()];
                 // Knurled Watch Crown stem at 3 o'clock
-                let crown_c = elem_col_rgba(orb_tr.border_rgb.or(orb_tr.color_rgb), 0.72, pal.accent_col(0.62));
+                let crown_c = elem_col_rgba(sp_tr.border_rgb.or(sp_tr.color_rgb), 0.72, pal.accent_col(0.62));
                 if let Ok(cr_br) = rt.CreateSolidColorBrush(&crown_c, None) {
                     rt.FillRoundedRectangle(
                         &D2D1_ROUNDED_RECT {
@@ -5445,15 +5635,15 @@ unsafe fn draw_datetime_widget_inner(
                         &cr_br,
                     );
                 }
-                let inner_c = elem_col_rgba(orb_tr.border_rgb.or(orb_tr.color_rgb), 0.34, pal.text_col(0.22));
+                let inner_c = elem_col_rgba(sp_tr.border_rgb.or(sp_tr.color_rgb), 0.34, pal.text_col(0.22));
                 if let Ok(inner_b) = rt.CreateSolidColorBrush(&inner_c, None) {
                     rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: w_cx, Y: w_cy }, radiusX: w_r - 5.0 * s, radiusY: w_r - 5.0 * s }, &inner_b, 0.9 * s, None);
                     rt.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: w_cx, Y: w_cy }, radiusX: 38.0 * s, radiusY: 38.0 * s }, &inner_b, 0.7 * s, None);
                 }
 
                 // 60 tick chapter ring + 12 baton hour markers
-                let tick_maj_c = elem_col_rgba(orb_tr.color_rgb, 0.96, pal.text_col(1.0));
-                let tick_min_c = elem_col_rgba(orb_tr.border_rgb.or(orb_tr.color2_rgb).or(orb_tr.color_rgb), 0.62, pal.muted_col(0.92));
+                let tick_maj_c = elem_col_rgba(sp_tr.color_rgb, 0.96, pal.text_col(1.0));
+                let tick_min_c = elem_col_rgba(sp_tr.border_rgb.or(sp_tr.color2_rgb).or(sp_tr.color_rgb), 0.62, pal.muted_col(0.92));
                 let br_tick_maj = rt.CreateSolidColorBrush(&tick_maj_c, None).ok();
                 let br_tick_min = rt.CreateSolidColorBrush(&tick_min_c, None).ok();
                 for t in 0..60 {
@@ -5472,6 +5662,20 @@ unsafe fn draw_datetime_widget_inner(
                         rt.DrawLine(p0, p1, br, sw, None);
                     }
                 }
+                end_elem_xf(rt, xf);
+            }
+
+            if cfg.dt_show_orb {
+                let xf = begin_elem_xf(
+                    rt,
+                    ClockElemId::Orb,
+                    (w_cx - w_r - 2.0 * s, w_cy - w_r - 2.0 * s, w_cx + w_r + 7.5 * s, w_cy + w_r + 2.0 * s),
+                    s,
+                    cfg,
+                    &mut out_boxes,
+                );
+                let orb_tr = cfg.dt_elem_transforms[ClockElemId::Orb.idx()];
+                let (oc1, oc2, _ang) = resolve_elem_grad_colors(Some(&orb_tr), 0.96, pal.accent_col(0.96), pal.light_col(0.96));
 
                 let h_ang = (((now.hour % 12) as f32 + now.minute as f32 / 60.0) * 30.0 - 90.0).to_radians();
                 let m_ang = ((now.minute as f32 + now.second as f32 / 60.0) * 6.0 - 90.0).to_radians();
@@ -5530,16 +5734,38 @@ unsafe fn draw_datetime_widget_inner(
             let c_r = 68.0 * s;
             draw_clock_plate_circle(rt, c_cx, c_cy, c_r, cfg, &pal, is_hovered, 1.18, 1.2 * s, true);
 
-            // Solar Eclipse Crescent Corona Highlight along top-right limb
-            if cfg.dt_show_plate && tr_card.visible {
-                let mut nb: Option<&mut [ClockElemBox]> = None;
-                let g_card = begin_elem_xf_slot(rt, ClockElemId::Card.idx(), tr_card, card_rect, s, &mut nb);
-                let corona_c = elem_col_rgba(tr_card.border_rgb.or(tr_card.color_rgb), 0.52, pal.accent_col(0.45));
+            // Solar Eclipse Crescent Corona Highlight + 12 Celestial Bezel Ticks
+            if cfg.dt_show_spine {
+                let xf = begin_elem_xf(
+                    rt,
+                    ClockElemId::Spine,
+                    (c_cx - c_r, c_cy - c_r, c_cx + c_r, c_cy + c_r),
+                    s,
+                    cfg,
+                    &mut out_boxes,
+                );
+                let sp_tr = cfg.dt_elem_transforms[ClockElemId::Spine.idx()];
+                let corona_c = elem_col_rgba(sp_tr.border_rgb.or(sp_tr.color_rgb), 0.56, pal.accent_col(0.48));
                 if let Ok(corona) = rt.CreateSolidColorBrush(&corona_c, None) {
                     let b: &ID2D1Brush = &corona;
                     draw_clock_arc(rt, d2d.as_ref(), c_cx, c_cy, c_r - 1.5 * s, c_r - 1.5 * s, -75.0, 130.0, 3.0 * s, true, b);
                 }
-                end_elem_xf_slot(rt, g_card);
+                let tick_c = elem_col_rgba(sp_tr.color_rgb, 0.52, pal.text_col(0.32));
+                if let Ok(tb) = rt.CreateSolidColorBrush(&tick_c, None) {
+                    for i in 0..12 {
+                        let a = (i as f32 * 30.0 - 90.0).to_radians();
+                        let r0 = if i % 3 == 0 { c_r - 9.0 * s } else { c_r - 6.0 * s };
+                        let r1 = c_r - 3.0 * s;
+                        rt.DrawLine(
+                            Vector2 { X: c_cx + r0 * a.cos(), Y: c_cy + r0 * a.sin() },
+                            Vector2 { X: c_cx + r1 * a.cos(), Y: c_cy + r1 * a.sin() },
+                            &tb,
+                            if i % 3 == 0 { 1.5 * s } else { 0.9 * s },
+                            None,
+                        );
+                    }
+                }
+                end_elem_xf(rt, xf);
             }
 
             // Inner & Outer Orbital Track Rings + Orbiting Planets
@@ -7400,6 +7626,40 @@ unsafe fn draw_datetime_widget_inner(
                 );
                 end_elem_xf_slot(rt, g);
             }
+            if cfg.dt_show_spine {
+                let xf = begin_elem_xf(
+                    rt,
+                    ClockElemId::Spine,
+                    (main_rect.left + 8.0 * s, main_rect.top + 8.0 * s, main_rect.right - 8.0 * s, main_rect.bottom - 8.0 * s),
+                    s,
+                    cfg,
+                    &mut out_boxes,
+                );
+                let sp_tr = cfg.dt_elem_transforms[ClockElemId::Spine.idx()];
+                let frame_c = elem_col_rgba(
+                    sp_tr.border_rgb.or(sp_tr.color_rgb),
+                    0.46,
+                    if cfg.dt_use_custom_color { pal.accent_col(0.42) } else { rgba_u8(190, 248, 255, 0.36) },
+                );
+                if let Ok(fb) = rt.CreateSolidColorBrush(&frame_c, None) {
+                    rt.DrawRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: main_rect.left + 8.0 * s,
+                                top: main_rect.top + 8.0 * s,
+                                right: main_rect.right - 8.0 * s,
+                                bottom: main_rect.bottom - 8.0 * s,
+                            },
+                            radiusX: (r_card - 6.0 * s).max(4.0 * s),
+                            radiusY: (r_card - 6.0 * s).max(4.0 * s),
+                        },
+                        &fb,
+                        1.0 * s,
+                        None,
+                    );
+                }
+                end_elem_xf(rt, xf);
+            }
             // Expanding water ripple orb behind center time
             if cfg.dt_show_orb {
                 let xf = begin_elem_xf(rt, ClockElemId::Orb, (x + dt_w * 0.5 - 64.0 * s, y + dt_h * 0.5 - 32.0 * s, x + dt_w * 0.5 + 64.0 * s, y + dt_h * 0.5 + 32.0 * s), s, cfg, &mut out_boxes);
@@ -7622,6 +7882,40 @@ unsafe fn draw_datetime_widget_inner(
                     None,
                 );
                 end_elem_xf_slot(rt, g);
+            }
+            if cfg.dt_show_spine {
+                let xf = begin_elem_xf(
+                    rt,
+                    ClockElemId::Spine,
+                    (main_rect.left + 7.0 * s, main_rect.top + 7.0 * s, main_rect.right - 7.0 * s, main_rect.bottom - 7.0 * s),
+                    s,
+                    cfg,
+                    &mut out_boxes,
+                );
+                let sp_tr = cfg.dt_elem_transforms[ClockElemId::Spine.idx()];
+                let stitch_c = elem_col_rgba(
+                    sp_tr.border_rgb.or(sp_tr.color_rgb),
+                    0.62,
+                    if cfg.dt_use_custom_color { pal.accent_col(0.56) } else { rgba_u8(226, 184, 108, 0.56) },
+                );
+                if let Ok(sb) = rt.CreateSolidColorBrush(&stitch_c, None) {
+                    rt.DrawRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: main_rect.left + 7.0 * s,
+                                top: main_rect.top + 7.0 * s,
+                                right: main_rect.right - 7.0 * s,
+                                bottom: main_rect.bottom - 7.0 * s,
+                            },
+                            radiusX: (r_card - 5.0 * s).max(4.0 * s),
+                            radiusY: (r_card - 5.0 * s).max(4.0 * s),
+                        },
+                        &sb,
+                        1.1 * s,
+                        None,
+                    );
+                }
+                end_elem_xf(rt, xf);
             }
             // Left Embossed Brass Day Medallion
             if cfg.dt_show_orb {
@@ -8978,6 +9272,110 @@ pub unsafe fn draw_apps_widget_with_viz(
     draw_apps_widget_with_boxes(rt, dw, custom_fonts, base_x, base_y, s, cfg, tiles, fx_viz, None);
 }
 
+fn apps_fg_key(
+    s: f32,
+    cfg: &AppConfig,
+    pal: &ThemePalette,
+    tiles: &[AppTileDrawItem<'_>],
+    has_custom_fonts: bool,
+) -> u64 {
+    let mut h = FgKeyHasher::new(0xA1);
+    h.mix_f32(s);
+    h.mix_pal(pal);
+    h.mix_u8(cfg.apps_glass_alpha);
+    h.mix_u8(cfg.apps_rim_alpha);
+    h.mix_bool(cfg.apps_show_tiles);
+    h.mix_bool(cfg.apps_show_add_tile);
+    h.mix_bool(cfg.apps_match_theme);
+    h.mix_bool(cfg.apps_match_wallpaper);
+    h.mix_u8(cfg.apps_cols);
+    h.mix_u8(cfg.apps_tile_shape);
+    h.mix_u8(cfg.apps_corner_radius);
+    h.mix_bool(cfg.apps_show_plate);
+    h.mix_bool(cfg.apps_show_labels);
+    h.mix_bool(cfg.apps_show_dots);
+    h.mix_str(&cfg.apps_font_label);
+    h.mix_u8(cfg.apps_font_scale_pct);
+    h.mix_bool(cfg.apps_use_custom_color);
+    h.mix_u64(cfg.apps_accent_rgb as u64);
+    h.mix_u64(cfg.apps_text_rgb as u64);
+    h.mix_u64(cfg.apps_bg_rgb as u64);
+    for tr in &cfg.apps_elem_transforms {
+        h.mix_tr(tr);
+    }
+    for f in &cfg.apps_elem_fonts {
+        h.mix_str(f);
+    }
+    h.mix_horology(&cfg.apps_horology);
+    h.mix_usize(tiles.len());
+    for t in tiles {
+        h.mix_str(t.label);
+        h.mix_usize(t.bmp.map(|b| b.as_raw() as usize).unwrap_or(0));
+        h.mix_f32(t.rel_x);
+        h.mix_f32(t.rel_y);
+        h.mix_bool(t.hovered);
+        h.mix_bool(t.is_add_tile);
+    }
+    h.mix_bool(has_custom_fonts);
+    h.finish()
+}
+
+/// Cached App Launchers renderer: composites from an offscreen `ID2D1Bitmap` whenever icons,
+/// layout, hover state, and hover FX are idle instead of recreating DirectWrite formats every tick.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_apps_widget_with_viz_cached(
+    rt: &ID2D1RenderTarget,
+    dw: &IDWriteFactory,
+    custom_fonts: Option<&IDWriteFontCollection>,
+    base_x: f32,
+    base_y: f32,
+    s: f32,
+    cfg: &AppConfig,
+    tiles: &[AppTileDrawItem<'_>],
+    fx_viz: Option<&VizSnapshot>,
+    fg_cache: &mut WidgetFgCacheSlot,
+    cache_gen: u64,
+) {
+    if cfg.is_apps_all_elements_off() || tiles.is_empty() {
+        return;
+    }
+    let live_mat = cfg.widgets_live_material
+        && crate::config::apps_style_horology(cfg.apps_tile_shape)
+            .map(|ht| ht.has_idle_motion())
+            .unwrap_or(false);
+    let max_elem_pad = elem_transforms_pad(&cfg.apps_elem_transforms, s);
+    if widget_viz_has_active_motion(fx_viz, live_mat) || max_elem_pad > 64.0 * s {
+        draw_apps_widget_with_viz(rt, dw, custom_fonts, base_x, base_y, s, cfg, tiles, fx_viz);
+        return;
+    }
+    let (_, total_w, total_h) = apps_layout_offsets(tiles.len(), cfg.apps_cols.max(1) as usize);
+    let mut min_x = base_x - 12.0 * s;
+    let mut min_y = base_y - 10.0 * s;
+    let mut max_x = base_x + (total_w + 12.0) * s;
+    let mut max_y = base_y + (total_h + 10.0) * s;
+    for t in tiles {
+        let ax = base_x + t.rel_x * s;
+        let ay = base_y + t.rel_y * s;
+        min_x = min_x.min(ax);
+        min_y = min_y.min(ay);
+        max_x = max_x.max(ax + 64.0 * s);
+        max_y = max_y.max(ay + 94.0 * s);
+    }
+    let bw = (max_x - min_x).max(2.0);
+    let bh = (max_y - min_y).max(2.0);
+    // Avoid huge offscreen bitmaps if individual tiles were dragged very far apart
+    if bw > 1400.0 || bh > 1000.0 {
+        draw_apps_widget_with_viz(rt, dw, custom_fonts, base_x, base_y, s, cfg, tiles, fx_viz);
+        return;
+    }
+    let pal = resolve_apps_palette(cfg);
+    let key = apps_fg_key(s, cfg, &pal, tiles, custom_fonts.is_some());
+    let pad = (18.0 * s + max_elem_pad).min(80.0 * s);
+    fg_cache.draw_cached(rt, cache_gen, key, min_x, min_y, bw, bh, pad, |fg_rt| {
+        draw_apps_widget_with_viz(fg_rt, dw, custom_fonts, base_x, base_y, s, cfg, tiles, fx_viz);
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_apps_widget_with_boxes(
     rt: &ID2D1RenderTarget,
@@ -9625,6 +10023,130 @@ pub unsafe fn draw_vitals_widget_with_telemetry_and_viz(
         rt, dw, d2d, custom_fonts, x, y, s, cfg, cpu_pct, gpu_pct, ram_pct, temp_c, bat_pct,
         hover, fx_viz, None,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn vitals_fg_key(
+    s: f32,
+    cfg: &AppConfig,
+    pal: &ThemePalette,
+    cpu_pct: f32,
+    gpu_pct: f32,
+    ram_pct: f32,
+    temp_c: f32,
+    bat_pct: f32,
+    hover: WidgetHitZone,
+    has_custom_fonts: bool,
+) -> u64 {
+    let mut h = FgKeyHasher::new(0xB3);
+    h.mix_f32(s);
+    h.mix_pal(pal);
+    h.mix_u8(cfg.vitals_style);
+    h.mix_u8(cfg.vitals_glass_alpha);
+    h.mix_u8(cfg.vitals_rim_alpha);
+    h.mix_u8(cfg.vitals_corner_radius);
+    h.mix_bool(cfg.vitals_show_cpu);
+    h.mix_bool(cfg.vitals_show_ram);
+    h.mix_bool(cfg.vitals_show_power);
+    h.mix_bool(cfg.vitals_show_buttons);
+    h.mix_bool(cfg.vitals_show_plate);
+    h.mix_bool(cfg.vitals_show_dividers);
+    h.mix_bool(cfg.vitals_show_bars);
+    h.mix_str(&cfg.vitals_font_val);
+    h.mix_str(&cfg.vitals_font_lbl);
+    h.mix_u8(cfg.vitals_font_scale_pct);
+    h.mix_bool(cfg.vitals_use_custom_color);
+    h.mix_bool(cfg.vitals_match_wallpaper);
+    h.mix_u64(cfg.vitals_accent_rgb as u64);
+    h.mix_u64(cfg.vitals_text_rgb as u64);
+    h.mix_u64(cfg.vitals_bg_rgb as u64);
+    for tr in &cfg.vitals_elem_transforms {
+        h.mix_tr(tr);
+    }
+    for f in &cfg.vitals_elem_fonts {
+        h.mix_str(f);
+    }
+    h.mix_horology(&cfg.vitals_horology);
+    // Quantize telemetry to integer percentages / degrees so Vitals stays cached across 400ms clock ticks
+    h.mix_i32(cpu_pct.round() as i32);
+    h.mix_i32(gpu_pct.round() as i32);
+    h.mix_i32(ram_pct.round() as i32);
+    h.mix_i32(temp_c.round() as i32);
+    h.mix_i32(bat_pct.round() as i32);
+    let vit_hov: u8 = match hover {
+        WidgetHitZone::VitalsBar => 1,
+        WidgetHitZone::VitalsCpu => 2,
+        WidgetHitZone::VitalsGpu => 3,
+        WidgetHitZone::VitalsRam => 4,
+        WidgetHitZone::VitalsTemp => 5,
+        WidgetHitZone::VitalsPower => 6,
+        WidgetHitZone::VitalsSleep => 7,
+        WidgetHitZone::VitalsShutdown => 8,
+        _ => 0,
+    };
+    h.mix_u8(vit_hov);
+    h.mix_bool(has_custom_fonts);
+    h.finish()
+}
+
+/// Cached System Vitals renderer: caches complex multi-dial watch bezels, PBR textures, and
+/// typography in an offscreen `ID2D1Bitmap` whenever integer telemetry and hover FX are unchanged.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_vitals_widget_with_telemetry_and_viz_cached(
+    rt: &ID2D1RenderTarget,
+    dw: &IDWriteFactory,
+    d2d: Option<&ID2D1Factory>,
+    custom_fonts: Option<&IDWriteFontCollection>,
+    x: f32,
+    y: f32,
+    s: f32,
+    cfg: &AppConfig,
+    cpu_pct: f32,
+    gpu_pct: f32,
+    ram_pct: f32,
+    temp_c: f32,
+    bat_pct: f32,
+    hover: WidgetHitZone,
+    fx_viz: Option<&VizSnapshot>,
+    fg_cache: &mut WidgetFgCacheSlot,
+    cache_gen: u64,
+) {
+    if cfg.is_vitals_all_elements_off() {
+        return;
+    }
+    let live_mat = cfg.widgets_live_material
+        && crate::config::vitals_style_horology(cfg.vitals_style)
+            .map(|ht| ht.has_idle_motion())
+            .unwrap_or(false);
+    let max_elem_pad = elem_transforms_pad(&cfg.vitals_elem_transforms, s);
+    if widget_viz_has_active_motion(fx_viz, live_mat) || max_elem_pad > 64.0 * s {
+        draw_vitals_widget_with_telemetry_and_viz(
+            rt, dw, d2d, custom_fonts, x, y, s, cfg, cpu_pct, gpu_pct, ram_pct, temp_c, bat_pct,
+            hover, fx_viz,
+        );
+        return;
+    }
+    let pal = resolve_palette_for(cfg, cfg.vitals_match_wallpaper);
+    let (lw, lh) = vitals_logical_size(cfg);
+    let key = vitals_fg_key(
+        s,
+        cfg,
+        &pal,
+        cpu_pct,
+        gpu_pct,
+        ram_pct,
+        temp_c,
+        bat_pct,
+        hover,
+        custom_fonts.is_some(),
+    );
+    let pad = (18.0 * s + max_elem_pad).min(80.0 * s);
+    fg_cache.draw_cached(rt, cache_gen, key, x, y, lw * s, lh * s, pad, |fg_rt| {
+        draw_vitals_widget_with_telemetry_and_viz(
+            fg_rt, dw, d2d, custom_fonts, x, y, s, cfg, cpu_pct, gpu_pct, ram_pct, temp_c,
+            bat_pct, hover, fx_viz,
+        );
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -11627,6 +12149,10 @@ pub struct ViewportLayout {
     pub u: f32,
     pub extra_w: f32,
     pub extra_h: f32,
+    pub safe_l: f32,
+    pub safe_t: f32,
+    pub safe_r: f32,
+    pub safe_b: f32,
 }
 
 impl ViewportLayout {
@@ -11695,11 +12221,17 @@ impl ViewportLayout {
 
         let mut u = (uw / Self::DESIGN_W).min(uh / Self::DESIGN_H).clamp(0.5, 4.0);
 
-        // If a virtual dock at high DPI (e.g. 175%-200% on 1080p) reserves thicker screen space
-        // than the standard 1280x800 canvas margin, inset only by the excess so widgets never touch it.
+        // If a virtual dock at high DPI (e.g. 175%-200% on 1080p) or a Clean & Minimal Top Bar
+        // reserves thicker screen space than the standard 1280x800 canvas margin, inset only by
+        // the excess so widgets never collide with the dock or top bar.
         if cfg.mac_dock_enabled && cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible && has_valid_work {
+            let top_margin = if cfg.mac_dock_edge == crate::config::MacDockEdge::Top {
+                72.0 * u
+            } else {
+                14.0 * u
+            };
             let ex_l = (work_l - 76.0 * u).max(0.0);
-            let ex_t = (work_t - 72.0 * u).max(0.0);
+            let ex_t = (work_t - top_margin).max(0.0);
             let ex_r = ((mon_w - work_r) - 76.0 * u).max(0.0);
             let ex_b = ((mon_h - work_b) - 80.0 * u).max(0.0);
             if ex_l > 0.5 || ex_t > 0.5 || ex_r > 0.5 || ex_b > 0.5 {
@@ -11713,6 +12245,40 @@ impl ViewportLayout {
             }
         }
 
+        let (safe_l, safe_t, safe_r, safe_b) =
+            if !cfg.mac_dock_enabled && cfg.mode == TaskbarMode::AlwaysVisible && has_valid_work {
+                (work_l, work_t, work_r, work_b)
+            } else if cfg.mac_dock_enabled
+                && cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible
+                && has_valid_work
+            {
+                let sl = if cfg.mac_dock_edge == crate::config::MacDockEdge::Left {
+                    work_l
+                } else {
+                    0.0
+                };
+                let st = if cfg.mac_dock_edge == crate::config::MacDockEdge::Top
+                    || cfg.is_clean_top_bar_active()
+                {
+                    work_t
+                } else {
+                    0.0
+                };
+                let sr = if cfg.mac_dock_edge == crate::config::MacDockEdge::Right {
+                    work_r
+                } else {
+                    mon_w
+                };
+                let sb = if cfg.mac_dock_edge == crate::config::MacDockEdge::Bottom {
+                    work_b
+                } else {
+                    mon_h
+                };
+                (sl, st, sr, sb)
+            } else {
+                (0.0, 0.0, mon_w, mon_h)
+            };
+
         let logical_w = (uw / u).max(Self::DESIGN_W);
         let logical_h = (uh / u).max(Self::DESIGN_H);
         Self {
@@ -11721,6 +12287,10 @@ impl ViewportLayout {
             u,
             extra_w: (logical_w - Self::DESIGN_W).max(0.0),
             extra_h: (logical_h - Self::DESIGN_H).max(0.0),
+            safe_l,
+            safe_t,
+            safe_r,
+            safe_b,
         }
     }
 
@@ -11730,6 +12300,34 @@ impl ViewportLayout {
         let mx = Self::map_axis(cx as f32, lw * sf, Self::AX0, Self::AX1, self.extra_w);
         let my = Self::map_axis(cy as f32, lh * sf, Self::AY0, Self::AY1, self.extra_h);
         (self.origin_x + mx * self.u, self.origin_y + my * self.u)
+    }
+
+    /// Projects a design-canvas widget coordinate onto the monitor and clamps it cleanly inside
+    /// the live work-area safe rect `[safe_l..safe_r] x [safe_t..safe_b]` ONLY when the widget
+    /// would otherwise clip past a monitor edge or behind an always-visible taskbar/dock/top bar.
+    #[inline]
+    pub fn project_pos_clamped(&self, cx: i32, cy: i32, lw: f32, lh: f32, scale_pct: u8) -> (f32, f32) {
+        let (px, py) = self.project_pos(cx, cy, lw, lh, scale_pct);
+        let sf = (scale_pct as f32 / 100.0).max(0.25);
+        let pw = lw * sf * self.u;
+        let ph = lh * sf * self.u;
+        let max_x = (self.safe_r - pw).max(self.safe_l);
+        let max_y = (self.safe_b - ph).max(self.safe_t);
+        let out_x = if px < self.safe_l {
+            self.safe_l
+        } else if px + pw > self.safe_r {
+            max_x
+        } else {
+            px
+        };
+        let out_y = if py < self.safe_t {
+            self.safe_t
+        } else if py + ph > self.safe_b {
+            max_y
+        } else {
+            py
+        };
+        (out_x, out_y)
     }
 
     #[inline]
@@ -12169,7 +12767,7 @@ impl DesktopWidgets {
     fn widget_dt_pos(&self) -> (f32, f32) {
         let (lw, lh) = dt_logical_size(&self.cfg);
         self.viewport
-            .project_pos(self.cfg.dt_x, self.cfg.dt_y, lw, lh, self.cfg.dt_scale_pct)
+            .project_pos_clamped(self.cfg.dt_x, self.cfg.dt_y, lw, lh, self.cfg.dt_scale_pct)
     }
 
     #[inline]
@@ -12184,27 +12782,27 @@ impl DesktopWidgets {
     fn widget_apps_pos(&self) -> (f32, f32) {
         let (lw, lh) = self.widget_apps_size();
         self.viewport
-            .project_pos(self.cfg.apps_x, self.cfg.apps_y, lw, lh, self.cfg.apps_scale_pct)
+            .project_pos_clamped(self.cfg.apps_x, self.cfg.apps_y, lw, lh, self.cfg.apps_scale_pct)
     }
 
     #[inline]
     fn widget_vitals_pos(&self) -> (f32, f32) {
         let (lw, lh) = vitals_logical_size(&self.cfg);
         self.viewport
-            .project_pos(self.cfg.vitals_x, self.cfg.vitals_y, lw, lh, self.cfg.vitals_scale_pct)
+            .project_pos_clamped(self.cfg.vitals_x, self.cfg.vitals_y, lw, lh, self.cfg.vitals_scale_pct)
     }
 
     #[inline]
     fn widget_music_pos(&self) -> (f32, f32) {
         let (lw, lh) = music_logical_size(&self.cfg);
         self.viewport
-            .project_pos(self.cfg.music_x, self.cfg.music_y, lw, lh, self.cfg.music_scale_pct)
+            .project_pos_clamped(self.cfg.music_x, self.cfg.music_y, lw, lh, self.cfg.music_scale_pct)
     }
 
     #[inline]
     fn widget_cc_pos(&self) -> (f32, f32) {
         self.viewport
-            .project_pos(self.cfg.cc_x, self.cfg.cc_y, 388.0, 298.0, self.cfg.cc_scale_pct)
+            .project_pos_clamped(self.cfg.cc_x, self.cfg.cc_y, 388.0, 298.0, self.cfg.cc_scale_pct)
     }
 
     #[inline]
@@ -12212,7 +12810,7 @@ impl DesktopWidgets {
         let wcfg = &self.cfg.ext_widgets[id.idx()];
         let (lw, lh) = wcfg.logical_size(id);
         self.viewport
-            .project_pos(wcfg.x, wcfg.y, lw, lh, wcfg.scale_pct)
+            .project_pos_clamped(wcfg.x, wcfg.y, lw, lh, wcfg.scale_pct)
     }
 
     #[inline]
@@ -13868,6 +14466,17 @@ impl DesktopWidgets {
                 if self.cfg.show_datetime {
                     let s = u * (self.cfg.dt_scale_pct as f32 / 100.0);
                     let (dx, dy) = dt_pos;
+                    let (lw, lh) = dt_logical_size(&self.cfg);
+                    let clip = widget_clip_rect_with_transforms(
+                        dx,
+                        dy,
+                        lw * s,
+                        lh * s,
+                        56.0 * s,
+                        &self.cfg.dt_elem_transforms,
+                        s,
+                    );
+                    dc_rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     let fg_gen = self.fg_bmp_cache.cache_gen;
                     draw_datetime_widget_full_cached(
                         dc_rt,
@@ -13883,6 +14492,7 @@ impl DesktopWidgets {
                         &mut self.fg_bmp_cache.clock_sec,
                         fg_gen,
                     );
+                    dc_rt.PopAxisAlignedClip();
                 }
 
                 if self.cfg.show_apps {
@@ -13891,7 +14501,7 @@ impl DesktopWidgets {
                     let show_add = self.cfg.apps_show_add_tile && self.cfg.apps.len() < 12;
                     let total_tiles = self.cfg.apps.len() + usize::from(show_add);
                     if total_tiles > 0 {
-                        let (offsets, _, _) = apps_layout_offsets(total_tiles, self.cfg.apps_cols.max(1) as usize);
+                        let (offsets, total_w, total_h) = apps_layout_offsets(total_tiles, self.cfg.apps_cols.max(1) as usize);
                         let mut items: Vec<AppTileDrawItem<'_>> = self
                             .cfg
                             .apps
@@ -13917,7 +14527,28 @@ impl DesktopWidgets {
                                 is_add_tile: true,
                             });
                         }
-                        draw_apps_widget_with_viz(
+                        let mut ax0 = bx - 12.0 * s;
+                        let mut ay0 = by - 10.0 * s;
+                        let mut ax1 = bx + (total_w + 12.0) * s;
+                        let mut ay1 = by + (total_h + 10.0) * s;
+                        for it in &items {
+                            ax0 = ax0.min(bx + it.rel_x * s);
+                            ay0 = ay0.min(by + it.rel_y * s);
+                            ax1 = ax1.max(bx + (it.rel_x + 64.0) * s);
+                            ay1 = ay1.max(by + (it.rel_y + 94.0) * s);
+                        }
+                        let clip = widget_clip_rect_with_transforms(
+                            ax0,
+                            ay0,
+                            (ax1 - ax0).max(2.0),
+                            (ay1 - ay0).max(2.0),
+                            28.0 * s,
+                            &self.cfg.apps_elem_transforms,
+                            s,
+                        );
+                        dc_rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        let fg_gen = self.fg_bmp_cache.cache_gen;
+                        draw_apps_widget_with_viz_cached(
                             dc_rt,
                             dw,
                             self.custom_fonts.as_ref(),
@@ -13927,19 +14558,34 @@ impl DesktopWidgets {
                             &self.cfg,
                             &items,
                             Some(&self.widget_sims[1]),
+                            &mut self.fg_bmp_cache.apps,
+                            fg_gen,
                         );
+                        dc_rt.PopAxisAlignedClip();
                     }
                 }
 
                 if self.cfg.show_vitals {
                     let s = u * (self.cfg.vitals_scale_pct as f32 / 100.0);
                     let (vx, vy) = vitals_pos;
+                    let (vlw, vlh) = vitals_logical_size(&self.cfg);
+                    let clip = widget_clip_rect_with_transforms(
+                        vx,
+                        vy,
+                        vlw * s,
+                        vlh * s,
+                        32.0 * s,
+                        &self.cfg.vitals_elem_transforms,
+                        s,
+                    );
+                    dc_rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     let (v_cpu, v_gpu, v_ram, v_temp) = if crate::config::vitals_uses_quad_telemetry(self.cfg.vitals_style) {
                         (self.hud_smooth[0], self.hud_smooth[1], self.hud_smooth[2], self.hud_smooth[3])
                     } else {
                         (self.cpu_pct, self.gpu_pct, self.ram_pct, self.temp_c)
                     };
-                    draw_vitals_widget_with_telemetry_and_viz(
+                    let fg_gen = self.fg_bmp_cache.cache_gen;
+                    draw_vitals_widget_with_telemetry_and_viz_cached(
                         dc_rt,
                         dw,
                         d2d_ref,
@@ -13955,13 +14601,27 @@ impl DesktopWidgets {
                         self.bat_pct,
                         self.hover_zone,
                         Some(&self.widget_sims[2]),
+                        &mut self.fg_bmp_cache.vitals,
+                        fg_gen,
                     );
+                    dc_rt.PopAxisAlignedClip();
                 }
 
                 if self.cfg.show_cc {
                     let s = u * (self.cfg.cc_scale_pct as f32 / 100.0);
                     let (cx, cy) = cc_pos;
-                    draw_control_center_widget_live_with_viz(
+                    let clip = widget_clip_rect_with_transforms(
+                        cx,
+                        cy,
+                        388.0 * s,
+                        298.0 * s,
+                        32.0 * s,
+                        &self.cfg.cc_elem_transforms,
+                        s,
+                    );
+                    dc_rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    let fg_gen = self.fg_bmp_cache.cache_gen;
+                    draw_control_center_widget_live_with_viz_cached(
                         dc_rt,
                         dw,
                         d2d_ref,
@@ -13976,12 +14636,26 @@ impl DesktopWidgets {
                         bright_t_override,
                         vol_t_override,
                         Some(&self.widget_sims[4]),
+                        &mut self.fg_bmp_cache.cc,
+                        fg_gen,
                     );
+                    dc_rt.PopAxisAlignedClip();
                 }
 
                 if self.cfg.show_music {
                     let s = u * (self.cfg.music_scale_pct as f32 / 100.0);
                     let (mx, my) = music_pos;
+                    let (mlw, mlh) = music_logical_size(&self.cfg);
+                    let clip = widget_clip_rect_with_transforms(
+                        mx,
+                        my,
+                        mlw * s,
+                        mlh * s,
+                        48.0 * s,
+                        &self.cfg.music_elem_transforms,
+                        s,
+                    );
+                    dc_rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     let fg_gen = self.fg_bmp_cache.cache_gen;
                     draw_music_widget_with_viz_cached(
                         dc_rt,
@@ -14000,6 +14674,7 @@ impl DesktopWidgets {
                         &mut self.fg_bmp_cache.music,
                         fg_gen,
                     );
+                    dc_rt.PopAxisAlignedClip();
                 }
 
                 for id in ExtWidgetId::ALL {
@@ -14007,6 +14682,17 @@ impl DesktopWidgets {
                     if wcfg.enabled {
                         let s = u * (wcfg.scale_pct as f32 / 100.0);
                         let (wx, wy) = ext_pos[id.idx()];
+                        let (lw, lh) = wcfg.logical_size(id);
+                        let clip = widget_clip_rect_with_transforms(
+                            wx,
+                            wy,
+                            lw * s,
+                            lh * s,
+                            36.0 * s,
+                            &wcfg.elem_transforms,
+                            s,
+                        );
+                        dc_rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                         let fg_gen = self.fg_bmp_cache.cache_gen;
                         draw_ext_widget_with_viz_cached(
                             dc_rt,
@@ -14025,6 +14711,7 @@ impl DesktopWidgets {
                             &mut self.fg_bmp_cache.ext[id.idx()],
                             fg_gen,
                         );
+                        dc_rt.PopAxisAlignedClip();
                     }
                 }
 
@@ -15943,6 +16630,151 @@ mod fg_cache_tests {
                 center_x,
                 mw as f32 * 0.5
             );
+        }
+    }
+
+    #[test]
+    fn verify_viewport_work_area_clamping_1280x720_and_horology_weather() {
+        // 1. Explicitly check horo_royal_oak_atelier on 1280x800 (true 372x214 Weather vs WorldClock)
+        let royal = crate::suites::find_suite_by_id("horo_royal_oak_atelier").unwrap();
+        let boxes = crate::suites::suite_widget_preview_items(royal);
+        let mon800 = RECT { left: 0, top: 0, right: 1280, bottom: 800 };
+        let work800 = RECT { left: 0, top: 0, right: 1280, bottom: 724 };
+        let mut rcfg = AppConfig::default();
+        crate::suites::apply_suite_to_config(royal, &mut rcfg);
+        let vp800 = ViewportLayout::compute(mon800, work800, &rcfg);
+        let mut weather_rect = None;
+        let mut world_rect = None;
+        for (kind, cx, cy, lw, lh) in &boxes {
+            let (px, py) = vp800.project_pos_clamped(*cx, *cy, *lw, *lh, 100);
+            let pw = *lw * vp800.u;
+            let ph = *lh * vp800.u;
+            assert!(
+                px >= 0.0 && py >= 0.0 && px + pw <= 1280.0 && py + ph <= 724.0,
+                "Royal Oak widget {:?} clipped on 1280x800: ({:.1},{:.1},{:.1}x{:.1})",
+                kind, px, py, pw, ph
+            );
+            if matches!(kind, crate::suites::SuitePreviewWidgetKind::Ext(ExtWidgetId::Weather)) {
+                assert_eq!((*lw, *lh), (372.0, 214.0), "Horology Weather must report true 372x214 size");
+                weather_rect = Some((px, py, pw, ph));
+            }
+            if matches!(kind, crate::suites::SuitePreviewWidgetKind::Ext(ExtWidgetId::WorldClock)) {
+                world_rect = Some((px, py, pw, ph));
+            }
+        }
+        let (wx, wy, ww, wh) = weather_rect.expect("Weather present");
+        let (cx, cy, cw, ch) = world_rect.expect("WorldClock present");
+        let ov_x = wx < cx + cw && cx < wx + ww;
+        let ov_y = wy < cy + ch && cy < wy + wh;
+        assert!(!(ov_x && ov_y), "Royal Oak Weather ({wx},{wy},{ww}x{wh}) must not overlap WorldClock ({cx},{cy},{cw}x{ch})");
+
+        // 2. Runtime clamping on 1280x720 (16:9 at 150% DPI) with tight dock / Top Bar / native taskbar reserves
+        let mon720 = RECT { left: 0, top: 0, right: 1280, bottom: 720 };
+        let work_scenarios = [
+            ("1280x720 bottom dock", RECT { left: 0, top: 0, right: 1280, bottom: 640 }),
+            ("1280x720 top bar + bottom dock", RECT { left: 0, top: 34, right: 1280, bottom: 640 }),
+            ("1280x720 right dock", RECT { left: 0, top: 0, right: 1200, bottom: 720 }),
+            ("1280x720 native taskbar", RECT { left: 0, top: 0, right: 1280, bottom: 672 }),
+        ];
+        for (sc_name, work) in work_scenarios {
+            for suite in &crate::suites::SUITES {
+                let mut cfg = AppConfig::default();
+                crate::suites::apply_suite_to_config(suite, &mut cfg);
+                let vp = ViewportLayout::compute(mon720, work, &cfg);
+                for (idx, &(_, cx, cy, lw, lh)) in crate::suites::suite_widget_preview_items(suite).iter().enumerate() {
+                    let (px, py) = vp.project_pos_clamped(cx, cy, lw, lh, 100);
+                    let pw = lw * vp.u;
+                    let ph = lh * vp.u;
+                    assert!(
+                        px >= vp.safe_l - 0.5
+                            && py >= vp.safe_t - 0.5
+                            && px + pw <= vp.safe_r + 0.5
+                            && py + ph <= vp.safe_b + 0.5,
+                        "Scenario '{}' suite '{}' widget #{} escaped safe work area: ({:.1},{:.1},{:.1}x{:.1}) vs [{:.1}..{:.1}]x[{:.1}..{:.1}]",
+                        sc_name, suite.id, idx, px, py, pw, ph, vp.safe_l, vp.safe_r, vp.safe_t, vp.safe_b
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn widget_fg_cache_covers_apps_vitals_cc_and_dirty_clip_bounds() {
+        // 1. Dirty-region clip helper keeps tight bounds and expands cleanly for Pen Canvas offsets
+        let mut trs = [ClockElemTransform::default(); 6];
+        let base_clip = widget_clip_rect_with_transforms(100.0, 200.0, 300.0, 120.0, 20.0, &trs, 1.0);
+        assert_eq!((base_clip.left, base_clip.top, base_clip.right, base_clip.bottom), (80.0, 180.0, 420.0, 340.0));
+        trs[0].dx = 45;
+        trs[0].dy = -30;
+        let moved_clip = widget_clip_rect_with_transforms(100.0, 200.0, 300.0, 120.0, 20.0, &trs, 1.0);
+        assert!(moved_clip.right >= 465.0 && moved_clip.top <= 150.0);
+
+        // 2. Verify Apps, Vitals (Horology 4-dial), and Control Center populate & reuse WidgetFgBmpCache
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).expect("D2D");
+            let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).expect("DW");
+            let dc_rt = create_widgets_dc_rt(&d2d).expect("DCRT");
+            let mut dib = DibBuffer::new();
+            assert!(dib.ensure_size(960, 640));
+            let bind_rc = RECT { left: 0, top: 0, right: 960, bottom: 640 };
+            dc_rt.BindDC(dib.mem_dc, &bind_rc).expect("BindDC");
+            let rt: ID2D1RenderTarget = dc_rt.cast().expect("ID2D1RenderTarget");
+
+            let mut cfg = AppConfig::default();
+            cfg.vitals_style = 5; // Royal Oak Horology 4-dial watch case
+            cfg.apps_show_plate = true;
+            cfg.show_apps = true;
+            cfg.show_vitals = true;
+            cfg.show_cc = true;
+
+            let mut cache = WidgetFgBmpCache::default();
+            let cc_snap = CcSnapshot::default();
+            let tiles = [AppTileDrawItem {
+                label: "Code",
+                bmp: None,
+                rel_x: 0.0,
+                rel_y: 0.0,
+                hovered: false,
+                is_add_tile: false,
+            }];
+
+            rt.BeginDraw();
+            let gen = cache.cache_gen;
+            draw_apps_widget_with_viz_cached(&rt, &dw, None, 24.0, 24.0, 1.0, &cfg, &tiles, None, &mut cache.apps, gen);
+            draw_vitals_widget_with_telemetry_and_viz_cached(
+                &rt, &dw, Some(&d2d), None, 24.0, 180.0, 1.0, &cfg, 24.2, 16.1, 52.3, 48.0, 88.0,
+                WidgetHitZone::None, None, &mut cache.vitals, gen,
+            );
+            draw_control_center_widget_live_with_viz_cached(
+                &rt, &dw, Some(&d2d), None, 440.0, 24.0, 1.0, &cfg, &cc_snap, 0.0,
+                WidgetHitZone::None, None, None, None, &mut cache.cc, gen,
+            );
+            assert!(cache.apps.bmp.is_some(), "Apps fg cache must populate");
+            assert!(cache.vitals.bmp.is_some(), "Vitals fg cache must populate");
+            assert!(cache.cc.bmp.is_some(), "Control Center fg cache must populate");
+
+            let apps_key1 = cache.apps.key;
+            let vitals_key1 = cache.vitals.key;
+            let cc_key1 = cache.cc.key;
+
+            // Hovering an unrelated widget (ClockCard) must NOT invalidate Vitals or Control Center cache keys
+            draw_vitals_widget_with_telemetry_and_viz_cached(
+                &rt, &dw, Some(&d2d), None, 24.0, 180.0, 1.0, &cfg, 24.4, 16.3, 52.1, 48.2, 88.0,
+                WidgetHitZone::ClockCard, None, &mut cache.vitals, gen,
+            );
+            draw_control_center_widget_live_with_viz_cached(
+                &rt, &dw, Some(&d2d), None, 440.0, 24.0, 1.0, &cfg, &cc_snap, 0.0,
+                WidgetHitZone::ClockCard, None, None, None, &mut cache.cc, gen,
+            );
+            assert_eq!(cache.vitals.key, vitals_key1, "Vitals cache must hit when integer telemetry & vitals hover unchanged");
+            assert_eq!(cache.cc.key, cc_key1, "CC cache must hit when unrelated widget hovered");
+            assert_ne!(apps_key1, 0);
+
+            assert!(rt.EndDraw(None, None).is_ok());
+            cache.clear();
+            assert!(cache.apps.bmp.is_none() && cache.vitals.bmp.is_none() && cache.cc.bmp.is_none());
+            CoUninitialize();
         }
     }
 }

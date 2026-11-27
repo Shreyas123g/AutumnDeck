@@ -1,8 +1,8 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 static MF_CALL_DEPTH: AtomicU32 = AtomicU32::new(0);
@@ -50,36 +50,40 @@ impl Drop for ComInitGuard {
 
 use windows::core::{implement, w, BOOL, BSTR, Interface, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, COLORREF, GENERIC_READ, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, RECT, SIZE,
-    WPARAM,
+    CloseHandle, COLORREF, GENERIC_READ, HANDLE, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, RECT,
+    SIZE, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP,
+    D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP,
 };
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11Multithread, ID3D11Resource, ID3D11Texture2D,
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ,
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE, D3D11_USAGE_STAGING,
+    ID3D11VideoDevice, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_FLAG_DO_NOT_WAIT, D3D11_MAP_READ, D3D11_SDK_VERSION,
+    D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_IMMUTABLE,
+    D3D11_USAGE_STAGING,
 };
+use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_UNSPECIFIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
     DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIDevice3, IDXGIFactory2, IDXGISwapChain1, DXGI_MWA_NO_ALT_ENTER,
+    CreateDXGIFactory1, IDXGIAdapter, IDXGIDevice, IDXGIDevice3, IDXGIFactory1, IDXGIFactory2,
+    IDXGISwapChain1, IDXGISwapChain2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_MWA_NO_ALT_ENTER,
     DXGI_PRESENT, DXGI_PRESENT_TEST, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-    DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_BACK_BUFFER,
+    DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+    DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_BACK_BUFFER,
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, EndPaint,
-    GetDIBits, GetMonitorInfoW, GetObjectW, InvalidateRect, MonitorFromPoint, RedrawWindow,
-    SelectObject, SetStretchBltMode, StretchBlt, UpdateWindow, BITMAP, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HBITMAP, HGDIOBJ, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY, PAINTSTRUCT, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
-    SRCCOPY,
+    EnumDisplaySettingsW, GetDIBits, GetMonitorInfoW, GetObjectW, InvalidateRect, MonitorFromPoint,
+    RedrawWindow, SelectObject, SetStretchBltMode, StretchBlt, UpdateWindow, BITMAP, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DEVMODEW, DIB_RGB_COLORS, ENUM_CURRENT_SETTINGS, HALFTONE, HBITMAP,
+    HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, PAINTSTRUCT, RDW_ERASE, RDW_FRAME,
+    RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY,
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppBGRA, IWICBitmapSource, IWICImagingFactory,
@@ -92,7 +96,7 @@ use windows::Win32::Media::MediaFoundation::{
     CLSID_MFMediaEngineClassFactory, IMFAttributes, IMFDXGIDeviceManager, IMFMediaEngine,
     IMFMediaEngineClassFactory, IMFMediaEngineNotify, IMFMediaEngineNotify_Impl,
     MFCreateAttributes, MFCreateDXGIDeviceManager, MFShutdown, MFStartup, MFVideoNormalizedRect,
-    MF_API_VERSION, MF_LOW_LATENCY, MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_DXGI_MANAGER,
+    MF_API_VERSION, MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_DXGI_MANAGER,
     MF_MEDIA_ENGINE_EVENT_ENDED, MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY,
     MF_MEDIA_ENGINE_EVENT_LOADEDDATA, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
 };
@@ -106,7 +110,9 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
-use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows::Win32::System::Threading::{
+    OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
+};
 use windows::Win32::UI::Controls::Dialogs::{
     GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OPENFILENAMEW,
 };
@@ -126,13 +132,154 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
 
-use crate::config::{cache_wallpaper_locally, is_static_image_wallpaper_path, to_wide, AppConfig};
+use crate::config::{
+    cache_wallpaper_locally, is_static_image_wallpaper_path, to_wide, AppConfig, WallpaperFpsCap,
+};
 
 const WM_WP_EVENT: u32 = 0x8000 + 301;
 const WM_WP_STATIC_READY: u32 = 0x8000 + 302;
+const WM_WP_PUMP: u32 = 0x8000 + 303;
 const TIMER_WP_FRAME: usize = 301;
 const TIMER_WP_STATIC_RETRY: usize = 302;
 const DXGI_STATUS_OCCLUDED_HR: i32 = 0x087A_0001u32 as i32;
+const DXGI_ERROR_WAS_STILL_DRAWING_HR: i32 = 0x887A_000Au32 as i32;
+
+/// Tracks whether live video wallpaper playback is using full D3D11/DXVA hardware decode
+/// or fell back to CPU software decode / WARP software rendering.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VideoDecodeMode {
+    Unknown,
+    HardwareDxva,
+    SoftwareCpu,
+    WarpSoftware,
+}
+
+impl Default for VideoDecodeMode {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl VideoDecodeMode {
+    pub fn is_software_fallback(&self) -> bool {
+        matches!(self, Self::SoftwareCpu | Self::WarpSoftware)
+    }
+
+    pub fn badge_label(&self) -> &'static str {
+        match self {
+            Self::HardwareDxva => "DXVA HARDWARE",
+            Self::SoftwareCpu => "CPU FALLBACK (NO DXVA)",
+            Self::WarpSoftware => "WARP SOFTWARE GPU",
+            Self::Unknown => "HARDWARE DECODER",
+        }
+    }
+
+    pub fn warning_pill_text(&self) -> Option<&'static str> {
+        match self {
+            Self::SoftwareCpu => {
+                Some("⚠ No DXVA HW decode — use H.264 MP4 or install HEVC/AV1 codec")
+            }
+            Self::WarpSoftware => {
+                Some("⚠ WARP software GPU fallback — update display drivers for smooth FPS")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Pure double-buffered FIFO tracker for async `64x36` Chameleon staging texture readbacks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AsyncPaletteSlots {
+    in_flight: [bool; 2],
+    smooth: [bool; 2],
+    write_slot: usize,
+}
+
+impl AsyncPaletteSlots {
+    fn acquire_write_slot(&self) -> Option<usize> {
+        if !self.in_flight[self.write_slot] {
+            Some(self.write_slot)
+        } else {
+            let alt = self.write_slot ^ 1;
+            if !self.in_flight[alt] {
+                Some(alt)
+            } else {
+                None
+            }
+        }
+    }
+
+    fn mark_submitted(&mut self, slot: usize, smooth: bool) {
+        let s = slot & 1;
+        self.in_flight[s] = true;
+        self.smooth[s] = smooth;
+        self.write_slot = s ^ 1;
+    }
+
+    /// Returns the oldest submitted slot `(slot_idx, smooth)` waiting for non-blocking `Map(DO_NOT_WAIT)`.
+    fn oldest_in_flight(&self) -> Option<(usize, bool)> {
+        if self.in_flight[self.write_slot] {
+            Some((self.write_slot, self.smooth[self.write_slot]))
+        } else {
+            let alt = self.write_slot ^ 1;
+            if self.in_flight[alt] {
+                Some((alt, self.smooth[alt]))
+            } else {
+                None
+            }
+        }
+    }
+
+    fn mark_completed(&mut self, slot: usize) {
+        self.in_flight[slot & 1] = false;
+    }
+
+    fn any_in_flight(&self) -> bool {
+        self.in_flight[0] || self.in_flight[1]
+    }
+
+    fn reset(&mut self) {
+        self.in_flight = [false, false];
+        self.smooth = [false, false];
+        self.write_slot = 0;
+    }
+}
+
+fn query_primary_monitor_refresh_hz() -> u32 {
+    unsafe {
+        let mut dm = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        if EnumDisplaySettingsW(PCWSTR::null(), ENUM_CURRENT_SETTINGS, &mut dm).as_bool()
+            && dm.dmDisplayFrequency >= 24
+            && dm.dmDisplayFrequency <= 360
+        {
+            return dm.dmDisplayFrequency;
+        }
+    }
+    60
+}
+
+/// Computes the target pacer interval in microseconds matching monitor refresh rate & FPS cap.
+fn compute_target_frame_interval_us(fps_cap: WallpaperFpsCap, monitor_hz: u32) -> u64 {
+    let hz = monitor_hz.clamp(24, 240) as u64;
+    match fps_cap {
+        WallpaperFpsCap::Fps30 => 33_333,
+        WallpaperFpsCap::Fps60 => 1_000_000 / hz.min(60),
+        WallpaperFpsCap::Auto => 1_000_000 / hz.clamp(30, 120),
+    }
+}
+
+/// Minimum interval between GPU `Present()` calls when a hard FPS cap is selected, with ~1.2ms
+/// tolerance so VSync jitter on 60Hz/30Hz displays never halves the frame rate.
+fn compute_min_present_interval_us(fps_cap: WallpaperFpsCap) -> u64 {
+    match fps_cap {
+        WallpaperFpsCap::Auto => 0,
+        WallpaperFpsCap::Fps60 => 15_500,
+        WallpaperFpsCap::Fps30 => 31_500,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum StaticLoadState {
@@ -964,11 +1111,23 @@ pub struct VideoWallpaperEngine {
     cached_path_update: Option<(String, String)>,
     mf_started: bool,
     d3d_device: Option<ID3D11Device>,
+    device_has_video_support: bool,
+    decode_mode: VideoDecodeMode,
+    adapter_name: String,
     dxgi_mgr: Option<IMFDXGIDeviceManager>,
     swap_chain: Option<IDXGISwapChain1>,
+    swap_chain_flags: DXGI_SWAP_CHAIN_FLAG,
+    swap_chain_buffers: u32,
+    frame_latency_waitable: HANDLE,
     engine: Option<IMFMediaEngine>,
     _cb: Option<IMFMediaEngineNotify>,
     timer_on: bool,
+    pacer_stop: Option<Arc<AtomicBool>>,
+    pacer_interval_us: Arc<AtomicU64>,
+    pump_queued: Arc<AtomicBool>,
+    monitor_hz: u32,
+    fps_cap: WallpaperFpsCap,
+    last_presented_at: Option<Instant>,
     enabled: bool,
     active_path: String,
     mute: bool,
@@ -991,7 +1150,8 @@ pub struct VideoWallpaperEngine {
     player_started_at: Option<Instant>,
     last_palette_sample: Option<Instant>,
     sample_rt_tex: Option<ID3D11Texture2D>,
-    sample_st_tex: Option<ID3D11Texture2D>,
+    sample_st_tex: [Option<ID3D11Texture2D>; 2],
+    palette_slots: AsyncPaletteSlots,
     notify_hwnd: HWND,
     notify_msg: u32,
     state_notify_hwnd: HWND,
@@ -1008,6 +1168,8 @@ static mut GLOBAL_WP_PTR: *mut VideoWallpaperEngine = std::ptr::null_mut();
 impl VideoWallpaperEngine {
     pub fn new(hinst: HINSTANCE) -> Self {
         Self::register_class(hinst);
+        let monitor_hz = query_primary_monitor_refresh_hz();
+        let initial_us = compute_target_frame_interval_us(WallpaperFpsCap::Auto, monitor_hz);
         Self {
             hinst,
             hwnd: HWND::default(),
@@ -1027,11 +1189,23 @@ impl VideoWallpaperEngine {
             cached_path_update: None,
             mf_started: false,
             d3d_device: None,
+            device_has_video_support: false,
+            decode_mode: VideoDecodeMode::Unknown,
+            adapter_name: String::new(),
             dxgi_mgr: None,
             swap_chain: None,
+            swap_chain_flags: DXGI_SWAP_CHAIN_FLAG(0),
+            swap_chain_buffers: 2,
+            frame_latency_waitable: HANDLE::default(),
             engine: None,
             _cb: None,
             timer_on: false,
+            pacer_stop: None,
+            pacer_interval_us: Arc::new(AtomicU64::new(initial_us)),
+            pump_queued: Arc::new(AtomicBool::new(false)),
+            monitor_hz,
+            fps_cap: WallpaperFpsCap::Auto,
+            last_presented_at: None,
             enabled: false,
             active_path: String::new(),
             mute: true,
@@ -1054,7 +1228,8 @@ impl VideoWallpaperEngine {
             player_started_at: None,
             last_palette_sample: None,
             sample_rt_tex: None,
-            sample_st_tex: None,
+            sample_st_tex: [None, None],
+            palette_slots: AsyncPaletteSlots::default(),
             notify_hwnd: HWND::default(),
             notify_msg: 0,
             state_notify_hwnd: HWND::default(),
@@ -1065,6 +1240,18 @@ impl VideoWallpaperEngine {
             cached_crop: None,
             end_poll_ticks: 0,
         }
+    }
+
+    pub fn decode_mode(&self) -> VideoDecodeMode {
+        if self.static_mode || !self.enabled {
+            VideoDecodeMode::Unknown
+        } else {
+            self.decode_mode
+        }
+    }
+
+    pub fn adapter_name(&self) -> &str {
+        &self.adapter_name
     }
 
     pub fn set_palette_notify(&mut self, hwnd: HWND, msg: u32) {
@@ -1109,9 +1296,14 @@ impl VideoWallpaperEngine {
             }
         } else {
             self.last_palette_sample = None;
-            self.sample_rt_tex = None;
-            self.sample_st_tex = None;
+            self.clear_sample_textures();
         }
+    }
+
+    fn clear_sample_textures(&mut self) {
+        self.sample_rt_tex = None;
+        self.sample_st_tex = [None, None];
+        self.palette_slots.reset();
     }
 
     pub fn is_in_mf_call(&self) -> bool {
@@ -1130,15 +1322,16 @@ impl VideoWallpaperEngine {
             }
             return false;
         }
-        let _mf = MfCallGuard::enter();
+        // Drain any already-finished GPU staging readback first without stalling, then enqueue
+        // a fresh non-blocking copy so the UI thread never blocks on GPU->CPU Map().
+        let drained = self.poll_async_palette_readback();
         if let Some(eng) = self.engine.clone() {
             if self.has_presented_frame {
-                let changed = self.sample_frame_palette(&eng, false);
+                let _ = self.enqueue_async_palette_sample(&eng, false);
                 self.last_palette_sample = Some(Instant::now());
-                return changed;
             }
         }
-        false
+        drained
     }
 
     pub fn is_behind_defview(&self) -> bool {
@@ -1319,12 +1512,23 @@ impl VideoWallpaperEngine {
         } else if self.engine.is_none() {
             "Initializing..."
         } else {
-            "Playing (Zero-Gap D3D11 SwapChain)"
+            match self.decode_mode {
+                VideoDecodeMode::WarpSoftware => "Playing (WARP Software Fallback — Low FPS)",
+                VideoDecodeMode::SoftwareCpu => "Playing (CPU Software Decode — No DXVA)",
+                VideoDecodeMode::HardwareDxva | VideoDecodeMode::Unknown => {
+                    "Playing (DXVA Hardware • D3D11 Flip)"
+                }
+            }
         }
     }
 
     pub fn apply_config(&mut self, cfg: &AppConfig) {
         self.apply_config_ex(cfg, false);
+    }
+
+    fn sync_pacer_cadence(&mut self) {
+        let interval_us = compute_target_frame_interval_us(self.fps_cap, self.monitor_hz);
+        self.pacer_interval_us.store(interval_us, Ordering::Release);
     }
 
     /// Applies wallpaper configuration. When `force_static_refresh` is true (e.g., user explicitly
@@ -1341,6 +1545,8 @@ impl VideoWallpaperEngine {
         self.volume_pct = cfg.wallpaper_volume_pct;
         self.pause_when_covered = cfg.wallpaper_pause_maximized;
         self.trim_on_pause = cfg.wallpaper_trim_memory;
+        self.fps_cap = cfg.wallpaper_fps_cap;
+        self.sync_pacer_cadence();
 
         if !want_enabled {
             self.pending_resume_sec = 0.0;
@@ -1428,6 +1634,8 @@ impl VideoWallpaperEngine {
             self.static_mode = false;
             self.mute = cfg.wallpaper_mute;
             self.volume_pct = cfg.wallpaper_volume_pct;
+            self.fps_cap = cfg.wallpaper_fps_cap;
+            self.sync_pacer_cadence();
             self.pause_when_covered = true;
             self.trim_on_pause = cfg.wallpaper_trim_memory;
             self.paused_by_cover = true;
@@ -1487,9 +1695,21 @@ impl VideoWallpaperEngine {
         }
     }
 
-    fn destroy_video_surface(&mut self) {
+    fn drop_swap_chain(&mut self) {
         self.swap_chain = None;
         self.swap_chain_has_frame = false;
+        self.swap_chain_flags = DXGI_SWAP_CHAIN_FLAG(0);
+        self.swap_chain_buffers = 2;
+        if !self.frame_latency_waitable.0.is_null() {
+            unsafe {
+                let _ = CloseHandle(self.frame_latency_waitable);
+            }
+            self.frame_latency_waitable = HANDLE::default();
+        }
+    }
+
+    fn destroy_video_surface(&mut self) {
+        self.drop_swap_chain();
         if !self.video_hwnd.0.is_null() {
             unsafe {
                 let _ = ShowWindow(self.video_hwnd, SW_HIDE);
@@ -1588,10 +1808,11 @@ impl VideoWallpaperEngine {
         if had_video {
             // Switching Video -> Static Image: drop the Media Foundation-shared swapchain & D3D11
             // device so DXVA driver heaps are reclaimed immediately with zero async lock contention.
-            self.swap_chain = None;
-            self.swap_chain_has_frame = false;
+            self.drop_swap_chain();
             self.trim_gpu_memory();
             self.d3d_device = None;
+            self.device_has_video_support = false;
+            self.decode_mode = VideoDecodeMode::Unknown;
         }
         self.static_mode = true;
         self.paused_by_cover = false;
@@ -2087,8 +2308,7 @@ impl VideoWallpaperEngine {
             if !self.video_hwnd.0.is_null() && IsWindow(Some(self.video_hwnd)).as_bool() {
                 if self.place_behind_icons_tracked() {
                     // SwapChain HWND was reparented (e.g. Explorer restart): recreate swapchain cleanly.
-                    self.swap_chain = None;
-                    self.swap_chain_has_frame = false;
+                    self.drop_swap_chain();
                 }
                 return true;
             }
@@ -2135,32 +2355,74 @@ impl VideoWallpaperEngine {
         if self.video_hwnd.0.is_null() {
             return false;
         }
+        self.drop_swap_chain();
         unsafe {
             if let Some(ref dev) = self.d3d_device {
                 if let Ok(dxgi_dev) = dev.cast::<IDXGIDevice>() {
                     if let Ok(adapter) = dxgi_dev.GetAdapter() {
                         if let Ok(factory) = adapter.GetParent::<IDXGIFactory2>() {
-                            let desc = DXGI_SWAP_CHAIN_DESC1 {
-                                Width: sw.max(2),
-                                Height: sh.max(2),
-                                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                                Stereo: BOOL(0),
-                                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT
-                                    | DXGI_USAGE_BACK_BUFFER,
-                                BufferCount: 2,
-                                Scaling: DXGI_SCALING_STRETCH,
-                                SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                                AlphaMode: DXGI_ALPHA_MODE_UNSPECIFIED,
-                                Flags: 0,
-                            };
-                            if let Ok(sc) = factory
-                                .CreateSwapChainForHwnd(dev, self.video_hwnd, &desc, None, None)
-                            {
-                                let _ = factory
-                                    .MakeWindowAssociation(self.video_hwnd, DXGI_MWA_NO_ALT_ENTER);
-                                self.swap_chain = Some(sc);
-                                return true;
+                            // Prefer triple-buffered FLIP_DISCARD with a frame-latency waitable
+                            // object so the GPU pipeline queues decoded frames without stalling
+                            // the UI thread, falling back cleanly on legacy drivers / WARP.
+                            let candidates = [
+                                (
+                                    3u32,
+                                    DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                                    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+                                ),
+                                (3u32, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_CHAIN_FLAG(0)),
+                                (
+                                    3u32,
+                                    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+                                    DXGI_SWAP_CHAIN_FLAG(0),
+                                ),
+                                (
+                                    2u32,
+                                    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+                                    DXGI_SWAP_CHAIN_FLAG(0),
+                                ),
+                            ];
+                            for (buf_count, swap_effect, sc_flag) in candidates {
+                                let desc = DXGI_SWAP_CHAIN_DESC1 {
+                                    Width: sw.max(2),
+                                    Height: sh.max(2),
+                                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                                    Stereo: BOOL(0),
+                                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                                    BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT
+                                        | DXGI_USAGE_BACK_BUFFER,
+                                    BufferCount: buf_count,
+                                    Scaling: DXGI_SCALING_STRETCH,
+                                    SwapEffect: swap_effect,
+                                    AlphaMode: DXGI_ALPHA_MODE_UNSPECIFIED,
+                                    Flags: sc_flag.0 as u32,
+                                };
+                                if let Ok(sc) = factory.CreateSwapChainForHwnd(
+                                    dev,
+                                    self.video_hwnd,
+                                    &desc,
+                                    None,
+                                    None,
+                                ) {
+                                    let _ = factory.MakeWindowAssociation(
+                                        self.video_hwnd,
+                                        DXGI_MWA_NO_ALT_ENTER,
+                                    );
+                                    if sc_flag == DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+                                    {
+                                        if let Ok(sc2) = sc.cast::<IDXGISwapChain2>() {
+                                            let _ = sc2.SetMaximumFrameLatency(2);
+                                            let waitable = sc2.GetFrameLatencyWaitableObject();
+                                            if !waitable.is_invalid() && !waitable.0.is_null() {
+                                                self.frame_latency_waitable = waitable;
+                                            }
+                                        }
+                                    }
+                                    self.swap_chain_flags = sc_flag;
+                                    self.swap_chain_buffers = buf_count;
+                                    self.swap_chain = Some(sc);
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -2175,27 +2437,70 @@ impl VideoWallpaperEngine {
             return false;
         }
         unsafe {
-            if let Some(ref dev) = self.d3d_device {
-                if dev.GetDeviceRemovedReason().is_err() {
-                    self.swap_chain = None;
-                    self.swap_chain_has_frame = false;
-                    self.dxgi_mgr = None;
-                    self.sample_rt_tex = None;
-                    self.sample_st_tex = None;
-                    self.d3d_device = None;
-                }
+            // If a static image created a non-VIDEO_SUPPORT device earlier and we are now starting
+            // live video playback, recreate the device with VIDEO_SUPPORT so DXVA hardware decode works.
+            let need_video_upgrade = !self.static_mode
+                && self.d3d_device.is_some()
+                && !self.device_has_video_support
+                && self.decode_mode == VideoDecodeMode::Unknown;
+            let device_lost = self
+                .d3d_device
+                .as_ref()
+                .is_some_and(|dev| dev.GetDeviceRemovedReason().is_err());
+            if device_lost || need_video_upgrade {
+                self.drop_swap_chain();
+                self.dxgi_mgr = None;
+                self.clear_sample_textures();
+                self.d3d_device = None;
+                self.device_has_video_support = false;
+                self.decode_mode = VideoDecodeMode::Unknown;
             }
 
             if self.d3d_device.is_none() {
                 let mut dev_opt: Option<ID3D11Device> = None;
+                let mut chosen_adapter: Option<IDXGIAdapter> = None;
+                self.adapter_name.clear();
+                if let Ok(fac) = CreateDXGIFactory1::<IDXGIFactory1>() {
+                    let mut idx = 0u32;
+                    while let Ok(ad1) = fac.EnumAdapters1(idx) {
+                        if let Ok(desc) = ad1.GetDesc1() {
+                            let is_sw = (desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32)) != 0;
+                            if !is_sw {
+                                let end = desc
+                                    .Description
+                                    .iter()
+                                    .position(|&c| c == 0)
+                                    .unwrap_or(desc.Description.len());
+                                self.adapter_name =
+                                    String::from_utf16_lossy(&desc.Description[..end]);
+                                chosen_adapter = ad1.cast::<IDXGIAdapter>().ok();
+                                break;
+                            }
+                        }
+                        idx += 1;
+                        if idx >= 8 {
+                            break;
+                        }
+                    }
+                }
+
                 let primary_flags = if self.static_mode {
                     D3D11_CREATE_DEVICE_BGRA_SUPPORT
                 } else {
                     D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT
                 };
+                let (drv_type, adapter_ref) = if let Some(ref ad) = chosen_adapter {
+                    (D3D_DRIVER_TYPE_UNKNOWN, Some(ad))
+                } else {
+                    (D3D_DRIVER_TYPE_HARDWARE, None)
+                };
+
+                let mut used_video_flags = primary_flags
+                    == (D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT);
+                let mut used_warp = false;
                 let mut res = D3D11CreateDevice(
-                    None,
-                    D3D_DRIVER_TYPE_HARDWARE,
+                    adapter_ref,
+                    drv_type,
                     HMODULE::default(),
                     primary_flags,
                     None,
@@ -2204,10 +2509,11 @@ impl VideoWallpaperEngine {
                     None,
                     None,
                 );
-                if res.is_err() && primary_flags != D3D11_CREATE_DEVICE_BGRA_SUPPORT {
+                if res.is_err() && used_video_flags {
+                    used_video_flags = false;
                     res = D3D11CreateDevice(
-                        None,
-                        D3D_DRIVER_TYPE_HARDWARE,
+                        adapter_ref,
+                        drv_type,
                         HMODULE::default(),
                         D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                         None,
@@ -2218,6 +2524,9 @@ impl VideoWallpaperEngine {
                     );
                 }
                 if res.is_err() {
+                    used_video_flags = false;
+                    used_warp = true;
+                    self.adapter_name = "Microsoft Basic Render Driver (WARP)".to_string();
                     res = D3D11CreateDevice(
                         None,
                         D3D_DRIVER_TYPE_WARP,
@@ -2233,6 +2542,7 @@ impl VideoWallpaperEngine {
                 if res.is_err() {
                     return false;
                 }
+                let mut has_video_dev = false;
                 if let Some(ref dev) = dev_opt {
                     if let Ok(mt) = dev.cast::<ID3D11Multithread>() {
                         let _ = mt.SetMultithreadProtected(true);
@@ -2240,7 +2550,18 @@ impl VideoWallpaperEngine {
                     if let Ok(dxgi3) = dev.cast::<IDXGIDevice3>() {
                         let _ = dxgi3.SetMaximumFrameLatency(2);
                     }
+                    has_video_dev = used_video_flags && dev.cast::<ID3D11VideoDevice>().is_ok();
                 }
+                self.device_has_video_support = has_video_dev;
+                self.decode_mode = if self.static_mode {
+                    VideoDecodeMode::Unknown
+                } else if used_warp {
+                    VideoDecodeMode::WarpSoftware
+                } else if has_video_dev {
+                    VideoDecodeMode::HardwareDxva
+                } else {
+                    VideoDecodeMode::SoftwareCpu
+                };
                 self.d3d_device = dev_opt;
             }
 
@@ -2264,10 +2585,15 @@ impl VideoWallpaperEngine {
                     if MFCreateDXGIDeviceManager(&mut reset_token, &mut mgr_opt).is_ok() {
                         if let Some(ref mgr) = mgr_opt {
                             if let Ok(unk) = dev.cast::<windows::core::IUnknown>() {
-                                let _ = mgr.ResetDevice(&unk, reset_token);
+                                if mgr.ResetDevice(&unk, reset_token).is_ok() {
+                                    self.dxgi_mgr = mgr_opt;
+                                } else if self.decode_mode == VideoDecodeMode::HardwareDxva {
+                                    self.decode_mode = VideoDecodeMode::SoftwareCpu;
+                                }
                             }
-                            self.dxgi_mgr = mgr_opt;
                         }
+                    } else if self.decode_mode == VideoDecodeMode::HardwareDxva {
+                        self.decode_mode = VideoDecodeMode::SoftwareCpu;
                     }
                 }
             }
@@ -2291,12 +2617,12 @@ impl VideoWallpaperEngine {
 
         for attempt in 0..2 {
             if attempt > 0 {
-                self.swap_chain = None;
-                self.swap_chain_has_frame = false;
+                self.drop_swap_chain();
                 self.dxgi_mgr = None;
-                self.sample_rt_tex = None;
-                self.sample_st_tex = None;
+                self.clear_sample_textures();
                 self.d3d_device = None;
+                self.device_has_video_support = false;
+                self.decode_mode = VideoDecodeMode::Unknown;
             }
             if !self.ensure_d3d_device_and_swap_chain() {
                 continue;
@@ -2308,7 +2634,7 @@ impl VideoWallpaperEngine {
                     if let Ok(sc_desc) = sc.GetDesc1() {
                         if sc_desc.Width != w || sc_desc.Height != h {
                             let resized = sc
-                                .ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
+                                .ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, self.swap_chain_flags)
                                 .is_ok();
                             let verified = resized
                                 && sc
@@ -2325,8 +2651,7 @@ impl VideoWallpaperEngine {
                 }
             }
             if need_recreate_sc {
-                self.swap_chain = None;
-                self.swap_chain_has_frame = false;
+                self.drop_swap_chain();
                 if !self.create_swap_chain_for_size(w, h) {
                     continue;
                 }
@@ -2377,12 +2702,17 @@ impl VideoWallpaperEngine {
 
             // Pass 1 (pre-show prime): if `video_hwnd` is hidden, fill buffers first so showing it
             // never flashes a black frame.
+            let waitable_h = self.frame_latency_waitable;
+            let prime_count = self.swap_chain_buffers.clamp(2, 3);
             if !was_visible {
                 unsafe {
-                    for _ in 0..2 {
+                    for _ in 0..prime_count {
                         if let Ok(back_buf) = sc.GetBuffer::<ID3D11Texture2D>(0) {
                             if let Ok(dst_res) = back_buf.cast::<ID3D11Resource>() {
                                 ctx.CopyResource(&dst_res, &src_res);
+                                if !waitable_h.0.is_null() {
+                                    let _ = WaitForSingleObject(waitable_h, 32);
+                                }
                                 let _ = sc.Present(0, DXGI_PRESENT(0));
                             }
                         }
@@ -2401,7 +2731,7 @@ impl VideoWallpaperEngine {
             }
             if reparented {
                 // Flip-Model swapchain parent changed: recreate on the visible parented HWND.
-                self.swap_chain = None;
+                self.drop_swap_chain();
                 if !self.create_swap_chain_for_size(w, h) {
                     continue;
                 }
@@ -2411,8 +2741,9 @@ impl VideoWallpaperEngine {
                 sc = fresh_sc;
             }
 
-            // Pass 2 (authoritative visible Flip-Model commit): present both buffers while
+            // Pass 2 (authoritative visible Flip-Model commit): present buffers while
             // `video_hwnd` is visible and inspect exact HRESULT (`S_OK` vs `DXGI_STATUS_OCCLUDED`).
+            let waitable_h2 = self.frame_latency_waitable;
             let mut presented_ok = false;
             let mut saw_occluded = false;
             let mut saw_error = false;
@@ -2427,6 +2758,9 @@ impl VideoWallpaperEngine {
                         break;
                     };
                     ctx.CopyResource(&dst_res, &src_res);
+                    if !waitable_h2.0.is_null() {
+                        let _ = WaitForSingleObject(waitable_h2, 32);
+                    }
                     let hr = sc.Present(0, DXGI_PRESENT(0));
                     if hr.0 == 0 {
                         presented_ok = true;
@@ -2479,19 +2813,87 @@ impl VideoWallpaperEngine {
         }
     }
 
+    /// Starts or stops the dedicated VSync-aligned frame pacer thread.
+    /// Instead of a fixed 33ms low-priority `WM_TIMER` (which starves behind UI repaints and
+    /// quantizes to 31–47ms), the pacer synchronizes with `DwmFlush()` and posts coalesced
+    /// `WM_WP_PUMP` messages matching monitor refresh / `wallpaper_fps_cap` cadence.
     fn set_frame_timer(&mut self, run: bool) {
         if self.hwnd.0.is_null() {
+            if let Some(stop) = self.pacer_stop.take() {
+                stop.store(true, Ordering::Release);
+            }
             self.timer_on = false;
+            self.pump_queued.store(false, Ordering::Release);
             return;
         }
         unsafe {
-            if run && !self.timer_on {
-                let _ = SetTimer(Some(self.hwnd), TIMER_WP_FRAME, 33, None);
-                self.timer_on = true;
-            } else if !run && self.timer_on {
-                let _ = KillTimer(Some(self.hwnd), TIMER_WP_FRAME);
-                self.timer_on = false;
+            let _ = KillTimer(Some(self.hwnd), TIMER_WP_FRAME);
+        }
+        if run {
+            self.sync_pacer_cadence();
+            if self.timer_on && self.pacer_stop.is_some() {
+                return;
             }
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_c = stop.clone();
+            let interval_us = self.pacer_interval_us.clone();
+            let pump_queued = self.pump_queued.clone();
+            pump_queued.store(false, Ordering::Release);
+            let hwnd_raw = self.hwnd.0 as usize;
+            let spawned = std::thread::Builder::new()
+                .name("autumn-wp-pacer".to_string())
+                .spawn(move || {
+                    let mut last_post = Instant::now() - Duration::from_millis(50);
+                    while !stop_c.load(Ordering::Acquire) && !WP_OS_EXIT.load(Ordering::Acquire) {
+                        let hw = HWND(hwnd_raw as *mut c_void);
+                        unsafe {
+                            if hw.0.is_null() || !IsWindow(Some(hw)).as_bool() {
+                                break;
+                            }
+                        }
+                        let target_us = interval_us.load(Ordering::Acquire).clamp(8_000, 33_333);
+                        let dwm_ok = unsafe { DwmFlush().is_ok() };
+                        if !dwm_ok {
+                            std::thread::sleep(Duration::from_micros(target_us));
+                        }
+                        if stop_c.load(Ordering::Acquire) || WP_OS_EXIT.load(Ordering::Acquire) {
+                            break;
+                        }
+                        // Allow 1.5ms VSync phase lead so 60Hz VSync (~16.6ms) never skips
+                        // every other tick when target_us == 16_666us.
+                        if last_post.elapsed().as_micros() as u64 + 1_500 >= target_us {
+                            last_post = Instant::now();
+                            if !pump_queued.swap(true, Ordering::AcqRel) {
+                                unsafe {
+                                    let _ = PostMessageW(
+                                        Some(hw),
+                                        WM_WP_PUMP,
+                                        WPARAM(0),
+                                        LPARAM(0),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                })
+                .is_ok();
+            if spawned {
+                self.pacer_stop = Some(stop);
+                self.timer_on = true;
+            } else {
+                // Fallback if OS thread creation fails
+                let ms = (self.pacer_interval_us.load(Ordering::Acquire) / 1000).clamp(16, 33) as u32;
+                unsafe {
+                    let _ = SetTimer(Some(self.hwnd), TIMER_WP_FRAME, ms, None);
+                }
+                self.timer_on = true;
+            }
+        } else {
+            if let Some(stop) = self.pacer_stop.take() {
+                stop.store(true, Ordering::Release);
+            }
+            self.pump_queued.store(false, Ordering::Release);
+            self.timer_on = false;
         }
     }
 
@@ -2624,11 +3026,15 @@ impl VideoWallpaperEngine {
     fn start_player(&mut self, video_path: &str) {
         self.trimmed_initial = false;
         self.static_mode = false;
+        self.monitor_hz = query_primary_monitor_refresh_hz();
+        self.sync_pacer_cadence();
+        self.last_presented_at = None;
         self.ensure_window();
         if !self.mf_started {
             self.mf_started = unsafe { MFStartup(MF_API_VERSION, 0).is_ok() };
         }
         if !self.ensure_dxgi() {
+            self.post_state_notify();
             return;
         }
         if let Some(eng) = self.engine.clone() {
@@ -2639,6 +3045,7 @@ impl VideoWallpaperEngine {
             self.pause_started_at = None;
             self.has_presented_frame = false;
             self.sample_dirty = true;
+            self.palette_slots.reset();
             self.player_started_at = Some(Instant::now());
             let reuse_ok = {
                 let _mf = MfCallGuard::enter();
@@ -2661,13 +3068,14 @@ impl VideoWallpaperEngine {
                 self.end_poll_ticks = 0;
                 self.place_behind_icons();
                 self.set_frame_timer(true);
+                self.post_state_notify();
                 return;
             }
         }
         self.stop_player_only();
         unsafe {
             let mut attrs_opt: Option<IMFAttributes> = None;
-            if MFCreateAttributes(&mut attrs_opt, 5).is_err() {
+            if MFCreateAttributes(&mut attrs_opt, 4).is_err() {
                 return;
             }
             let Some(attrs) = attrs_opt else {
@@ -2684,7 +3092,9 @@ impl VideoWallpaperEngine {
                 &MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
                 DXGI_FORMAT_B8G8R8A8_UNORM.0 as u32,
             );
-            let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            // Do NOT set MF_LOW_LATENCY = 1 for prerecorded file playback: low-latency mode
+            // disables Media Foundation B-frame lookahead & hardware decoder surface pipelining,
+            // causing dropped frames, stutter, or CPU decode fallback on standard MP4/HEVC/AV1 files.
             let eng_opt: Option<IMFMediaEngine> = {
                 let _mf = MfCallGuard::enter();
                 CoCreateInstance::<_, IMFMediaEngineClassFactory>(
@@ -2717,11 +3127,14 @@ impl VideoWallpaperEngine {
             self.pause_trimmed = false;
             self.pause_started_at = None;
             self.sample_dirty = true;
+            self.palette_slots.reset();
             self.initial_settle_done = false;
             self.player_started_at = Some(Instant::now());
             self.last_palette_sample = None;
+            self.last_presented_at = None;
             self.place_behind_icons();
             self.set_frame_timer(true);
+            self.post_state_notify();
         }
     }
 
@@ -2743,6 +3156,8 @@ impl VideoWallpaperEngine {
         self.initial_settle_done = false;
         self.player_started_at = None;
         self.last_palette_sample = None;
+        self.last_presented_at = None;
+        self.palette_slots.reset();
     }
 
     /// Reclaims heavyweight Media Foundation & DXVA decoder commit (~300+ MB) while keeping the
@@ -2756,8 +3171,7 @@ impl VideoWallpaperEngine {
             }
         }
         self._cb = None;
-        self.sample_rt_tex = None;
-        self.sample_st_tex = None;
+        self.clear_sample_textures();
         self.cached_crop = None;
         self.end_poll_ticks = 0;
         self.pending_cover_pause = false;
@@ -2777,15 +3191,15 @@ impl VideoWallpaperEngine {
             }
         }
         self._cb = None;
-        self.sample_rt_tex = None;
-        self.sample_st_tex = None;
+        self.clear_sample_textures();
         self.cached_crop = None;
         self.end_poll_ticks = 0;
-        self.swap_chain = None;
-        self.swap_chain_has_frame = false;
+        self.drop_swap_chain();
         self.dxgi_mgr = None;
         self.trim_gpu_memory();
         self.d3d_device = None;
+        self.device_has_video_support = false;
+        self.decode_mode = VideoDecodeMode::Unknown;
         if self.mf_started && !self.is_in_mf_call() {
             unsafe {
                 let _ = MFShutdown();
@@ -2821,8 +3235,7 @@ impl VideoWallpaperEngine {
     /// `video_hwnd`, and Flip-Model DXGI SwapChain ready for static image presentation.
     fn release_video_decoder_only(&mut self) {
         self.stop_player_only();
-        self.sample_rt_tex = None;
-        self.sample_st_tex = None;
+        self.clear_sample_textures();
         self.dxgi_mgr = None;
         if self.mf_started && !self.is_in_mf_call() {
             unsafe {
@@ -2971,6 +3384,8 @@ impl VideoWallpaperEngine {
         if !self.enabled {
             return;
         }
+        self.monitor_hz = query_primary_monitor_refresh_hz();
+        self.sync_pacer_cadence();
         self.ensure_window();
         if self.static_mode {
             let path = self.active_path.clone();
@@ -2988,7 +3403,7 @@ impl VideoWallpaperEngine {
                     sw,
                     sh,
                     DXGI_FORMAT_UNKNOWN,
-                    DXGI_SWAP_CHAIN_FLAG(0),
+                    self.swap_chain_flags,
                 );
             }
         }
@@ -3037,20 +3452,41 @@ impl VideoWallpaperEngine {
         if self.is_in_mf_call() {
             return;
         }
+        // Drain any completed async GPU->CPU Chameleon readback first (non-blocking DO_NOT_WAIT).
+        if self.chameleon_enabled && self.palette_slots.any_in_flight() {
+            if self.poll_async_palette_readback()
+                && !self.notify_hwnd.0.is_null()
+                && self.notify_msg != 0
+            {
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(self.notify_hwnd),
+                        self.notify_msg,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
+        }
+
+        // Enforce user FPS Cap cleanly (30 / 60 FPS) without skipping forced frames.
+        if !force_current {
+            let min_us = compute_min_present_interval_us(self.fps_cap);
+            if min_us > 0 {
+                if let Some(last) = self.last_presented_at {
+                    if (last.elapsed().as_micros() as u64) < min_us {
+                        return;
+                    }
+                }
+            }
+        }
+
         let (sw, sh) = self.swap_dims();
         let crop = match (self.engine.clone(), self.swap_chain.as_ref()) {
             (Some(eng), Some(_)) => self.compute_crop_rect(&eng),
             _ => return,
         };
-        let poll_ended = {
-            self.end_poll_ticks = self.end_poll_ticks.wrapping_add(1);
-            if self.end_poll_ticks >= 30 {
-                self.end_poll_ticks = 0;
-                true
-            } else {
-                false
-            }
-        };
+        let waitable_h = self.frame_latency_waitable;
         let presented = {
             let (Some(ref eng), Some(ref sc)) = (&self.engine, &self.swap_chain) else {
                 return;
@@ -3061,10 +3497,18 @@ impl VideoWallpaperEngine {
                     return;
                 }
                 let new_frame = matches!(eng.OnVideoStreamTick(), Ok(pts) if pts != i64::MIN);
-                if !new_frame && !force_current {
-                    if poll_ended && eng.IsEnded().as_bool() {
-                        let _ = eng.SetCurrentTime(0.0);
-                        let _ = eng.Play();
+                if new_frame {
+                    self.end_poll_ticks = 0;
+                } else if !force_current {
+                    // Check IsEnded() every 4 idle ticks (~65–130ms) instead of 30 (~1s) so
+                    // loops restart seamlessly even if MF's ENDED callback arrives late.
+                    self.end_poll_ticks = self.end_poll_ticks.wrapping_add(1);
+                    if self.end_poll_ticks >= 4 {
+                        self.end_poll_ticks = 0;
+                        if eng.IsEnded().as_bool() {
+                            let _ = eng.SetCurrentTime(0.0);
+                            let _ = eng.Play();
+                        }
                     }
                     return;
                 }
@@ -3077,12 +3521,22 @@ impl VideoWallpaperEngine {
                     right: sw as i32,
                     bottom: sh as i32,
                 };
-                eng.TransferVideoFrame(&back_buf, Some(&crop), &dst, None)
-                    .is_ok()
-                    && sc.Present(0, DXGI_PRESENT(0)).is_ok()
+                if eng.TransferVideoFrame(&back_buf, Some(&crop), &dst, None).is_err() {
+                    return;
+                }
+                // Wait strictly 1:1 right before Present() so the waitable swapchain semaphore
+                // never leaks and never stalls the UI thread when the GPU queue is full.
+                if !waitable_h.0.is_null() {
+                    let wait_ms = if force_current { 16 } else { 0 };
+                    if WaitForSingleObject(waitable_h, wait_ms) != WAIT_OBJECT_0 {
+                        return;
+                    }
+                }
+                sc.Present(0, DXGI_PRESENT(0)).is_ok()
             }
         };
         if presented {
+            self.last_presented_at = Some(Instant::now());
             self.swap_chain_has_frame = true;
             if !self.has_presented_frame {
                 self.has_presented_frame = true;
@@ -3115,22 +3569,13 @@ impl VideoWallpaperEngine {
                         .unwrap_or(true);
 
                 if do_initial || do_settle || do_periodic {
-                    self.sample_dirty = false;
-                    if do_settle {
-                        self.initial_settle_done = true;
-                    }
-                    self.last_palette_sample = Some(now);
                     if let Some(eng) = self.engine.clone() {
-                        let changed = self.sample_frame_palette(&eng, !do_initial);
-                        if changed && !self.notify_hwnd.0.is_null() && self.notify_msg != 0 {
-                            unsafe {
-                                let _ = PostMessageW(
-                                    Some(self.notify_hwnd),
-                                    self.notify_msg,
-                                    WPARAM(0),
-                                    LPARAM(0),
-                                );
+                        if self.enqueue_async_palette_sample(&eng, !do_initial) {
+                            self.sample_dirty = false;
+                            if do_settle {
+                                self.initial_settle_done = true;
                             }
+                            self.last_palette_sample = Some(now);
                         }
                     }
                 }
@@ -3144,7 +3589,10 @@ impl VideoWallpaperEngine {
     }
 
     fn ensure_sample_textures(&mut self, sw: u32, sh: u32) -> bool {
-        if self.sample_rt_tex.is_some() && self.sample_st_tex.is_some() {
+        if self.sample_rt_tex.is_some()
+            && self.sample_st_tex[0].is_some()
+            && self.sample_st_tex[1].is_some()
+        {
             return true;
         }
         let Some(ref dev) = self.d3d_device else {
@@ -3163,43 +3611,52 @@ impl VideoWallpaperEngine {
                 CPUAccessFlags: 0,
                 MiscFlags: 0,
             };
-            let mut rt_tex_opt: Option<ID3D11Texture2D> = None;
-            if dev.CreateTexture2D(&rt_desc, None, Some(&mut rt_tex_opt)).is_err() {
-                return false;
+            if self.sample_rt_tex.is_none() {
+                let mut rt_tex_opt: Option<ID3D11Texture2D> = None;
+                if dev.CreateTexture2D(&rt_desc, None, Some(&mut rt_tex_opt)).is_err() {
+                    return false;
+                }
+                self.sample_rt_tex = rt_tex_opt;
             }
-            let Some(rt_tex) = rt_tex_opt else {
-                return false;
-            };
             let st_desc = D3D11_TEXTURE2D_DESC {
                 Usage: D3D11_USAGE_STAGING,
                 BindFlags: 0,
                 CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
                 ..rt_desc
             };
-            let mut st_tex_opt: Option<ID3D11Texture2D> = None;
-            if dev.CreateTexture2D(&st_desc, None, Some(&mut st_tex_opt)).is_err() {
-                return false;
+            for slot in 0..2 {
+                if self.sample_st_tex[slot].is_none() {
+                    let mut st_tex_opt: Option<ID3D11Texture2D> = None;
+                    if dev.CreateTexture2D(&st_desc, None, Some(&mut st_tex_opt)).is_err() {
+                        return false;
+                    }
+                    self.sample_st_tex[slot] = st_tex_opt;
+                }
             }
-            let Some(st_tex) = st_tex_opt else {
-                return false;
-            };
-            self.sample_rt_tex = Some(rt_tex);
-            self.sample_st_tex = Some(st_tex);
-            true
+            self.sample_rt_tex.is_some()
+                && self.sample_st_tex[0].is_some()
+                && self.sample_st_tex[1].is_some()
         }
     }
 
-    fn sample_frame_palette(&mut self, eng: &IMFMediaEngine, smooth: bool) -> bool {
-        if !self.ensure_sample_textures(64, 36) {
-            return false;
-        }
+    /// Submits an asynchronous `64x36` GPU copy into the next free double-buffered staging slot
+    /// without calling `Map()`, avoiding any synchronous GPU pipeline flush.
+    fn enqueue_async_palette_sample(&mut self, eng: &IMFMediaEngine, smooth: bool) -> bool {
         const SW: u32 = 64;
         const SH: u32 = 36;
+        if !self.ensure_sample_textures(SW, SH) {
+            return false;
+        }
+        let Some(slot) = self.palette_slots.acquire_write_slot() else {
+            return false;
+        };
         let _mf = MfCallGuard::enter();
         let crop = self.compute_crop_rect(eng);
-        let (Some(ref dev), Some(ref rt_tex), Some(ref st_tex)) =
-            (&self.d3d_device, &self.sample_rt_tex, &self.sample_st_tex)
-        else {
+        let (Some(ref dev), Some(ref rt_tex), Some(ref st_tex)) = (
+            &self.d3d_device,
+            &self.sample_rt_tex,
+            &self.sample_st_tex[slot],
+        ) else {
             return false;
         };
         unsafe {
@@ -3222,8 +3679,44 @@ impl VideoWallpaperEngine {
                 return false;
             };
             ctx.CopyResource(&st_res, &rt_res);
+        }
+        self.palette_slots.mark_submitted(slot, smooth);
+        true
+    }
+
+    /// Polls the oldest in-flight double-buffered staging texture with `D3D11_MAP_FLAG_DO_NOT_WAIT`.
+    /// Returns `true` only when the GPU copy completed and updated the Chameleon palette;
+    /// returns `false` immediately on `DXGI_ERROR_WAS_STILL_DRAWING` with zero stall.
+    fn poll_async_palette_readback(&mut self) -> bool {
+        const SW: u32 = 64;
+        const SH: u32 = 36;
+        let Some((slot, smooth)) = self.palette_slots.oldest_in_flight() else {
+            return false;
+        };
+        let (Some(ref dev), Some(ref st_tex)) = (&self.d3d_device, &self.sample_st_tex[slot])
+        else {
+            self.palette_slots.mark_completed(slot);
+            return false;
+        };
+        unsafe {
+            let Ok(ctx) = dev.GetImmediateContext() else {
+                return false;
+            };
+            let Ok(st_res) = st_tex.cast::<ID3D11Resource>() else {
+                self.palette_slots.mark_completed(slot);
+                return false;
+            };
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            if ctx.Map(&st_res, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_err() {
+            if let Err(err) = ctx.Map(
+                &st_res,
+                0,
+                D3D11_MAP_READ,
+                D3D11_MAP_FLAG_DO_NOT_WAIT.0 as u32,
+                Some(&mut mapped),
+            ) {
+                if err.code().0 != DXGI_ERROR_WAS_STILL_DRAWING_HR {
+                    self.palette_slots.mark_completed(slot);
+                }
                 return false;
             }
 
@@ -3238,6 +3731,7 @@ impl VideoWallpaperEngine {
                 }
             }
             ctx.Unmap(&st_res, 0);
+            self.palette_slots.mark_completed(slot);
             if smooth {
                 crate::theme::update_extracted_live_frame_from_bgra(&self.active_path, &bgra, SW, SH)
             } else {
@@ -3290,8 +3784,7 @@ impl VideoWallpaperEngine {
         }
         self.backdrop_dib = None;
         self.static_mode = false;
-        self.sample_rt_tex = None;
-        self.sample_st_tex = None;
+        self.clear_sample_textures();
         self.has_presented_frame = false;
         self.swap_chain_has_frame = false;
         self.pending_cover_pause = false;
@@ -3308,6 +3801,7 @@ impl VideoWallpaperEngine {
             if let Some(sc) = self.swap_chain.take() {
                 std::mem::forget(sc);
             }
+            self.frame_latency_waitable = HANDLE::default();
             if let Some(mgr) = self.dxgi_mgr.take() {
                 std::mem::forget(mgr);
             }
@@ -3318,10 +3812,12 @@ impl VideoWallpaperEngine {
             return;
         }
         self.stop_player_only();
-        self.swap_chain = None;
+        self.drop_swap_chain();
         self.dxgi_mgr = None;
         self.trim_gpu_memory();
         self.d3d_device = None;
+        self.device_has_video_support = false;
+        self.decode_mode = VideoDecodeMode::Unknown;
         unsafe {
             if self.mf_started {
                 let _ = MFShutdown();
@@ -3334,13 +3830,15 @@ impl VideoWallpaperEngine {
     /// `MFShutdown()` and `DestroyWindow` cross-process messages against `WorkerW` / `explorer.exe`.
     pub fn stop_for_os_exit(&mut self) {
         WP_OS_EXIT.store(true, Ordering::Release);
+        if let Some(stop) = self.pacer_stop.take() {
+            stop.store(true, Ordering::Release);
+        }
         self.mf_started = false;
         self.static_req_tx = None;
         self.static_res_rx = None;
         self.pending_static_frame = None;
         self.engine = None;
-        self.swap_chain = None;
-        self.dxgi_mgr = None;
+        self.drop_swap_chain();
         self.d3d_device = None;
         self.backdrop_dib = None;
         let vid_hw = self.video_hwnd;
@@ -3397,6 +3895,13 @@ unsafe extern "system" fn wp_wnd_proc(
     };
 
     match msg {
+        WM_WP_PUMP => {
+            wp.pump_queued.store(false, Ordering::Release);
+            if wp.enabled && !wp.paused_by_cover && !WP_OS_EXIT.load(Ordering::Acquire) {
+                wp.pump_frame(false);
+            }
+            LRESULT(0)
+        }
         WM_TIMER if wparam.0 == TIMER_WP_FRAME => {
             if wp.enabled && !wp.paused_by_cover && !WP_OS_EXIT.load(Ordering::Acquire) {
                 wp.pump_frame(false);
@@ -3513,6 +4018,10 @@ unsafe extern "system" fn wp_wnd_proc(
         WM_ERASEBKGND => LRESULT(1),
         0x0010 => LRESULT(0),
         0x0002 => {
+            if let Some(stop) = wp.pacer_stop.take() {
+                stop.store(true, Ordering::Release);
+            }
+            wp.pump_queued.store(false, Ordering::Release);
             wp.timer_on = false;
             wp.static_retry_timer_on = false;
             wp.video_hwnd = HWND::default();
@@ -3775,5 +4284,85 @@ mod tests {
         eng.cleanup();
         let _ = std::fs::remove_file(&corrupt);
         let _ = std::fs::remove_file(&valid);
+    }
+
+    #[test]
+    fn video_fps_pacing_async_palette_slots_and_decode_telemetry() {
+        // 1. Adaptive frame pacer cadence & minimum present guard
+        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Auto, 60), 16_666);
+        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Auto, 144), 8_333);
+        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Auto, 30), 33_333);
+        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps60, 144), 16_666);
+        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps60, 60), 16_666);
+        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps30, 144), 33_333);
+        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Auto), 0);
+        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps60), 15_500);
+        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps30), 31_500);
+
+        // 2. Double-buffered async staging slot FIFO lifecycle
+        let mut slots = AsyncPaletteSlots::default();
+        assert!(!slots.any_in_flight());
+        assert_eq!(slots.oldest_in_flight(), None);
+        assert_eq!(slots.acquire_write_slot(), Some(0));
+
+        slots.mark_submitted(0, false);
+        assert!(slots.any_in_flight());
+        assert_eq!(slots.oldest_in_flight(), Some((0, false)));
+        assert_eq!(slots.acquire_write_slot(), Some(1));
+
+        slots.mark_submitted(1, true);
+        assert_eq!(slots.acquire_write_slot(), None, "Both staging slots busy");
+        assert_eq!(
+            slots.oldest_in_flight(),
+            Some((0, false)),
+            "FIFO must drain slot 0 before slot 1"
+        );
+
+        slots.mark_completed(0);
+        assert_eq!(slots.oldest_in_flight(), Some((1, true)));
+        assert_eq!(slots.acquire_write_slot(), Some(0));
+
+        slots.mark_completed(1);
+        assert!(!slots.any_in_flight());
+        assert_eq!(slots.oldest_in_flight(), None);
+
+        // 3. Hardware DXVA vs software/WARP decode mode telemetry
+        assert!(!VideoDecodeMode::Unknown.is_software_fallback());
+        assert!(!VideoDecodeMode::HardwareDxva.is_software_fallback());
+        assert!(VideoDecodeMode::SoftwareCpu.is_software_fallback());
+        assert!(VideoDecodeMode::WarpSoftware.is_software_fallback());
+        assert!(VideoDecodeMode::HardwareDxva.warning_pill_text().is_none());
+        assert!(VideoDecodeMode::SoftwareCpu.warning_pill_text().is_some());
+        assert!(VideoDecodeMode::WarpSoftware.warning_pill_text().is_some());
+
+        let mut eng = VideoWallpaperEngine::new(HINSTANCE::default());
+        eng.decode_mode = VideoDecodeMode::SoftwareCpu;
+        assert_eq!(
+            eng.decode_mode(),
+            VideoDecodeMode::Unknown,
+            "Disabled engine must report Unknown decode mode"
+        );
+        eng.enabled = true;
+        eng.static_mode = true;
+        assert_eq!(
+            eng.decode_mode(),
+            VideoDecodeMode::Unknown,
+            "Static image mode must not trigger software video decode warnings"
+        );
+        eng.static_mode = false;
+        assert_eq!(eng.decode_mode(), VideoDecodeMode::SoftwareCpu);
+
+        // 4. Persisted WallpaperFpsCap INI roundtrip
+        for cap in [
+            WallpaperFpsCap::Auto,
+            WallpaperFpsCap::Fps60,
+            WallpaperFpsCap::Fps30,
+        ] {
+            let mut cfg = AppConfig::default();
+            cfg.wallpaper_fps_cap = cap;
+            let ini = crate::config::serialize_config_ini(&cfg);
+            let parsed = crate::config::parse_config_ini(&ini).expect("parse config ini");
+            assert_eq!(parsed.wallpaper_fps_cap, cap);
+        }
     }
 }

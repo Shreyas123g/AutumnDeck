@@ -18,10 +18,13 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
 
 use crate::config::{
-    app_data_dir, is_logon_task_enabled, is_startup_enabled, serialize_config_ini, AppConfig,
+    app_data_dir, is_logon_task_enabled, is_portable_mode, is_startup_enabled,
+    serialize_config_ini, status_snapshot_path, AppConfig,
 };
 use crate::taskbar_hide::{is_fullscreen_game_or_app_active, TaskbarHider};
-use crate::taskbar_styler::{has_app_package_rx_acl, tap_cache_dll_diagnostics};
+use crate::taskbar_styler::{
+    has_app_package_rx_acl, tap_cache_dll_diagnostics, tap_portable_fallback_reason,
+};
 
 const MAX_EVENT_LOG_ENTRIES: usize = 80;
 static EVENT_LOG: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
@@ -357,6 +360,14 @@ fn build_support_report(cfg: &AppConfig, game_mode_active: bool) -> String {
             staged_acl
         ));
     }
+    out.push_str(&format!(
+        "portable_mode={} app_data_dir={}\n",
+        is_portable_mode(),
+        sanitize_user_paths(&app_data_dir().to_string_lossy())
+    ));
+    if let Some(note) = tap_portable_fallback_reason() {
+        out.push_str(&format!("portable_tap_fallback={}\n", note));
+    }
     out.push_str(&format!("startup_run_key={}\n", is_startup_enabled()));
     out.push_str(&format!("startup_logon_task={}\n", is_logon_task_enabled()));
     out.push_str(&format!(
@@ -382,7 +393,7 @@ fn build_support_report(cfg: &AppConfig, game_mode_active: bool) -> String {
     ));
 
     out.push_str("[StatusSnapshot]\n");
-    let status_file = std::env::temp_dir().join("autumn_deck_status.txt");
+    let status_file = status_snapshot_path();
     match fs::read_to_string(&status_file) {
         Ok(content) => out.push_str(&sanitize_user_paths(&content)),
         Err(_) => out.push_str("(no status snapshot found)\n"),

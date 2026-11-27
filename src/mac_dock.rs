@@ -64,33 +64,33 @@ use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationCondition,
     IUIAutomationInvokePattern, IUIAutomationTogglePattern, TreeScope_Element, TreeScope_Subtree,
-    UIA_AutomationIdPropertyId, UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
-    UIA_InvokePatternId, UIA_NamePropertyId, UIA_TogglePatternId,
+    UIA_AutomationIdPropertyId, UIA_ButtonControlTypeId, UIA_ClassNamePropertyId,
+    UIA_ControlTypePropertyId, UIA_InvokePatternId, UIA_NamePropertyId, UIA_TogglePatternId,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, SendInput, TrackMouseEvent, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_CONTROL,
-    VK_LWIN, VK_SHIFT,
+    GetKeyState, ReleaseCapture, SendInput, SetCapture, TrackMouseEvent, INPUT, INPUT_0,
+    INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, TME_LEAVE, TRACKMOUSEEVENT,
+    VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_RETURN, VK_SHIFT,
 };
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::Shell::{
-    BHID_SFUIObject, IContextMenu, IShellItem, IShellItemImageFactory, IShellLinkW,
-    SHCreateItemFromParsingName, SHEmptyRecycleBinW, SHGetFileInfoW, SHQueryRecycleBinW,
-    ShellExecuteExW, ShellExecuteW, ShellLink, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX,
-    CMF_EXPLORE, CMF_NORMAL, GCS_VERBW, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST,
-    SEE_MASK_UNICODE, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
-    SHGFI_USEFILEATTRIBUTES, SHQUERYRBINFO, SIGDN_NORMALDISPLAY, SIIGBF, SIIGBF_BIGGERSIZEOK,
-    SIIGBF_ICONONLY, SLGP_RAWPATH,
+    BHID_SFUIObject, DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, IContextMenu,
+    IShellItem, IShellItemImageFactory, IShellLinkW, SHCreateItemFromParsingName,
+    SHEmptyRecycleBinW, SHGetFileInfoW, SHQueryRecycleBinW, ShellExecuteExW, ShellExecuteW,
+    ShellLink, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, CMF_EXPLORE, CMF_NORMAL, GCS_VERBW,
+    HDROP, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SEE_MASK_UNICODE, SHELLEXECUTEINFOW,
+    SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_USEFILEATTRIBUTES, SHQUERYRBINFO,
+    SIGDN_NORMALDISPLAY, SIIGBF, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY, SLGP_RAWPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, AppendMenuW, BringWindowToTop, CheckMenuItem, CreatePopupMenu,
     CreateWindowExW, DeregisterShellHookWindow, DestroyIcon, DestroyMenu, DestroyWindow,
     EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassLongPtrW, GetClassNameW,
-    GetCursorPos, GetForegroundWindow, GetLastActivePopup, GetMenuItemCount, GetMenuItemInfoW,
-    GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed, LoadCursorW,
-    PostMessageW, RegisterClassExW, RegisterShellHookWindow, RegisterWindowMessageW,
+    GetCursorPos, GetDlgItem, GetForegroundWindow, GetLastActivePopup, GetMenuItemCount,
+    GetMenuItemInfoW, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
+    LoadCursorW, PostMessageW, RegisterClassExW, RegisterShellHookWindow, RegisterWindowMessageW,
     SendMessageTimeoutW, SetCursor, SetForegroundWindow, SetWindowPos, ShowWindow, ShowWindowAsync,
     SwitchToThisWindow, TrackPopupMenu, UpdateLayeredWindow, ASFW_ANY, GCLP_HICON, GCLP_HICONSM,
     GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HICON, HMENU, HWND_TOPMOST, ICON_BIG, ICON_SMALL2,
@@ -99,8 +99,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE,
     SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SW_SHOWNORMAL, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TPM_TOPALIGN, ULW_ALPHA,
-    WM_CLOSE, WM_GETICON, WM_NULL, WM_SYSCOMMAND, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
+    WM_APP, WM_CLOSE, WM_GETICON, WM_NULL, WM_SYSCOMMAND, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
 };
 use windows_core::BOOL;
 use windows_numerics::Vector2;
@@ -110,7 +110,7 @@ use crate::config::{
     CleanTopBarStyle, DockClockEngine, DockClockWheelAction, DockDividerStyle, DockIndicatorStyle,
     DockRunningLabelMode, DockSlotCardStyle, HudTelemetryContent, HudWingMode, HudWingShape,
     MacDockEdge, MacDockHideMode, StartBadgeStyle, TaskbarTheme, TrayAudioMeterStyle,
-    TrayBatteryMeterStyle, TrayNetMeterStyle,
+    TrayBatteryMeterStyle, TrayNetMeterStyle, MAX_PINNED_APPS,
 };
 use crate::desktop_widgets::{launch_app_path, load_app_bitmap_for_path, wic_src_to_d2d};
 use crate::dock_themes::{
@@ -168,13 +168,15 @@ const IDM_DOCK_TRAY_SOUND: usize = 4129;
 const IDM_DOCK_TRAY_NET: usize = 4130;
 const IDM_DOCK_TRAY_POWER: usize = 4131;
 const IDM_DOCK_TRAY_MUTE: usize = 4132;
-const IDM_CLEAN_TOPBAR_TOGGLE: usize = 4140;
-const IDM_CLEAN_TOPBAR_TOP: usize = 4141;
-const IDM_CLEAN_TOPBAR_BOT: usize = 4142;
-const IDM_CLEAN_TOPBAR_AUTO: usize = 4143;
-const IDM_CLEAN_TOPBAR_FULL: usize = 4144;
-const IDM_CLEAN_TOPBAR_FLOAT: usize = 4145;
-const IDM_CLEAN_TOPBAR_DESK_ONLY: usize = 4146;
+const IDM_CLEAN_TOPBAR_TOGGLE: usize = 4170;
+const IDM_CLEAN_TOPBAR_TOP: usize = 4171;
+const IDM_CLEAN_TOPBAR_BOT: usize = 4172;
+const IDM_CLEAN_TOPBAR_AUTO: usize = 4173;
+const IDM_CLEAN_TOPBAR_FULL: usize = 4174;
+const IDM_CLEAN_TOPBAR_FLOAT: usize = 4175;
+const IDM_CLEAN_TOPBAR_DESK_ONLY: usize = 4176;
+const IDM_DOCK_ICON_SIZE_BASE: usize = 4180;
+const DOCK_ICON_SIZE_PRESETS: [u8; 8] = [36, 44, 52, 60, 68, 76, 88, 96];
 const IDM_DOCK_SYNC_WIN_PINS: usize = 4133;
 
 const IDM_WINX_APPS: usize = 4140;
@@ -1348,6 +1350,7 @@ impl DockMonitorPane {
             if register_shell_hook {
                 let _ = RegisterShellHookWindow(hw);
             }
+            DragAcceptFiles(hw, true);
             self.hwnd = hw;
             self.window_shown = false;
             self.dock_inited = false;
@@ -1712,6 +1715,16 @@ impl TopBarPopoverState {
     }
 }
 
+#[derive(Clone, Debug)]
+struct PinnedDragState {
+    pane_hwnd: HWND,
+    from_pin_idx: usize,
+    to_pin_idx: usize,
+    start_x: f32,
+    start_y: f32,
+    dragging: bool,
+}
+
 pub struct MacDockEngine {
     hinst: HINSTANCE,
     shell_hook_msg: u32,
@@ -1722,6 +1735,7 @@ pub struct MacDockEngine {
     solid_brush: Option<ID2D1SolidColorBrush>,
     tf_tip: Option<IDWriteTextFormat>,
     tf_left: Option<IDWriteTextFormat>,
+    tf_left_key: (u8, u16),
     tf_mono: Option<IDWriteTextFormat>,
     tf_top_bold: Option<IDWriteTextFormat>,
     tf_top_reg: Option<IDWriteTextFormat>,
@@ -1743,6 +1757,7 @@ pub struct MacDockEngine {
     pop_until: HashMap<String, Instant>,
     last_app_click: HashMap<String, Instant>,
     flashing_hwnds: HashSet<isize>,
+    pinned_drag: Option<PinnedDragState>,
     fg_app_title: String,
     fg_full_title: String,
     cpu_pct: u8,
@@ -1786,6 +1801,7 @@ pub struct MacDockEngine {
     last_clock_bucket: u32,
     telemetry_visible: bool,
     dirty_windows: bool,
+    win_event_hooks_active: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2046,6 +2062,7 @@ impl MacDockEngine {
             solid_brush: None,
             tf_tip: None,
             tf_left: None,
+            tf_left_key: (0, 0),
             tf_mono: None,
             tf_top_bold: None,
             tf_top_reg: None,
@@ -2066,6 +2083,7 @@ impl MacDockEngine {
             pop_until: HashMap::new(),
             last_app_click: HashMap::new(),
             flashing_hwnds: HashSet::new(),
+            pinned_drag: None,
             fg_app_title: "Desktop".to_string(),
             fg_full_title: "Desktop".to_string(),
             cpu_pct: 12,
@@ -2108,6 +2126,22 @@ impl MacDockEngine {
             last_clock_bucket: u32::MAX,
             telemetry_visible: false,
             dirty_windows: true,
+            win_event_hooks_active: false,
+        }
+    }
+
+    pub fn set_win_event_hooks_active(&mut self, active: bool) {
+        self.win_event_hooks_active = active;
+    }
+
+    /// Fallback `EnumWindows` reconciliation interval:
+    /// - `30 s` when both `SHELLHOOK` and `WinEvent` hooks are registered and healthy (event-driven sync).
+    /// - `4 s` safety fallback only if OS hooks could not be registered.
+    pub fn fallback_full_sync_interval(&self) -> Duration {
+        if self.shell_hook_msg != 0 && self.win_event_hooks_active {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_secs(4)
         }
     }
 
@@ -2191,7 +2225,7 @@ impl MacDockEngine {
                 out.push((pane.mon_rect, top_edge, top_h));
             }
             if want_dock {
-                let (spec, _is_vertical, _base_sz, shelf_cross, edge_gap, hud_wing_h) =
+                let (spec, is_vertical, _base_sz, shelf_cross, edge_gap, hud_wing_h) =
                     dock_cross_metrics(cfg, u);
                 let extra = if spec.layout == DockLayoutKind::IndependentOrbs {
                     (8.0 * u).ceil() as i32
@@ -2200,7 +2234,14 @@ impl MacDockEngine {
                 } else {
                     0
                 };
-                let reserve_px = (edge_gap + shelf_cross + hud_wing_h).ceil() as i32 + extra;
+                let mon_cross = if is_vertical {
+                    (pane.mon_rect.right - pane.mon_rect.left).max(320)
+                } else {
+                    (pane.mon_rect.bottom - pane.mon_rect.top).max(320)
+                };
+                let max_reserve = ((mon_cross as f32 * 0.22).round() as i32).max((56.0 * u) as i32);
+                let reserve_px = ((edge_gap + shelf_cross + hud_wing_h).ceil() as i32 + extra)
+                    .min(max_reserve);
                 out.push((pane.mon_rect, dock_edge, reserve_px));
             }
         }
@@ -2228,6 +2269,96 @@ impl MacDockEngine {
     pub fn set_notify_target(&mut self, hwnd: HWND, icon_ready_msg: u32) {
         self.icon_notify_hwnd = hwnd;
         self.icon_notify_msg = icon_ready_msg;
+    }
+
+    /// Executes the Tier-2 hidden tray fallback popup strictly on the UI thread owning `dhw`.
+    /// Win32 `TrackPopupMenu` silently fails when called from a background thread for an HWND
+    /// owned by the main UI thread.
+    pub fn show_pending_tray_overflow_fallback(&mut self) {
+        let Some(req) = take_pending_tray_overflow_fallback() else {
+            return;
+        };
+        if self.menu_open {
+            return;
+        }
+        let dhw = unsafe {
+            let candidate = HWND(req.dock_hwnd as *mut c_void);
+            if !candidate.0.is_null() && IsWindow(Some(candidate)).as_bool() {
+                candidate
+            } else {
+                let fallback = self.menu_hwnd();
+                if !fallback.0.is_null() && IsWindow(Some(fallback)).as_bool() {
+                    fallback
+                } else {
+                    self.icon_notify_hwnd
+                }
+            }
+        };
+        if dhw.0.is_null() {
+            return;
+        }
+        self.menu_open = true;
+        unsafe {
+            let prev_fg = force_foreground_for_menu(dhw);
+            let mut keep_focus = false;
+            if let Ok(menu) = CreatePopupMenu() {
+                let hdr = to_wide("Hidden Tray Icons (None Active)");
+                let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(hdr.as_ptr()));
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                let retry_txt = to_wide("Retry Native Hidden Icons (Win + B)");
+                let _ = AppendMenuW(menu, MF_STRING, 1, PCWSTR(retry_txt.as_ptr()));
+                let open_cfg = to_wide("Open Windows Taskbar Tray Settings...");
+                let _ = AppendMenuW(menu, MF_STRING, 2, PCWSTR(open_cfg.as_ptr()));
+
+                let cx = (req.anchor_rect.left + req.anchor_rect.right) / 2;
+                let cy = match req.edge {
+                    MacDockEdge::Bottom => req.anchor_rect.top - 4,
+                    MacDockEdge::Top => req.anchor_rect.bottom + 4,
+                    _ => (req.anchor_rect.top + req.anchor_rect.bottom) / 2,
+                };
+                let mut mon_rc = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 1920,
+                    bottom: 1080,
+                };
+                let hmon = MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST);
+                let mut mi = MONITORINFO {
+                    cbSize: size_of::<MONITORINFO>() as u32,
+                    ..Default::default()
+                };
+                if GetMonitorInfoW(hmon, &mut mi).as_bool() {
+                    mon_rc = mi.rcMonitor;
+                }
+                let chosen = track_dock_popup(dhw, menu, POINT { x: cx, y: cy }, req.edge, mon_rc);
+                let _ = DestroyMenu(menu);
+                match chosen {
+                    1 => {
+                        keep_focus = true;
+                        retry_hidden_tray_overflow_win_b(req.anchor_rect, req.edge);
+                    }
+                    2 => {
+                        keep_focus = true;
+                        let verb = to_wide("open");
+                        let uri = to_wide("ms-settings:taskbar");
+                        let _ = ShellExecuteW(
+                            None,
+                            PCWSTR(verb.as_ptr()),
+                            PCWSTR(uri.as_ptr()),
+                            PCWSTR::null(),
+                            PCWSTR::null(),
+                            SW_SHOWNORMAL,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if !keep_focus {
+                restore_prev_fg(dhw, prev_fg);
+            }
+        }
+        self.menu_open = false;
+        self.mark_dirty_paint();
     }
 
     pub fn apply_ready_icons(&mut self) -> bool {
@@ -2291,6 +2422,13 @@ impl MacDockEngine {
     }
 
     pub fn cancel_left_press(&mut self) {
+        if let Some(drag) = self.pinned_drag.take() {
+            if drag.dragging {
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+            }
+        }
         for pane in &mut self.panes {
             if pane.pressed_idx.take().is_some() {
                 pane.dirty_paint = true;
@@ -2428,7 +2566,7 @@ impl MacDockEngine {
         }
         let cur_bucket = clock_bucket(cfg);
         let clock_changed = cur_bucket != self.last_clock_bucket;
-        let full_due = now.duration_since(self.last_full_sync) >= Duration::from_millis(4000);
+        let full_due = now.duration_since(self.last_full_sync) >= self.fallback_full_sync_interval();
 
         if cfg.mac_dock_hide == MacDockHideMode::StealthHide {
             if self.panes.iter().any(|p| p.window_shown || p.slide_t > 0.005) {
@@ -2556,7 +2694,12 @@ impl MacDockEngine {
         }
     }
 
+    #[cfg(test)]
     pub fn desired_timer_ms(&self, cfg: &AppConfig) -> u32 {
+        self.desired_timer_ms_with_fps(cfg, cfg.anim_fps)
+    }
+
+    pub fn desired_timer_ms_with_fps(&self, cfg: &AppConfig, effective_fps: u32) -> u32 {
         if !cfg.mac_dock_enabled || !self.is_active() {
             return 0;
         }
@@ -2597,7 +2740,7 @@ impl MacDockEngine {
             slow_33,
             self.thumb_popup.visible,
             ambient_idle,
-            cfg.anim_fps,
+            effective_fps,
         )
     }
 
@@ -2645,6 +2788,7 @@ impl MacDockEngine {
                         let _ = tfl.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                         let _ = tfl.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
                         self.tf_left = Some(tfl);
+                        self.tf_left_key = (12, 100);
                     }
                     if let Ok(tfm) = dw.CreateTextFormat(
                         w!("Consolas"),
@@ -2767,6 +2911,13 @@ impl MacDockEngine {
 
     pub fn disable(&mut self) {
         TRAY_OVERFLOW_ABORT.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(drag) = self.pinned_drag.take() {
+            if drag.dragging {
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+            }
+        }
         self.top_popover.destroy();
         self.thumb_popup.destroy();
         self.thumb_owner_hwnd = HWND::default();
@@ -2801,6 +2952,7 @@ impl MacDockEngine {
         self.lnk_target_cache.clear();
         self.tf_tip = None;
         self.tf_left = None;
+        self.tf_left_key = (0, 0);
         self.tf_mono = None;
         self.tf_top_bold = None;
         self.tf_top_reg = None;
@@ -2875,6 +3027,34 @@ impl MacDockEngine {
                             if link.GetPath(&mut buf, &mut fd, SLGP_RAWPATH.0 as u32).is_ok() {
                                 let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
                                 target = String::from_utf16_lossy(&buf[..end]).trim().to_string();
+                            }
+                            if target.is_empty()
+                                || target.to_ascii_lowercase().contains("\\windowsapps\\")
+                            {
+                                if let Ok(ps) = link.cast::<IPropertyStore>() {
+                                    const PKEY_AUMID: PROPERTYKEY = PROPERTYKEY {
+                                        fmtid: windows::core::GUID::from_u128(
+                                            0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3,
+                                        ),
+                                        pid: 5,
+                                    };
+                                    if let Ok(mut pv) = ps.GetValue(&PKEY_AUMID) {
+                                        if let Ok(pw) = PropVariantToStringAlloc(&pv) {
+                                            if !pw.is_null() {
+                                                let aumid = pw
+                                                    .to_string()
+                                                    .unwrap_or_default()
+                                                    .trim()
+                                                    .to_string();
+                                                CoTaskMemFree(Some(pw.0 as *const c_void));
+                                                if !aumid.is_empty() {
+                                                    target = format!("shell:AppsFolder\\{}", aumid);
+                                                }
+                                            }
+                                        }
+                                        let _ = PropVariantClear(&mut pv);
+                                    }
+                                }
                             }
                         }
                     }
@@ -3058,8 +3238,16 @@ impl MacDockEngine {
         let pure_mac_dock = cfg.is_clean_top_bar_active();
         let show_clock = !cfg.w_clock.is_all_elements_off() && !pure_mac_dock;
         let show_tray = !cfg.w_tray.is_all_elements_off() && !pure_mac_dock;
+        // Keep a reachable Hidden Tray chevron on Clean & Minimal bottom docks whenever Top Bar
+        // is OFF (even if audio/wifi/battery tray meters are individually hidden), unless every
+        // dock module has been toggled OFF.
+        let show_hidden_tray = show_tray
+            || (!pure_mac_dock
+                && cfg.tb_theme.is_clean_minimal()
+                && !cfg.is_dock_all_elements_off());
         let show_sliver = cfg.w_util.show_desktop_sliver && !cfg.w_util.is_all_elements_off();
-        let has_right_cluster = show_tray
+        let has_right_cluster = show_hidden_tray
+            || show_tray
             || show_clock
             || cfg.w_util.show_trash
             || cfg.w_util.show_studio
@@ -3083,12 +3271,19 @@ impl MacDockEngine {
                         }
                         new_slots.extend(running_slots);
                     }
-                    if show_tray || show_clock || cfg.w_util.show_trash || cfg.w_util.show_studio {
+                    if show_hidden_tray
+                        || show_tray
+                        || show_clock
+                        || cfg.w_util.show_trash
+                        || cfg.w_util.show_studio
+                    {
                         if !new_slots.is_empty() {
                             new_slots.push(DockSlotKind::IslandGap);
                         }
-                        if show_tray {
+                        if show_hidden_tray {
                             new_slots.push(DockSlotKind::HiddenTrayChevron);
+                        }
+                        if show_tray {
                             new_slots.push(DockSlotKind::TrayStatusCluster);
                         }
                         if show_clock {
@@ -3133,13 +3328,20 @@ impl MacDockEngine {
                             new_slots.extend(running_slots);
                         }
                     }
-                    if show_tray || show_clock || cfg.w_util.show_trash || cfg.w_util.show_studio {
+                    if show_hidden_tray
+                        || show_tray
+                        || show_clock
+                        || cfg.w_util.show_trash
+                        || cfg.w_util.show_studio
+                    {
                         if !new_slots.is_empty() {
                             new_slots.push(DockSlotKind::IslandGap);
                         }
                         // Island 3: Hidden Tray Chevron + Windows Tray + Clock + Trash + Studio
-                        if show_tray {
+                        if show_hidden_tray {
                             new_slots.push(DockSlotKind::HiddenTrayChevron);
+                        }
+                        if show_tray {
                             new_slots.push(DockSlotKind::TrayStatusCluster);
                         }
                         if show_clock {
@@ -3189,8 +3391,10 @@ impl MacDockEngine {
                 if cfg.w_util.show_studio {
                     new_slots.push(DockSlotKind::StudioLauncher);
                 }
-                if show_tray {
+                if show_hidden_tray {
                     new_slots.push(DockSlotKind::HiddenTrayChevron);
+                }
+                if show_tray {
                     new_slots.push(DockSlotKind::TrayStatusCluster);
                 }
                 if show_clock {
@@ -3218,8 +3422,10 @@ impl MacDockEngine {
                         new_slots.push(DockSlotKind::EndDivider);
                     }
                 }
-                if show_tray {
+                if show_hidden_tray {
                     new_slots.push(DockSlotKind::HiddenTrayChevron);
+                }
+                if show_tray {
                     new_slots.push(DockSlotKind::TrayStatusCluster);
                 }
                 if show_clock {
@@ -3252,8 +3458,10 @@ impl MacDockEngine {
                 if show_div && !new_slots.is_empty() && has_right_cluster {
                     new_slots.push(DockSlotKind::EndDivider);
                 }
-                if show_tray {
+                if show_hidden_tray {
                     new_slots.push(DockSlotKind::HiddenTrayChevron);
+                }
+                if show_tray {
                     new_slots.push(DockSlotKind::TrayStatusCluster);
                 }
                 if show_clock {
@@ -3289,8 +3497,10 @@ impl MacDockEngine {
                 if show_div && !new_slots.is_empty() && has_right_cluster {
                     new_slots.push(DockSlotKind::EndDivider);
                 }
-                if show_tray {
+                if show_hidden_tray {
                     new_slots.push(DockSlotKind::HiddenTrayChevron);
+                }
+                if show_tray {
                     new_slots.push(DockSlotKind::TrayStatusCluster);
                 }
                 if show_clock {
@@ -3323,8 +3533,10 @@ impl MacDockEngine {
                 if show_div && !new_slots.is_empty() && has_right_cluster {
                     new_slots.push(DockSlotKind::EndDivider);
                 }
-                if show_tray {
+                if show_hidden_tray {
                     new_slots.push(DockSlotKind::HiddenTrayChevron);
+                }
+                if show_tray {
                     new_slots.push(DockSlotKind::TrayStatusCluster);
                 }
                 if show_clock {
@@ -3406,7 +3618,9 @@ impl MacDockEngine {
         }
 
         let cur_bucket = clock_bucket(cfg);
-        if self.dirty_windows || now.duration_since(self.last_full_sync) >= Duration::from_millis(4000) {
+        if self.dirty_windows
+            || now.duration_since(self.last_full_sync) >= self.fallback_full_sync_interval()
+        {
             let was_dirty = self.dirty_windows;
             self.reconcile_monitors(true);
             let slots_changed = self.rebuild_slots(cfg);
@@ -3509,37 +3723,12 @@ impl MacDockEngine {
         } else {
             pad_span
         };
-        let max_scale = if !cfg.tb_hover_react {
-            1.0
-        } else {
-            let user_mag = (cfg.mac_dock_mag_pct as f32 / 100.0).clamp(1.0, 1.85);
-            match spec.layout {
-                DockLayoutKind::FishEyeShelf => user_mag,
-                DockLayoutKind::MultiIslandBar => {
-                    if cfg.tb_theme.is_clean_minimal() {
-                        (1.0 + (user_mag - 1.0) * 0.48).clamp(1.14, 1.36)
-                    } else {
-                        1.14
-                    }
-                }
-                DockLayoutKind::IndependentOrbs => {
-                    if cfg.tb_theme.is_clean_minimal() {
-                        (1.0 + (user_mag - 1.0) * 0.64).clamp(1.22, 1.48)
-                    } else {
-                        1.22
-                    }
-                }
-                DockLayoutKind::HudConsoleDeck => 1.06,
-                DockLayoutKind::FullEdgeTaskbar => {
-                    if cfg.tb_theme.is_clean_minimal() {
-                        (1.0 + (user_mag - 1.0) * 0.24).clamp(1.08, 1.18)
-                    } else {
-                        1.0
-                    }
-                }
-                DockLayoutKind::InlineMorphRail => 1.0,
-            }
-        };
+        let mon_w = (pane.mon_rect.right - pane.mon_rect.left) as f32;
+        let mon_h = (pane.mon_rect.bottom - pane.mon_rect.top) as f32;
+        let mon_cross = if is_vertical { mon_w } else { mon_h };
+        let max_scale = dock_safe_max_scale(cfg, &spec, base_sz, mon_cross, u);
+        let (inline_pill_w, inline_title_chars, inline_short_chars) =
+            dock_inline_label_metrics(cfg.w_apps.label_font_size_px, u);
         let mag_radius = base_sz * 3.05;
 
         let docked_open = pane.window_shown && pane.slide_t >= 0.12;
@@ -3680,8 +3869,6 @@ impl MacDockEngine {
             lerping = true;
         }
 
-        let mon_w = (pane.mon_rect.right - pane.mon_rect.left) as f32;
-        let mon_h = (pane.mon_rect.bottom - pane.mon_rect.top) as f32;
         let mon_span = if is_vertical { mon_h } else { mon_w };
         let headroom = base_sz * (max_scale - 1.0) + hud_wing_h + 46.0 * u;
         let tip_cross = if is_vertical { 164.0 * u } else { 42.0 * u };
@@ -3701,17 +3888,11 @@ impl MacDockEngine {
                 }
                 DockSlotKind::HiddenTrayChevron => {
                     if is_vertical {
-                        if spec.layout == DockLayoutKind::IndependentOrbs {
-                            (24.0 * u, false, false)
-                        } else {
-                            (24.0 * u, false, false)
-                        }
-                    } else if spec.layout == DockLayoutKind::IndependentOrbs
-                        && !cfg.tb_theme.is_clean_minimal()
-                    {
+                        (26.0 * u, false, false)
+                    } else if spec.layout == DockLayoutKind::IndependentOrbs {
                         (28.0 * u, false, false)
                     } else {
-                        (20.0 * u, false, false)
+                        (26.0 * u, false, false)
                     }
                 }
                 DockSlotKind::TrayStatusCluster => {
@@ -3725,7 +3906,14 @@ impl MacDockEngine {
                     (span, false, false)
                 }
                 DockSlotKind::ActiveAppChip { .. } => {
-                    if is_vertical { (base_sz, false, false) } else { (114.0 * u, false, false) }
+                    if is_vertical {
+                        (base_sz, false, false)
+                    } else {
+                        let extra_lbl =
+                            (cfg.w_apps.label_font_size_px.clamp(10, 20) as f32 - 12.0).max(0.0)
+                                * 6.0;
+                        ((114.0 + extra_lbl) * u, false, false)
+                    }
                 }
                 DockSlotKind::ClockModule { .. } => {
                     if is_vertical {
@@ -3759,7 +3947,7 @@ impl MacDockEngine {
                             }
                         };
                     if want_wide {
-                        (142.0 * u, false, false)
+                        (inline_pill_w.max(base_sz * 1.45), false, false)
                     } else {
                         (base_sz, false, false)
                     }
@@ -4146,12 +4334,14 @@ impl MacDockEngine {
                 }
             }
 
-            let expand_extra = 96.0 * u * sm_ex;
+            let label_scale_t =
+                ((cfg.w_apps.label_font_size_px.clamp(10, 20) as f32 - 10.0) / 10.0).clamp(0.0, 1.0);
+            let expand_extra = (88.0 + label_scale_t * 54.0) * u * sm_ex;
             let final_w = rw * sm_s + expand_extra;
             let ico_sz = if matches!(s, DockSlotKind::HiddenTrayChevron) {
                 (base_sz * 0.50).clamp(15.0 * u, 19.0 * u)
             } else if !is_vertical && rw > base_sz * 1.35 {
-                (base_sz * 0.72).clamp(20.0 * u, 30.0 * u)
+                (base_sz * 0.68).clamp(20.0 * u, 52.0 * u)
             } else if spec.layout == DockLayoutKind::InlineMorphRail && !is_vertical {
                 base_sz * 0.86
             } else {
@@ -4209,16 +4399,21 @@ impl MacDockEngine {
         };
         dock_span *= fit_k;
         pane.last_dock_span = dock_span;
+        let eff_shelf_cross = if fit_k < 0.96 {
+            ((shelf_cross - base_sz) + base_sz * fit_k.max(0.45)).max(46.0 * u)
+        } else {
+            shelf_cross
+        };
 
         let slide_s = smoothstep01(pane.slide_t);
-        let slide_out = (1.0 - slide_s) * (shelf_cross + edge_gap + hud_wing_h + 12.0 * u);
+        let slide_out = (1.0 - slide_s) * (eff_shelf_cross + edge_gap + hud_wing_h + 12.0 * u);
 
         // Compute outer shelf local rect inside canvas
         let mut shelf_rect_f = match cfg.mac_dock_edge {
             MacDockEdge::Bottom => {
                 let cx = canvas_w as f32 * 0.5;
                 let sb = canvas_h as f32 - edge_gap + slide_out;
-                let st = sb - shelf_cross;
+                let st = sb - eff_shelf_cross;
                 D2D_RECT_F {
                     left: cx - dock_span * 0.5,
                     top: st,
@@ -4229,7 +4424,7 @@ impl MacDockEngine {
             MacDockEdge::Top => {
                 let cx = canvas_w as f32 * 0.5;
                 let st = edge_gap - slide_out;
-                let sb = st + shelf_cross;
+                let sb = st + eff_shelf_cross;
                 D2D_RECT_F {
                     left: cx - dock_span * 0.5,
                     top: st,
@@ -4240,7 +4435,7 @@ impl MacDockEngine {
             MacDockEdge::Left => {
                 let cy = canvas_h as f32 * 0.5;
                 let sl = edge_gap - slide_out;
-                let sr = sl + shelf_cross;
+                let sr = sl + eff_shelf_cross;
                 D2D_RECT_F {
                     left: sl,
                     top: cy - dock_span * 0.5,
@@ -4251,7 +4446,7 @@ impl MacDockEngine {
             MacDockEdge::Right => {
                 let cy = canvas_h as f32 * 0.5;
                 let sr = canvas_w as f32 - edge_gap + slide_out;
-                let sl = sr - shelf_cross;
+                let sl = sr - eff_shelf_cross;
                 D2D_RECT_F {
                     left: sl,
                     top: cy - dock_span * 0.5,
@@ -4278,7 +4473,7 @@ impl MacDockEngine {
             MacDockEdge::Left => (shelf_rect_f.left + shelf_rect_f.right) * 0.5 + cross_bias,
             MacDockEdge::Right => (shelf_rect_f.left + shelf_rect_f.right) * 0.5 - cross_bias,
         };
-        let slot_cross = (shelf_cross - 10.0 * u).max(base_sz);
+        let slot_cross = (eff_shelf_cross - 10.0 * u).max(base_sz * fit_k.min(1.0));
 
         for (idx, s) in self.slots.iter().enumerate() {
             let w = slot_widths[idx] * fit_k;
@@ -4402,12 +4597,12 @@ impl MacDockEngine {
                                         | DockRunningLabelMode::ActiveAppOnly
                                 ))
                         {
-                            truncate_title(&w0.title, 18)
+                            truncate_title(&w0.title, inline_title_chars)
                         } else {
-                            truncate_title(name, 14)
+                            truncate_title(name, inline_short_chars)
                         }
                     } else {
-                        truncate_title(name, 14)
+                        truncate_title(name, inline_short_chars)
                     }
                 }
                 _ => label.clone(),
@@ -5025,6 +5220,42 @@ impl MacDockEngine {
         if !was_in && !self.panes[pi].window_shown {
             self.tick(cfg);
         }
+        if let Some(ref mut drag) = self.pinned_drag {
+            if drag.pane_hwnd == hwnd {
+                let mut pt = POINT::default();
+                if unsafe { GetCursorPos(&mut pt).is_ok() } {
+                    let lx = (pt.x - self.panes[pi].canvas_rect.left) as f32;
+                    let ly = (pt.y - self.panes[pi].canvas_rect.top) as f32;
+                    let is_vertical =
+                        matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
+                    let u = self.panes[pi].dpi_u.max(0.75);
+                    let dist = ((lx - drag.start_x).hypot(ly - drag.start_y)).abs();
+                    if !drag.dragging && dist >= 8.0 * u {
+                        drag.dragging = true;
+                        self.thumb_popup.hide();
+                        self.thumb_owner_hwnd = HWND::default();
+                        unsafe {
+                            let _ = SetCapture(hwnd);
+                        }
+                    }
+                    if drag.dragging {
+                        let cursor_axis = if is_vertical { ly } else { lx };
+                        let next_to = compute_drag_reorder_target(
+                            &self.panes[pi].layout,
+                            &self.slots,
+                            cfg.mac_dock_pinned.len(),
+                            is_vertical,
+                            cursor_axis,
+                        );
+                        if next_to != drag.to_pin_idx {
+                            drag.to_pin_idx = next_to;
+                            self.panes[pi].dirty_paint = true;
+                        }
+                        self.tick(cfg);
+                    }
+                }
+            }
+        }
         MacDockAction::None
     }
 
@@ -5243,6 +5474,33 @@ impl MacDockEngine {
         };
         let hit = self.panes[pi].hit_slot_at_client(lx, ly);
         self.panes[pi].pressed_idx = hit;
+        self.pinned_drag = hit.and_then(|sidx| {
+            let DockSlotKind::PinnedApp { path, .. } = self.slots.get(sidx)? else {
+                return None;
+            };
+            let low = path.to_ascii_lowercase();
+            let pin_idx = cfg
+                .mac_dock_pinned
+                .iter()
+                .position(|a| a.path.to_ascii_lowercase() == low)
+                .or_else(|| {
+                    self.slots
+                        .iter()
+                        .take(sidx)
+                        .filter(|s| matches!(s, DockSlotKind::PinnedApp { .. }))
+                        .count()
+                        .checked_sub(0)
+                        .filter(|&i| i < cfg.mac_dock_pinned.len())
+                })?;
+            Some(PinnedDragState {
+                pane_hwnd: hwnd,
+                from_pin_idx: pin_idx,
+                to_pin_idx: pin_idx,
+                start_x: lx,
+                start_y: ly,
+                dragging: false,
+            })
+        });
         // Interactive PBR material impulse ripple at click location (water splash, sonar, glint, droplet)
         self.panes[pi].click_ripple_axis = self.panes[pi].cursor_axis_norm;
         self.panes[pi].click_ripple_t = 0.0;
@@ -5410,7 +5668,12 @@ impl MacDockEngine {
                     } else {
                         MacDockEdge::Top
                     };
-                    toggle_hidden_tray_overflow(hwnd, anchor_rc, edge_for_popup);
+                    toggle_hidden_tray_overflow(
+                        hwnd,
+                        self.icon_notify_hwnd,
+                        anchor_rc,
+                        edge_for_popup,
+                    );
                     return MacDockAction::None;
                 }
                 CleanTopBarItem::Volume
@@ -5464,8 +5727,36 @@ impl MacDockEngine {
             }
         }
         let Some(pi) = self.pane_idx_for_hwnd(hwnd) else {
+            self.cancel_left_press();
             return MacDockAction::None;
         };
+        if let Some(drag) = self.pinned_drag.take() {
+            if drag.dragging {
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+                self.panes[pi].pressed_idx = None;
+                self.panes[pi].dirty_paint = true;
+                let is_vertical =
+                    matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
+                let cursor_axis = if is_vertical { ly } else { lx };
+                let final_to = compute_drag_reorder_target(
+                    &self.panes[pi].layout,
+                    &self.slots,
+                    cfg.mac_dock_pinned.len(),
+                    is_vertical,
+                    cursor_axis,
+                );
+                if reorder_pinned_app(&mut cfg.mac_dock_pinned, drag.from_pin_idx, final_to) {
+                    cfg.dock_sync_win_pins = false;
+                    save_config(cfg);
+                    self.dirty_windows = true;
+                    self.mark_dirty_paint();
+                    return MacDockAction::ConfigUpdated;
+                }
+                return MacDockAction::None;
+            }
+        }
         let clicked = self.panes[pi].hit_slot_at_client(lx, ly);
         let pressed = self.panes[pi].pressed_idx.take();
         self.panes[pi].dirty_paint = true;
@@ -5522,7 +5813,12 @@ impl MacDockEngine {
                         bottom: canvas_rc.top + it.slot_rect.bottom.round() as i32,
                     })
                     .unwrap_or(canvas_rc);
-                toggle_hidden_tray_overflow(self.panes[pi].hwnd, anchor_rc, cfg.mac_dock_edge);
+                toggle_hidden_tray_overflow(
+                    self.panes[pi].hwnd,
+                    self.icon_notify_hwnd,
+                    anchor_rc,
+                    cfg.mac_dock_edge,
+                );
                 MacDockAction::None
             }
             DockSlotKind::TrayStatusCluster => {
@@ -6041,6 +6337,91 @@ impl MacDockEngine {
         }
     }
 
+    pub fn handle_drop_files(
+        &mut self,
+        hwnd: HWND,
+        wparam: WPARAM,
+        cfg: &mut AppConfig,
+    ) -> MacDockAction {
+        let hdrop = HDROP(wparam.0 as *mut c_void);
+        if hdrop.0.is_null() {
+            return MacDockAction::None;
+        }
+        let mut drop_pt = POINT::default();
+        let mut raw_paths: Vec<String> = Vec::new();
+        unsafe {
+            let _ = DragQueryPoint(hdrop, &mut drop_pt);
+            let count = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
+            for i in 0..count.min(MAX_PINNED_APPS as u32) {
+                let len = DragQueryFileW(hdrop, i, None);
+                if len == 0 {
+                    continue;
+                }
+                let mut buf = vec![0u16; (len as usize) + 1];
+                let got = DragQueryFileW(hdrop, i, Some(&mut buf));
+                if got > 0 {
+                    let s = String::from_utf16_lossy(&buf[..got as usize]).trim().to_string();
+                    if !s.is_empty() {
+                        raw_paths.push(s);
+                    }
+                }
+            }
+            DragFinish(hdrop);
+        }
+        if raw_paths.is_empty() {
+            return MacDockAction::None;
+        }
+
+        // Normalize dropped .lnk files that point to Store/UWP AUMIDs while preserving normal .lnk/.exe paths
+        let normalized: Vec<(String, String)> = raw_paths
+            .into_iter()
+            .filter(|p| is_pinnable_drop_path(p))
+            .map(|p| {
+                let disp_name = derive_dropped_pin_name(&p);
+                let effective = if p.to_ascii_lowercase().ends_with(".lnk") {
+                    let resolved = self.resolve_shortcut_target(&p);
+                    if resolved.to_ascii_lowercase().starts_with("shell:appsfolder\\") {
+                        resolved
+                    } else {
+                        p
+                    }
+                } else {
+                    p
+                };
+                (disp_name, effective)
+            })
+            .collect();
+
+        let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
+        let drop_axis = if is_vertical {
+            drop_pt.y as f32
+        } else {
+            drop_pt.x as f32
+        };
+        let insert_at = self
+            .pane_idx_for_hwnd(hwnd)
+            .map(|pi| {
+                compute_drop_pin_insert_index(
+                    &self.panes[pi].layout,
+                    &self.slots,
+                    cfg.mac_dock_pinned.len(),
+                    is_vertical,
+                    drop_axis,
+                )
+            })
+            .unwrap_or(cfg.mac_dock_pinned.len());
+
+        if pin_dropped_items_at(cfg, &normalized, insert_at) {
+            cfg.dock_sync_win_pins = false;
+            save_config(cfg);
+            self.clear_icon_cache();
+            self.dirty_windows = true;
+            self.mark_dirty_paint();
+            return MacDockAction::ConfigUpdated;
+        }
+        MacDockAction::None
+    }
+
     fn show_start_winx_menu(&mut self, pt: POINT, cfg: &mut AppConfig) -> MacDockAction {
         self.menu_open = true;
         let (menu_hw, menu_mon) = (self.menu_hwnd(), self.menu_mon_rect());
@@ -6069,6 +6450,8 @@ impl MacDockEngine {
                 add_menu_item(hmenu, IDM_DOCK_SHOW_DESKTOP, "Desktop");
                 add_menu_item(hmenu, IDM_WINX_LOCK, "Lock Screen");
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                append_clean_top_bar_quick_toggle(hmenu, cfg);
+                append_dock_icon_size_submenu(hmenu, cfg);
                 append_widget_customize_submenu(hmenu, TaskbarWidgetId::Utilities, cfg);
                 append_widget_customize_submenu(hmenu, TaskbarWidgetId::ShelfFrame, cfg);
                 add_menu_item(hmenu, IDM_DOCK_SYNC_WIN_PINS, "Sync Pins from Windows Taskbar");
@@ -6154,11 +6537,14 @@ impl MacDockEngine {
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
                 if cfg.tb_theme.is_clean_minimal() {
-                    add_checked_item(
+                    add_menu_item(
                         hmenu,
                         IDM_CLEAN_TOPBAR_TOGGLE,
-                        "Top Menu Bar (Clean & Minimal)",
-                        cfg.clean_top_bar_enabled,
+                        if cfg.clean_top_bar_enabled {
+                            "Hide Top Bar (Dock Only)"
+                        } else {
+                            "Show Top Bar"
+                        },
                     );
                     add_checked_item(
                         hmenu,
@@ -6203,6 +6589,8 @@ impl MacDockEngine {
                     }
                     let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
                 }
+
+                append_dock_icon_size_submenu(hmenu, cfg);
 
                 if let Ok(edge_sub) = CreatePopupMenu() {
                     add_checked_item(edge_sub, IDM_DOCK_EDGE_BOTTOM, "Bottom Edge", cfg.mac_dock_edge == MacDockEdge::Bottom);
@@ -6381,6 +6769,8 @@ impl MacDockEngine {
                     add_menu_item(hmenu, IDM_DOCK_TRAY_POWER, "Power & Battery Settings...");
                 }
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                append_clean_top_bar_quick_toggle(hmenu, cfg);
+                append_dock_icon_size_submenu(hmenu, cfg);
                 append_widget_customize_submenu(hmenu, TaskbarWidgetId::SystemTray, cfg);
                 add_menu_item(hmenu, IDM_DOCK_TASKMGR, "Task Manager");
                 add_menu_item(hmenu, IDM_DOCK_SETTINGS, "Customize Dock Theme...");
@@ -6459,6 +6849,8 @@ impl MacDockEngine {
                 add_menu_item(hmenu, IDM_DOCK_SHOW_DESKTOP, "Show Desktop");
                 add_menu_item(hmenu, IDM_DOCK_TASKMGR, "Task Manager");
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                append_clean_top_bar_quick_toggle(hmenu, cfg);
+                append_dock_icon_size_submenu(hmenu, cfg);
                 append_widget_customize_submenu(hmenu, TaskbarWidgetId::Clock, cfg);
                 add_menu_item(hmenu, IDM_DOCK_SYNC_WIN_PINS, "Sync Pins from Windows Taskbar");
                 add_menu_item(hmenu, IDM_DOCK_SETTINGS, "Customize Dock Theme...");
@@ -6534,6 +6926,8 @@ impl MacDockEngine {
                     add_grayed_item(hmenu, IDM_DOCK_EMPTY_TRASH, "Empty Recycle Bin");
                 }
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                append_clean_top_bar_quick_toggle(hmenu, cfg);
+                append_dock_icon_size_submenu(hmenu, cfg);
                 append_widget_customize_submenu(hmenu, TaskbarWidgetId::Utilities, cfg);
                 add_menu_item(hmenu, IDM_DOCK_TASKMGR, "Task Manager");
                 add_menu_item(hmenu, IDM_DOCK_SETTINGS, "Customize Dock Theme...");
@@ -6689,6 +7083,8 @@ impl MacDockEngine {
                 }
 
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                append_clean_top_bar_quick_toggle(hmenu, cfg);
+                append_dock_icon_size_submenu(hmenu, cfg);
                 append_widget_customize_submenu(hmenu, TaskbarWidgetId::AppDock, cfg);
                 add_menu_item(hmenu, IDM_DOCK_TASKMGR, "Task Manager");
                 add_menu_item(hmenu, IDM_DOCK_SETTINGS, "Customize Dock Theme...");
@@ -6785,7 +7181,9 @@ impl MacDockEngine {
                                 let low = launch_target.to_ascii_lowercase();
                                 cfg.mac_dock_pinned
                                     .retain(|a| a.path.to_ascii_lowercase() != low);
-                            } else if !effective_target.is_empty() && cfg.mac_dock_pinned.len() < 16 {
+                            } else if !effective_target.is_empty()
+                                && cfg.mac_dock_pinned.len() < MAX_PINNED_APPS
+                            {
                                 let low = effective_target.to_ascii_lowercase();
                                 if !cfg.mac_dock_pinned.iter().any(|a| a.path.to_ascii_lowercase() == low) {
                                     cfg.mac_dock_pinned.push(AppShortcut {
@@ -6828,6 +7226,26 @@ impl MacDockEngine {
     }
 
     fn handle_widget_menu_cmd(&mut self, cmd: usize, cfg: &mut AppConfig) -> Option<MacDockAction> {
+        if cmd == IDM_CLEAN_TOPBAR_TOGGLE {
+            cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
+            if cfg.clean_top_bar_enabled {
+                cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
+            }
+            save_config(cfg);
+            self.dirty_windows = true;
+            self.mark_dirty_paint();
+            return Some(MacDockAction::ConfigUpdated);
+        }
+        if (IDM_DOCK_ICON_SIZE_BASE..IDM_DOCK_ICON_SIZE_BASE + DOCK_ICON_SIZE_PRESETS.len())
+            .contains(&cmd)
+        {
+            let px = DOCK_ICON_SIZE_PRESETS[cmd - IDM_DOCK_ICON_SIZE_BASE];
+            cfg.mac_dock_icon_size = px.clamp(32, 96);
+            save_config(cfg);
+            self.dirty_windows = true;
+            self.mark_dirty_paint();
+            return Some(MacDockAction::ConfigUpdated);
+        }
         if !(4500..4800).contains(&cmd) {
             return None;
         }
@@ -7063,7 +7481,9 @@ impl MacDockEngine {
                     }
                     if b.is_none() && !target_exe.is_empty() {
                         let low_t = target_exe.to_ascii_lowercase();
-                        if !low_t.ends_with("wt.exe")
+                        if low_t.starts_with("shell:") {
+                            b = load_app_bitmap_for_path(wic, rt, &target_exe, false);
+                        } else if !low_t.ends_with("wt.exe")
                             && !low_t.contains("\\windowsapps\\")
                             && Path::new(&target_exe).exists()
                         {
@@ -7815,10 +8235,41 @@ impl MacDockEngine {
         rt.EndDraw(None, None).is_ok()
     }
 
+    fn ensure_label_text_format(&mut self, cfg: &AppConfig, u: f32) {
+        let size_px = cfg.w_apps.label_font_size_px.clamp(10, 20);
+        let dpi_q100 = (u.clamp(0.75, 3.0) * 100.0).round() as u16;
+        let key = (size_px, dpi_q100);
+        if self.tf_left.is_some() && self.tf_left_key == key {
+            return;
+        }
+        let Some(ref dw) = self.dw else {
+            return;
+        };
+        let eff_px = (size_px as f32 * (dpi_q100 as f32 / 100.0)).clamp(10.0, 44.0);
+        unsafe {
+            if let Ok(tfl) = dw.CreateTextFormat(
+                w!("Segoe UI Variable Text"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                eff_px,
+                w!("en-US"),
+            ) {
+                let _ = tfl.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                let _ = tfl.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = tfl.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                self.tf_left = Some(tfl);
+                self.tf_left_key = key;
+            }
+        }
+    }
+
     fn render_pane(&mut self, pane: &mut DockMonitorPane, cfg: &AppConfig, shelf_r: D2D_RECT_F) {
         if !self.ensure_graphics() {
             return;
         }
+        self.ensure_label_text_format(cfg, pane.dpi_u);
         let cw = (pane.canvas_rect.right - pane.canvas_rect.left).max(4);
         let ch = (pane.canvas_rect.bottom - pane.canvas_rect.top).max(4);
         if !pane.surface.ensure_size(cw, ch) {
@@ -8575,6 +9026,58 @@ impl MacDockEngine {
                         item.is_active,
                         u,
                     );
+                }
+            }
+
+            // Drag-to-reorder insertion marker bar while dragging a pinned app along the rail
+            if let Some(ref drag) = self.pinned_drag {
+                if drag.dragging && drag.pane_hwnd == pane.hwnd {
+                    let pinned_items: Vec<&DockLayoutSlot> = pane
+                        .layout
+                        .iter()
+                        .filter(|it| matches!(self.slots.get(it.slot_idx), Some(DockSlotKind::PinnedApp { .. })))
+                        .collect();
+                    if !pinned_items.is_empty() {
+                        let is_vert_drag = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
+                        let target_idx = drag.to_pin_idx.min(pinned_items.len().saturating_sub(1));
+                        let target_it = pinned_items[target_idx];
+                        let after = drag.to_pin_idx > drag.from_pin_idx;
+                        br.SetColor(&rgba(255, 199, 82, 0.95));
+                        let marker = if is_vert_drag {
+                            let my = if after {
+                                target_it.slot_rect.bottom + 1.5 * u
+                            } else {
+                                target_it.slot_rect.top - 1.5 * u
+                            };
+                            D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: shelf_r.left + 8.0 * u,
+                                    top: my - 1.6 * u,
+                                    right: shelf_r.right - 8.0 * u,
+                                    bottom: my + 1.6 * u,
+                                },
+                                radiusX: 1.6 * u,
+                                radiusY: 1.6 * u,
+                            }
+                        } else {
+                            let mx = if after {
+                                target_it.slot_rect.right + 1.5 * u
+                            } else {
+                                target_it.slot_rect.left - 1.5 * u
+                            };
+                            D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: mx - 1.6 * u,
+                                    top: shelf_r.top + 8.0 * u,
+                                    right: mx + 1.6 * u,
+                                    bottom: shelf_r.bottom - 8.0 * u,
+                                },
+                                radiusX: 1.6 * u,
+                                radiusY: 1.6 * u,
+                            }
+                        };
+                        rt.FillRoundedRectangle(&marker, &br);
+                    }
                 }
             }
 
@@ -9599,12 +10102,22 @@ unsafe fn shell_path_to_pbgra(
         PCWSTR(wide.as_ptr()),
         None,
     ) {
-        for flags in [
-            SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
-            SIIGBF_BIGGERSIZEOK,
-            SIIGBF(0),
-        ] {
-            if let Ok(hbm) = factory.GetImage(SIZE { cx: 128, cy: 128 }, flags) {
+        let is_shell_uri = parsing_path.to_ascii_lowercase().starts_with("shell:");
+        let flag_order = if is_shell_uri {
+            [
+                SIIGBF_BIGGERSIZEOK,
+                SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+                SIIGBF(0),
+            ]
+        } else {
+            [
+                SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+                SIIGBF_BIGGERSIZEOK,
+                SIIGBF(0),
+            ]
+        };
+        for flags in flag_order {
+            if let Ok(hbm) = factory.GetImage(SIZE { cx: 256, cy: 256 }, flags) {
                 let res = wic
                     .CreateBitmapFromHBITMAP(hbm, HPALETTE::default(), WICBitmapUseAlpha)
                     .ok()
@@ -9716,7 +10229,11 @@ unsafe fn decode_dock_icon_pbgra(
         }
         if !req.target_exe.is_empty() {
             let low_t = req.target_exe.to_ascii_lowercase();
-            if !low_t.ends_with("wt.exe")
+            if low_t.starts_with("shell:") {
+                if let Some(px) = shell_path_to_pbgra(wic, &req.target_exe) {
+                    return Some(px);
+                }
+            } else if !low_t.ends_with("wt.exe")
                 && !low_t.contains("\\windowsapps\\")
                 && Path::new(&req.target_exe).exists()
             {
@@ -9765,10 +10282,217 @@ unsafe fn hicon_to_d2d(
     wic_src_to_d2d(wic, rt, &src, false)
 }
 
+fn is_pinnable_drop_path(path: &str) -> bool {
+    let t = path.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let low = t.to_ascii_lowercase();
+    if low.starts_with("shell:appsfolder\\") {
+        return true;
+    }
+    matches!(
+        Path::new(t)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("exe" | "lnk" | "url" | "appref-ms" | "bat" | "cmd" | "msc")
+    )
+}
+
+fn derive_dropped_pin_name(path: &str) -> String {
+    let t = path.trim();
+    if t.len() > 17 && t[..17].eq_ignore_ascii_case("shell:appsfolder\\") {
+        let aumid = &t[17..];
+        let base = aumid
+            .split('!')
+            .next()
+            .unwrap_or(aumid)
+            .split('_')
+            .next()
+            .unwrap_or(aumid);
+        let tail = base.rsplit('.').next().unwrap_or(base).trim();
+        if !tail.is_empty() {
+            return tail.to_string();
+        }
+    }
+    let stem = Path::new(t)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(t)
+        .trim();
+    if stem.is_empty() {
+        "App".to_string()
+    } else {
+        let mut chars = stem.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_lowercase() && stem.chars().all(|ch| !ch.is_ascii_uppercase()) => {
+                format!("{}{}", c.to_ascii_uppercase(), chars.as_str())
+            }
+            _ => stem.to_string(),
+        }
+    }
+}
+
+fn compute_drop_pin_insert_index(
+    layout: &[DockLayoutSlot],
+    slots: &[DockSlotKind],
+    pinned_len: usize,
+    is_vertical: bool,
+    drop_axis: f32,
+) -> usize {
+    let mut pin_idx = 0usize;
+    for it in layout {
+        if matches!(slots.get(it.slot_idx), Some(DockSlotKind::PinnedApp { .. })) {
+            let center = if is_vertical { it.center_y } else { it.center_x };
+            if drop_axis < center {
+                return pin_idx.min(pinned_len);
+            }
+            pin_idx += 1;
+        }
+    }
+    pinned_len
+}
+
+fn compute_drag_reorder_target(
+    layout: &[DockLayoutSlot],
+    slots: &[DockSlotKind],
+    pinned_len: usize,
+    is_vertical: bool,
+    cursor_axis: f32,
+) -> usize {
+    if pinned_len <= 1 {
+        return 0;
+    }
+    let mut centers: Vec<f32> = Vec::with_capacity(pinned_len);
+    for it in layout {
+        if matches!(slots.get(it.slot_idx), Some(DockSlotKind::PinnedApp { .. })) {
+            centers.push(if is_vertical { it.center_y } else { it.center_x });
+        }
+    }
+    if centers.is_empty() {
+        return 0;
+    }
+    let mut best_idx = 0usize;
+    let mut best_dist = f32::MAX;
+    for (i, &c) in centers.iter().enumerate() {
+        let d = (cursor_axis - c).abs();
+        if d < best_dist {
+            best_dist = d;
+            best_idx = i;
+        }
+    }
+    best_idx.min(pinned_len.saturating_sub(1))
+}
+
+fn reorder_pinned_app(pinned: &mut Vec<AppShortcut>, from_idx: usize, to_idx: usize) -> bool {
+    if from_idx >= pinned.len() || to_idx >= pinned.len() || from_idx == to_idx {
+        return false;
+    }
+    let item = pinned.remove(from_idx);
+    pinned.insert(to_idx, item);
+    true
+}
+
+fn pin_dropped_items_at(
+    cfg: &mut AppConfig,
+    items: &[(String, String)],
+    insert_at: usize,
+) -> bool {
+    let mut changed = false;
+    let mut pos = insert_at.min(cfg.mac_dock_pinned.len());
+    for (name, path) in items {
+        if cfg.mac_dock_pinned.len() >= MAX_PINNED_APPS {
+            break;
+        }
+        let target = path.trim();
+        if target.is_empty() {
+            continue;
+        }
+        let low = target.to_ascii_lowercase();
+        if cfg
+            .mac_dock_pinned
+            .iter()
+            .any(|a| a.path.to_ascii_lowercase() == low)
+        {
+            continue;
+        }
+        let clean_name = if name.trim().is_empty() {
+            derive_dropped_pin_name(target)
+        } else {
+            name.trim().to_string()
+        };
+        cfg.mac_dock_pinned.insert(
+            pos.min(cfg.mac_dock_pinned.len()),
+            AppShortcut {
+                name: clean_name,
+                path: target.to_string(),
+                offset_x: 0,
+                offset_y: 0,
+            },
+        );
+        pos += 1;
+        changed = true;
+    }
+    changed
+}
+
+fn dock_inline_label_metrics(label_font_size_px: u8, u: f32) -> (f32, usize, usize) {
+    let px = label_font_size_px.clamp(10, 20) as f32;
+    let t = (px - 10.0) / 10.0;
+    let pill_w = (136.0 + t * 84.0) * u;
+    let title_chars = (14.0 + t * 14.0).round() as usize;
+    let short_chars = (12.0 + t * 10.0).round() as usize;
+    (pill_w, title_chars, short_chars)
+}
+
+fn dock_safe_max_scale(
+    cfg: &AppConfig,
+    spec: &DockVisualSpec,
+    base_sz: f32,
+    mon_cross: f32,
+    u: f32,
+) -> f32 {
+    if !cfg.tb_hover_react {
+        return 1.0;
+    }
+    let user_mag = (cfg.mac_dock_mag_pct as f32 / 100.0).clamp(1.0, 1.85);
+    let raw_scale = match spec.layout {
+        DockLayoutKind::FishEyeShelf => user_mag,
+        DockLayoutKind::MultiIslandBar => {
+            if cfg.tb_theme.is_clean_minimal() {
+                (1.0 + (user_mag - 1.0) * 0.48).clamp(1.14, 1.36)
+            } else {
+                1.14
+            }
+        }
+        DockLayoutKind::IndependentOrbs => {
+            if cfg.tb_theme.is_clean_minimal() {
+                (1.0 + (user_mag - 1.0) * 0.64).clamp(1.22, 1.48)
+            } else {
+                1.22
+            }
+        }
+        DockLayoutKind::HudConsoleDeck => 1.06,
+        DockLayoutKind::FullEdgeTaskbar => {
+            if cfg.tb_theme.is_clean_minimal() {
+                (1.0 + (user_mag - 1.0) * 0.24).clamp(1.08, 1.18)
+            } else {
+                1.0
+            }
+        }
+        DockLayoutKind::InlineMorphRail => 1.0,
+    };
+    let max_visual_ico = (mon_cross * 0.18).min(140.0 * u).max(base_sz);
+    let cross_cap = (max_visual_ico / base_sz.max(1.0)).clamp(1.0, 1.85);
+    raw_scale.min(cross_cap)
+}
+
 fn dock_cross_metrics(cfg: &AppConfig, u: f32) -> (DockVisualSpec, bool, f32, f32, f32, f32) {
     let spec = resolve_shelf_spec(cfg);
     let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
-    let base_sz = (cfg.mac_dock_icon_size as f32).clamp(34.0, 56.0) * u;
+    let base_sz = (cfg.mac_dock_icon_size as f32).clamp(32.0, 96.0) * u;
     let shelf_cross = if matches!(
         cfg.tb_theme,
         TaskbarTheme::Os26LiquidGlassLight | TaskbarTheme::Os26LiquidGlassDark
@@ -10244,11 +10968,180 @@ unsafe fn sync_rehide_tray_window(tray: HWND, was_tray_hidden: bool) {
     set_tray_region_hidden(tray, false);
 }
 
+pub const WM_APP_TRAY_OVERFLOW_FALLBACK: u32 = WM_APP + 33;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TrayOverflowFallbackReq {
+    dock_hwnd: isize,
+    anchor_rect: RECT,
+    edge: MacDockEdge,
+}
+
+static PENDING_TRAY_FALLBACK: std::sync::Mutex<Option<TrayOverflowFallbackReq>> =
+    std::sync::Mutex::new(None);
+
+fn store_tray_overflow_fallback(req: TrayOverflowFallbackReq) {
+    if let Ok(mut slot) = PENDING_TRAY_FALLBACK.lock() {
+        *slot = Some(req);
+    }
+}
+
+fn take_pending_tray_overflow_fallback() -> Option<TrayOverflowFallbackReq> {
+    PENDING_TRAY_FALLBACK.lock().ok().and_then(|mut s| s.take())
+}
+
+unsafe fn enqueue_tray_overflow_fallback(
+    dock_hwnd: HWND,
+    notify_hwnd: HWND,
+    anchor_rect: RECT,
+    edge: MacDockEdge,
+) -> bool {
+    let post_target = if !dock_hwnd.0.is_null() && IsWindow(Some(dock_hwnd)).as_bool() {
+        dock_hwnd
+    } else if !notify_hwnd.0.is_null() && IsWindow(Some(notify_hwnd)).as_bool() {
+        notify_hwnd
+    } else {
+        return false;
+    };
+    store_tray_overflow_fallback(TrayOverflowFallbackReq {
+        dock_hwnd: dock_hwnd.0 as isize,
+        anchor_rect,
+        edge,
+    });
+    PostMessageW(
+        Some(post_target),
+        WM_APP_TRAY_OVERFLOW_FALLBACK,
+        WPARAM(0),
+        LPARAM(0),
+    )
+    .is_ok()
+}
+
+/// Scores a UIA `Button` candidate inside `Shell_TrayWnd` / `TrayNotifyWnd` for being the
+/// "Show Hidden Icons" chevron without depending on English-only strings.
+///
+/// Priority tiers:
+/// - `100`: Locale-independent AutomationId / XAML ClassName (`Chevron`, `Overflow`, `Hidden`, classic ID `1502`).
+/// - `80`: Multilingual localized accessible Name match (EN/DE/FR/ES/PT/IT/NL/PL/CS/TR/RU/UK/JA/KO/ZH/AR/HI/SV/NO/DA).
+/// - `60`: Locale-independent Win11 XAML structural match (`AutomationId == "SystemTrayIcon"` with `TogglePattern`,
+///         excluding clock/control-center/input/notification/show-desktop buttons).
+/// - `40`: Locale-independent Win10 / ExplorerPatcher / StartAllBack classic `TrayNotifyWnd` `Button` child.
+fn score_tray_chevron_candidate(
+    aid: &str,
+    class_name: &str,
+    name: &str,
+    has_toggle_pattern: bool,
+    in_tray_notify: bool,
+) -> u8 {
+    let aid_l = aid.trim().to_lowercase();
+    let cls_l = class_name.trim().to_lowercase();
+    let name_l = name.trim().to_lowercase();
+
+    // Tier 1: Locale-independent AutomationId or XAML/Win32 ClassName markers
+    if cls_l.contains("chevron")
+        || cls_l.contains("overflow")
+        || aid_l.contains("chevron")
+        || aid_l.contains("overflow")
+        || aid_l.contains("hidden")
+        || aid_l == "1502"
+    {
+        return 100;
+    }
+
+    // Tier 2: Multilingual localized Name markers for "Show hidden icons" / overflow
+    const LOCALIZED_HINTS: &[&str] = &[
+        "hidden",
+        "overflow",
+        "chevron",
+        "ausgeblendete",
+        "masqu",
+        "cach",
+        "ocult",
+        "nascost",
+        "verborgen",
+        "ukryt",
+        "skryt",
+        "gizli",
+        "скрыт",
+        "прихован",
+        "隠れ",
+        "オーバーフロー",
+        "숨겨진",
+        "隐藏",
+        "隱藏",
+        "المخفية",
+        "छिपे",
+        "dolda",
+        "skjult",
+    ];
+    if LOCALIZED_HINTS.iter().any(|h| name_l.contains(h)) {
+        return 80;
+    }
+
+    // Exclude well-known non-chevron taskbar / tray buttons before structural fallbacks
+    const EXCLUDED_TOKENS: &[&str] = &[
+        "clock",
+        "controlcenter",
+        "quicksettings",
+        "notification",
+        "inputindicator",
+        "language",
+        "keyboard",
+        "showdesktop",
+        "startbutton",
+        "searchbutton",
+        "taskview",
+        "widget",
+        "copilot",
+        "chat",
+        "volume",
+        "network",
+        "battery",
+        "trayclock",
+        "trayshowdesktop",
+    ];
+    let is_excluded = EXCLUDED_TOKENS
+        .iter()
+        .any(|t| aid_l.contains(t) || cls_l.contains(t) || name_l.contains(t));
+    if is_excluded {
+        return 0;
+    }
+
+    // Tier 3: Windows 11 22H2–26H2 XAML tray chevron exposes AutomationId="SystemTrayIcon" + TogglePattern,
+    // whereas pinned third-party tray app icons only expose InvokePattern.
+    if aid_l == "systemtrayicon" && has_toggle_pattern {
+        return 60;
+    }
+
+    // Tier 4: Classic Win10 / ExplorerPatcher / StartAllBack chevron is a Win32 Button inside TrayNotifyWnd.
+    if in_tray_notify && cls_l == "button" {
+        return 40;
+    }
+
+    0
+}
+
+fn is_explorer_tray_class(class_name: &str) -> bool {
+    let cls = class_name.trim();
+    [
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "TrayNotifyWnd",
+        "ReBarWindow32",
+        "TopLevelWindowForOverflowXamlIsland",
+        "NotifyIconOverflowWindow",
+        "Windows.UI.Core.CoreWindow",
+    ]
+    .iter()
+    .any(|expected| cls.eq_ignore_ascii_case(expected))
+}
+
 unsafe fn try_chevron_in_root(
     uia: &IUIAutomation,
     btn_cond: &IUIAutomationCondition,
     cache_req: &IUIAutomationCacheRequest,
     root_hwnd: HWND,
+    in_tray_notify: bool,
 ) -> bool {
     if root_hwnd.0.is_null() {
         return false;
@@ -10260,31 +11153,37 @@ unsafe fn try_chevron_in_root(
         return false;
     };
     let count = arr.Length().unwrap_or(0).min(100);
+    let mut candidates = Vec::new();
     for i in 0..count {
         let Ok(el) = arr.GetElement(i) else { continue };
         let name = el
             .CachedName()
-            .map(|b| b.to_string().to_ascii_lowercase())
+            .map(|b| b.to_string())
             .unwrap_or_default();
         let aid = el
             .CachedAutomationId()
-            .map(|b| b.to_string().to_ascii_lowercase())
+            .map(|b| b.to_string())
             .unwrap_or_default();
-        let is_chevron = name.contains("hidden")
-            || name.contains("overflow")
-            || name.contains("chevron")
-            || aid.contains("hidden")
-            || aid.contains("chevron")
-            || aid.contains("overflow");
-        if !is_chevron {
-            continue;
-        }
-        // Windows 11 22H2-26300 uses a XAML ToggleButton for Show Hidden Icons
-        if let Ok(tog) = el
+        let cls = el
+            .CachedClassName()
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        let tog = el
             .GetCachedPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
             .or_else(|_| el.GetCurrentPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId))
-        {
-            if tog.Toggle().is_ok() {
+            .ok();
+        let score = score_tray_chevron_candidate(&aid, &cls, &name, tog.is_some(), in_tray_notify);
+        if score > 0 {
+            candidates.push((score, el, tog));
+        }
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_score, el, tog) in candidates {
+        // Grant Explorer foreground permission BEFORE Toggle()/Invoke() so Win11's XAML overflow
+        // flyout is allowed to activate instead of immediately light-dismissing.
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        if let Some(tog_pat) = tog {
+            if tog_pat.Toggle().is_ok() {
                 return true;
             }
         }
@@ -10316,20 +11215,245 @@ unsafe fn trigger_tray_chevron_uia(tray: HWND) -> bool {
     };
     let _ = cache_req.AddProperty(UIA_NamePropertyId);
     let _ = cache_req.AddProperty(UIA_AutomationIdPropertyId);
+    let _ = cache_req.AddProperty(UIA_ClassNamePropertyId);
     let _ = cache_req.AddPattern(UIA_TogglePatternId);
     let _ = cache_req.AddPattern(UIA_InvokePatternId);
     let _ = cache_req.SetTreeScope(TreeScope_Element);
 
     // Search the compact TrayNotifyWnd child subtree first (~5 buttons) before falling back to full tray.
     if let Ok(notify) = FindWindowExW(Some(tray), None, w!("TrayNotifyWnd"), PCWSTR::null()) {
-        if !notify.0.is_null() && try_chevron_in_root(&uia, &btn_cond, &cache_req, notify) {
+        if !notify.0.is_null() && try_chevron_in_root(&uia, &btn_cond, &cache_req, notify, true) {
             return true;
         }
     }
-    try_chevron_in_root(&uia, &btn_cond, &cache_req, tray)
+    try_chevron_in_root(&uia, &btn_cond, &cache_req, tray, false)
 }
 
-fn toggle_hidden_tray_overflow(dock_hwnd: HWND, anchor_rect: RECT, edge: MacDockEdge) {
+unsafe fn trigger_tray_chevron_bm_click(tray: HWND) -> HWND {
+    let Ok(notify) = FindWindowExW(Some(tray), None, w!("TrayNotifyWnd"), PCWSTR::null()) else {
+        return HWND::default();
+    };
+    if notify.0.is_null() {
+        return HWND::default();
+    }
+    // Control ID 1502 is the standard Win32 Notification Chevron inside TrayNotifyWnd
+    // (Win10, ExplorerPatcher, StartAllBack); fall back to first child Button if remapped.
+    let btn = GetDlgItem(Some(notify), 1502)
+        .ok()
+        .filter(|h| !h.0.is_null())
+        .or_else(|| {
+            FindWindowExW(Some(notify), None, w!("Button"), PCWSTR::null())
+                .ok()
+                .filter(|h| !h.0.is_null())
+        });
+    let Some(btn) = btn else {
+        return HWND::default();
+    };
+    let _ = AllowSetForegroundWindow(ASFW_ANY);
+    const BM_CLICK_MSG: u32 = 0x00F5;
+    let _ = SendMessageTimeoutW(
+        btn,
+        BM_CLICK_MSG,
+        WPARAM(0),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        120,
+        None,
+    );
+    for _ in 0..10 {
+        if TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        let ov = find_tray_overflow_hwnd(true);
+        if !ov.0.is_null() {
+            return ov;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    HWND::default()
+}
+
+unsafe fn trigger_tray_chevron_win_b(tray: HWND) -> HWND {
+    if tray.0.is_null() {
+        return HWND::default();
+    }
+    let mut tray_pid: u32 = 0;
+    let _ = GetWindowThreadProcessId(tray, Some(&mut tray_pid));
+    if tray_pid == 0 {
+        return HWND::default();
+    }
+
+    let _ = AllowSetForegroundWindow(ASFW_ANY);
+    send_win_chord(0x42); // Win+B focuses Windows' Notification Chevron in any OS language
+
+    let mut focused_tray = false;
+    for _ in 0..6 {
+        if TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+            return HWND::default();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        let ov = find_tray_overflow_hwnd(true);
+        if !ov.0.is_null() {
+            return ov;
+        }
+        let fg = GetForegroundWindow();
+        if !fg.0.is_null() {
+            let mut fg_pid: u32 = 0;
+            let _ = GetWindowThreadProcessId(fg, Some(&mut fg_pid));
+            if fg_pid == tray_pid {
+                let mut cls_buf = [0u16; 128];
+                let n = GetClassNameW(fg, &mut cls_buf) as usize;
+                let cls = String::from_utf16_lossy(&cls_buf[..n]);
+                if is_explorer_tray_class(&cls) {
+                    focused_tray = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Only press Enter when focus verifiably landed on Explorer's taskbar/tray so we never
+    // send a stray Enter keystroke into the user's active application.
+    if focused_tray {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        send_single_key(VK_RETURN.0);
+        for _ in 0..14 {
+            if TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            let ov = find_tray_overflow_hwnd(true);
+            if !ov.0.is_null() {
+                return ov;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    HWND::default()
+}
+
+/// Wakes a hidden `Shell_TrayWnd` clipped to a `0x0` region (zero pixels drawn, no `WS_EX_LAYERED`
+/// white-bar corruption) and synchronizes Explorer's UI thread via `WM_NULL` before UIA/input.
+unsafe fn wake_hidden_tray_for_overflow(tray: HWND) {
+    let _ = AllowSetForegroundWindow(ASFW_ANY);
+    set_tray_region_hidden(tray, true);
+    let _ = DwmFlush();
+    let _ = ShowWindow(tray, SW_SHOWNA);
+    set_tray_region_hidden(tray, true);
+    let _ = SendMessageTimeoutW(
+        tray,
+        WM_NULL,
+        WPARAM(0),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        60,
+        None,
+    );
+}
+
+unsafe fn anchor_and_monitor_tray_overflow(
+    ov: HWND,
+    tray: HWND,
+    was_tray_hidden: bool,
+    anchor_rect: RECT,
+    edge: MacDockEdge,
+) {
+    let position_ov = |target_ov: HWND| {
+        let mut ov_rc = RECT::default();
+        if GetWindowRect(target_ov, &mut ov_rc).is_ok() {
+            let ov_w = (ov_rc.right - ov_rc.left).max(100);
+            let ov_h = (ov_rc.bottom - ov_rc.top).max(60);
+            let cx = (anchor_rect.left + anchor_rect.right) / 2;
+            let cy = (anchor_rect.top + anchor_rect.bottom) / 2;
+            let mut mon_rc = RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            };
+            let hmon = MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(hmon, &mut mi).as_bool() {
+                mon_rc = mi.rcMonitor;
+            }
+            let (tx, ty) = compute_tray_overflow_pos(anchor_rect, edge, mon_rc, ov_w, ov_h);
+            let _ = SetWindowPos(
+                target_ov,
+                Some(HWND_TOPMOST),
+                tx,
+                ty,
+                0,
+                0,
+                SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+        }
+    };
+    position_ov(ov);
+    let _ = AllowSetForegroundWindow(ASFW_ANY);
+    let _ = SetForegroundWindow(ov);
+    // Re-anchor once after XAML finishes layout settle
+    std::thread::sleep(Duration::from_millis(35));
+    if is_overflow_actually_open(ov) {
+        position_ov(ov);
+    }
+
+    // Keep Shell_TrayWnd clipped to 0x0 while overflow is open so Explorer does not
+    // auto-dismiss its owned XAML island; synchronize SW_HIDE + DwmFlush before unclipping.
+    TRAY_OVERFLOW_SUMMONING.store(false, std::sync::atomic::Ordering::SeqCst);
+    if was_tray_hidden {
+        let wait_start = Instant::now();
+        while is_overflow_actually_open(ov)
+            && wait_start.elapsed() < Duration::from_secs(30)
+            && !TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        sync_rehide_tray_window(tray, true);
+    }
+    TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn retry_hidden_tray_overflow_win_b(anchor_rect: RECT, edge: MacDockEdge) {
+    if TRAY_OVERFLOW_SUMMONING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    TRAY_OVERFLOW_ABORT.store(false, std::sync::atomic::Ordering::SeqCst);
+    std::thread::spawn(move || unsafe {
+        struct BusyGuard;
+        impl Drop for BusyGuard {
+            fn drop(&mut self) {
+                TRAY_OVERFLOW_SUMMONING.store(false, std::sync::atomic::Ordering::SeqCst);
+                TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _guard = BusyGuard;
+
+        let tray = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).unwrap_or_default();
+        let was_tray_hidden = !tray.0.is_null() && !IsWindowVisible(tray).as_bool();
+        TRAY_OVERFLOW_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        if was_tray_hidden {
+            wake_hidden_tray_for_overflow(tray);
+            std::thread::sleep(Duration::from_millis(60));
+        }
+        let ov = trigger_tray_chevron_win_b(tray);
+        if !ov.0.is_null() {
+            anchor_and_monitor_tray_overflow(ov, tray, was_tray_hidden, anchor_rect, edge);
+        } else {
+            sync_rehide_tray_window(tray, was_tray_hidden);
+            TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+}
+
+fn toggle_hidden_tray_overflow(
+    dock_hwnd: HWND,
+    notify_hwnd: HWND,
+    anchor_rect: RECT,
+    edge: MacDockEdge,
+) {
     unsafe {
         let vis_ov = find_tray_overflow_hwnd(true);
         if !vis_ov.0.is_null() {
@@ -10343,6 +11467,7 @@ fn toggle_hidden_tray_overflow(dock_hwnd: HWND, anchor_rect: RECT, edge: MacDock
     }
     TRAY_OVERFLOW_ABORT.store(false, std::sync::atomic::Ordering::SeqCst);
     let dock_raw = dock_hwnd.0 as isize;
+    let notify_raw = notify_hwnd.0 as isize;
     std::thread::spawn(move || unsafe {
         struct BusyGuard;
         impl Drop for BusyGuard {
@@ -10358,168 +11483,108 @@ fn toggle_hidden_tray_overflow(dock_hwnd: HWND, anchor_rect: RECT, edge: MacDock
         let was_tray_hidden = !tray.0.is_null() && !IsWindowVisible(tray).as_bool();
         TRAY_OVERFLOW_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        // 1. Temporarily wake Shell_TrayWnd clipped to a 0x0 empty window region (zero pixels drawn,
-        // no WS_EX_LAYERED white-bar corruption) so Win11's XAML tray island honors overflow toggle.
+        // 1. Grant foreground handoff BEFORE waking or invoking Explorer so Win11's XAML
+        // overflow island is permitted to activate cleanly.
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
         if was_tray_hidden {
-            set_tray_region_hidden(tray, true);
-            let _ = DwmFlush();
-            let _ = ShowWindow(tray, SW_SHOWNA);
-            set_tray_region_hidden(tray, true);
+            wake_hidden_tray_for_overflow(tray);
         }
 
         let mut ov = HWND::default();
         if !tray.0.is_null() {
-            let mut uia_invoked = false;
-            // At most 2 single-RPC cached UIA probes (avoids hammering Explorer's UI thread at boot).
-            for delay_ms in [35u64, 150] {
+            // Up to 350ms cumulative wake budget (35 + 95 + 220ms) for cold Win11 XAML islands.
+            let wake_delays: &[u64] = if was_tray_hidden {
+                &[35, 95, 220]
+            } else {
+                &[0, 120]
+            };
+            let mut uia_attempts = 0u32;
+            for &delay_ms in wake_delays {
                 if TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(delay_ms));
+                if delay_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                }
+                // Catch a late-opening flyout before issuing another Toggle().
+                ov = find_tray_overflow_hwnd(true);
+                if !ov.0.is_null() {
+                    break;
+                }
                 if trigger_tray_chevron_uia(tray) {
-                    uia_invoked = true;
-                    for _ in 0..16 {
+                    uia_attempts += 1;
+                    for _ in 0..14 {
+                        if TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+                            break;
+                        }
                         ov = find_tray_overflow_hwnd(true);
                         if !ov.0.is_null() {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(20));
                     }
-                    break;
-                }
-            }
-            if ov.0.is_null() && !uia_invoked {
-                if let Ok(notify) = FindWindowExW(Some(tray), None, w!("TrayNotifyWnd"), PCWSTR::null()) {
-                    if !notify.0.is_null() {
-                        if let Ok(btn) = FindWindowExW(Some(notify), None, w!("Button"), PCWSTR::null()) {
-                            if !btn.0.is_null() {
-                                const BM_CLICK_MSG: u32 = 0x00F5;
-                                let _ = SendMessageTimeoutW(
-                                    btn,
-                                    BM_CLICK_MSG,
-                                    WPARAM(0),
-                                    LPARAM(0),
-                                    SMTO_ABORTIFHUNG,
-                                    120,
-                                    None,
-                                );
-                                for _ in 0..10 {
-                                    ov = find_tray_overflow_hwnd(true);
-                                    if !ov.0.is_null() {
-                                        break;
-                                    }
-                                    std::thread::sleep(Duration::from_millis(16));
-                                }
-                            }
-                        }
+                    if !ov.0.is_null() || uia_attempts >= 2 {
+                        break;
                     }
                 }
+            }
+            if ov.0.is_null() && !TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+                ov = trigger_tray_chevron_bm_click(tray);
+            }
+            if ov.0.is_null() && !TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+                ov = trigger_tray_chevron_win_b(tray);
             }
         }
 
         if !ov.0.is_null() {
-            let position_ov = |target_ov: HWND| {
-                let mut ov_rc = RECT::default();
-                if GetWindowRect(target_ov, &mut ov_rc).is_ok() {
-                    let ov_w = (ov_rc.right - ov_rc.left).max(100);
-                    let ov_h = (ov_rc.bottom - ov_rc.top).max(60);
-                    let cx = (anchor_rect.left + anchor_rect.right) / 2;
-                    let cy = (anchor_rect.top + anchor_rect.bottom) / 2;
-                    let mut mon_rc = RECT {
-                        left: 0,
-                        top: 0,
-                        right: 1920,
-                        bottom: 1080,
-                    };
-                    let hmon = MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST);
-                    let mut mi = MONITORINFO {
-                        cbSize: size_of::<MONITORINFO>() as u32,
-                        ..Default::default()
-                    };
-                    if GetMonitorInfoW(hmon, &mut mi).as_bool() {
-                        mon_rc = mi.rcMonitor;
-                    }
-                    let (tx, ty) = compute_tray_overflow_pos(anchor_rect, edge, mon_rc, ov_w, ov_h);
-                    let _ = SetWindowPos(
-                        target_ov,
-                        Some(HWND_TOPMOST),
-                        tx,
-                        ty,
-                        0,
-                        0,
-                        SWP_NOSIZE | SWP_SHOWWINDOW,
-                    );
-                }
-            };
-            position_ov(ov);
-            let _ = AllowSetForegroundWindow(ASFW_ANY);
-            let _ = SetForegroundWindow(ov);
-            // Re-anchor once after XAML finishes layout settle
-            std::thread::sleep(Duration::from_millis(35));
-            if is_overflow_actually_open(ov) {
-                position_ov(ov);
-            }
-
-            // Keep Shell_TrayWnd clipped to 0x0 while overflow is open so Explorer does not
-            // auto-dismiss its owned XAML island; synchronize SW_HIDE + DwmFlush before unclipping.
-            TRAY_OVERFLOW_SUMMONING.store(false, std::sync::atomic::Ordering::SeqCst);
-            if was_tray_hidden {
-                let wait_start = Instant::now();
-                while is_overflow_actually_open(ov)
-                    && wait_start.elapsed() < Duration::from_secs(30)
-                    && !TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst)
-                {
-                    std::thread::sleep(Duration::from_millis(80));
-                }
-                sync_rehide_tray_window(tray, true);
-            }
-            TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            anchor_and_monitor_tray_overflow(ov, tray, was_tray_hidden, anchor_rect, edge);
         } else {
             sync_rehide_tray_window(tray, was_tray_hidden);
             TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-            // Tier 2 fallback: sleek popup anchored next to chevron if Windows has 0 hidden icons
-            let dhw = HWND(dock_raw as *mut c_void);
-            if !dhw.0.is_null() {
-                if let Ok(menu) = CreatePopupMenu() {
-                    let hdr = to_wide("Hidden Tray Icons (None Active)");
-                    let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(hdr.as_ptr()));
-                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-                    let open_cfg = to_wide("Open Windows Taskbar Tray Settings...");
-                    let _ = AppendMenuW(menu, MF_STRING, 1, PCWSTR(open_cfg.as_ptr()));
-                    let cx = (anchor_rect.left + anchor_rect.right) / 2;
-                    let cy = match edge {
-                        MacDockEdge::Bottom => anchor_rect.top - 4,
-                        MacDockEdge::Top => anchor_rect.bottom + 4,
-                        _ => (anchor_rect.top + anchor_rect.bottom) / 2,
-                    };
-                    let mut mon_rc = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
-                    let hmon = MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST);
-                    let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-                    if GetMonitorInfoW(hmon, &mut mi).as_bool() {
-                        mon_rc = mi.rcMonitor;
-                    }
-                    let _ = SetForegroundWindow(dhw);
-                    let chosen = track_dock_popup(dhw, menu, POINT { x: cx, y: cy }, edge, mon_rc);
-                    let _ = DestroyMenu(menu);
-                    if chosen == 1 {
-                        let verb = to_wide("open");
-                        let uri = to_wide("ms-settings:taskbar");
-                        let _ = ShellExecuteW(
-                            None,
-                            PCWSTR(verb.as_ptr()),
-                            PCWSTR(uri.as_ptr()),
-                            PCWSTR::null(),
-                            PCWSTR::null(),
-                            SW_SHOWNORMAL,
-                        );
-                    }
-                }
+            // Tier 2 fallback: marshal back to the UI thread owning `dhw` so CreatePopupMenu +
+            // TrackPopupMenu always executes on the window's owning thread.
+            if !TRAY_OVERFLOW_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+                let dhw = HWND(dock_raw as *mut c_void);
+                let nhw = HWND(notify_raw as *mut c_void);
+                let _ = enqueue_tray_overflow_fallback(dhw, nhw, anchor_rect, edge);
             }
         }
         if com_ok {
             CoUninitialize();
         }
     });
+}
+
+fn send_single_key(vk: u16) {
+    let seq = [
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: KEYBD_EVENT_FLAGS(0),
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+    ];
+    unsafe {
+        let _ = SendInput(&seq, size_of::<INPUT>() as i32);
+    }
 }
 
 fn send_win_chord(vk_byte: u16) {
@@ -10825,6 +11890,45 @@ unsafe fn add_theme_override_submenu(
         add_checked_item(sub, base_id + 1 + idx, t.label(), current == Some(t));
     }
     let w = to_wide(title);
+    let _ = AppendMenuW(parent, MF_POPUP, sub.0 as usize, PCWSTR(w.as_ptr()));
+}
+
+unsafe fn append_clean_top_bar_quick_toggle(parent: HMENU, cfg: &AppConfig) {
+    if !cfg.tb_theme.is_clean_minimal() {
+        return;
+    }
+    add_menu_item(
+        parent,
+        IDM_CLEAN_TOPBAR_TOGGLE,
+        if cfg.clean_top_bar_enabled {
+            "Hide Top Bar (Dock Only)"
+        } else {
+            "Show Top Bar"
+        },
+    );
+}
+
+unsafe fn append_dock_icon_size_submenu(parent: HMENU, cfg: &AppConfig) {
+    let Ok(sub) = CreatePopupMenu() else {
+        return;
+    };
+    let cur = cfg.mac_dock_icon_size.clamp(32, 96);
+    for (idx, &px) in DOCK_ICON_SIZE_PRESETS.iter().enumerate() {
+        let label = match px {
+            36 => "Compact (36 px)",
+            44 => "Default (44 px)",
+            52 => "Medium (52 px)",
+            60 => "Large (60 px)",
+            68 => "Extra Large (68 px)",
+            76 => "Dock XL (76 px)",
+            88 => "ObjectDock (88 px)",
+            96 => "Max Jumbo (96 px)",
+            _ => "Custom",
+        };
+        add_checked_item(sub, IDM_DOCK_ICON_SIZE_BASE + idx, label, cur == px);
+    }
+    let title = format!("Icon Size ({} px)", cur);
+    let w = to_wide(&title);
     let _ = AppendMenuW(parent, MF_POPUP, sub.0 as usize, PCWSTR(w.as_ptr()));
 }
 
@@ -13880,5 +14984,341 @@ mod tests {
             68,
         );
         assert_eq!(r_both, RECT { left: 0, top: 30, right: 1920, bottom: 1012 });
+    }
+
+    #[test]
+    fn tray_chevron_locale_independent_scoring_and_exclusions() {
+        // Tier 1 (100): Locale-independent AutomationId / XAML ClassName / classic ID 1502
+        assert_eq!(
+            score_tray_chevron_candidate("", "SystemTray.ChevronIconView", "", true, false),
+            100
+        );
+        assert_eq!(
+            score_tray_chevron_candidate("ShowHiddenIcons", "Button", "", true, false),
+            100
+        );
+        assert_eq!(
+            score_tray_chevron_candidate("OverflowButton", "ToggleButton", "", true, false),
+            100
+        );
+        assert_eq!(
+            score_tray_chevron_candidate("1502", "Button", "Неизвестно", false, true),
+            100
+        );
+
+        // Tier 2 (80): Non-English localized names (DE / FR / ES / RU / JA / KO / ZH)
+        for localized in [
+            "Show hidden icons",
+            "Ausgeblendete Symbole einblenden",
+            "Afficher les icônes cachées",
+            "Mostrar iconos ocultos",
+            "Отображать скрытые значки",
+            "隠れているインジケーターを表示します",
+            "숨겨진 아이콘 표시",
+            "显示隐藏的图标",
+            "顯示隱藏的圖示",
+        ] {
+            assert_eq!(
+                score_tray_chevron_candidate("SystemTrayIcon", "Button", localized, true, false),
+                80,
+                "Expected localized hint match for `{}`",
+                localized
+            );
+        }
+
+        // Tier 3 (60): Locale-independent Win11 XAML ToggleButton with unknown-language Name
+        assert_eq!(
+            score_tray_chevron_candidate("SystemTrayIcon", "Button", "Εμφάνιση εικονιδίων", true, false),
+            60
+        );
+        // Ordinary pinned tray icon (Invoke-only, no TogglePattern) must NOT match Tier 3
+        assert_eq!(
+            score_tray_chevron_candidate("SystemTrayIcon", "Button", "OneDrive", false, false),
+            0
+        );
+
+        // Tier 4 (40): Win10 / ExplorerPatcher / StartAllBack classic TrayNotifyWnd Button
+        assert_eq!(
+            score_tray_chevron_candidate("", "Button", "Εικονίδια", false, true),
+            40
+        );
+        // Same generic Button outside TrayNotifyWnd must NOT match
+        assert_eq!(
+            score_tray_chevron_candidate("", "Button", "Εικονίδια", false, false),
+            0
+        );
+
+        // Known non-chevron buttons must always score 0
+        for (aid, cls, name) in [
+            ("ClockButton", "SystemTray.OmniButton", "12:00 PM"),
+            ("ControlCenterButton", "SystemTray.OmniButton", "Network, Volume, Battery"),
+            ("NotificationCenterButton", "Button", "Notifications"),
+            ("InputIndicatorButton", "Button", "ENG"),
+            ("ShowDesktopButton", "TrayShowDesktopButtonWClass", "Show desktop"),
+            ("StartButton", "ToggleButton", "Start"),
+        ] {
+            assert_eq!(
+                score_tray_chevron_candidate(aid, cls, name, true, true),
+                0,
+                "Non-chevron button `{}` must be excluded",
+                aid
+            );
+        }
+
+        // Explorer tray class guard for Win+B -> Enter fallback
+        assert!(is_explorer_tray_class("Shell_TrayWnd"));
+        assert!(is_explorer_tray_class("TrayNotifyWnd"));
+        assert!(is_explorer_tray_class("TopLevelWindowForOverflowXamlIsland"));
+        assert!(is_explorer_tray_class("NotifyIconOverflowWindow"));
+        assert!(is_explorer_tray_class("Windows.UI.Core.CoreWindow"));
+        assert!(!is_explorer_tray_class("Notepad"));
+        assert!(!is_explorer_tray_class("Chrome_WidgetWin_1"));
+    }
+
+    #[test]
+    fn tray_overflow_fallback_queue_roundtrip_and_ui_thread_marshal() {
+        assert_eq!(WM_APP_TRAY_OVERFLOW_FALLBACK, WM_APP + 33);
+        // Drain any leftover state
+        let _ = take_pending_tray_overflow_fallback();
+
+        let req = TrayOverflowFallbackReq {
+            dock_hwnd: 0x1234,
+            anchor_rect: RECT {
+                left: 100,
+                top: 980,
+                right: 126,
+                bottom: 1020,
+            },
+            edge: MacDockEdge::Bottom,
+        };
+        store_tray_overflow_fallback(req);
+        assert_eq!(take_pending_tray_overflow_fallback(), Some(req));
+        // Consumed on first take so a duplicate message never pops twice
+        assert_eq!(take_pending_tray_overflow_fallback(), None);
+
+        // Null HWNDs safely refuse to enqueue/post without calling cross-thread TrackPopupMenu
+        let posted = unsafe {
+            enqueue_tray_overflow_fallback(
+                HWND::default(),
+                HWND::default(),
+                req.anchor_rect,
+                MacDockEdge::Bottom,
+            )
+        };
+        assert!(!posted);
+        assert_eq!(take_pending_tray_overflow_fallback(), None);
+    }
+
+    #[test]
+    fn clean_minimal_bottom_dock_keeps_reachable_hidden_tray_chevron_when_top_bar_off() {
+        let mut eng = MacDockEngine::new(HINSTANCE::default());
+        for &th in &TaskbarTheme::CLEAN_MINIMAL_FOLDER {
+            let mut cfg = AppConfig::default();
+            cfg.apply_taskbar_theme_preset(th);
+            cfg.mac_dock_edge = MacDockEdge::Bottom;
+
+            // With Top Bar ON (Pure Mac Dock mode), chevron lives in Top Bar instead of bottom dock
+            cfg.clean_top_bar_enabled = true;
+            eng.rebuild_slots(&cfg);
+            assert!(
+                !eng.slots
+                    .iter()
+                    .any(|s| matches!(s, DockSlotKind::HiddenTrayChevron)),
+                "Pure Mac bottom dock for {:?} should defer chevron to Top Bar when Top Bar is ON",
+                th
+            );
+
+            // With Top Bar OFF, bottom dock MUST include HiddenTrayChevron
+            cfg.clean_top_bar_enabled = false;
+            eng.rebuild_slots(&cfg);
+            assert!(
+                eng.slots
+                    .iter()
+                    .any(|s| matches!(s, DockSlotKind::HiddenTrayChevron)),
+                "Clean & Minimal bottom dock for {:?} must include HiddenTrayChevron when Top Bar is OFF",
+                th
+            );
+
+            // Even if audio/net/battery meters are hidden while the dock stays active,
+            // HiddenTrayChevron MUST stay reachable on Clean & Minimal bottom docks
+            cfg.w_tray.show_audio = false;
+            cfg.w_tray.show_net = false;
+            cfg.w_tray.show_battery = false;
+            assert!(cfg.w_tray.is_all_elements_off());
+            assert!(!cfg.is_dock_all_elements_off());
+            eng.rebuild_slots(&cfg);
+            assert!(
+                eng.slots
+                    .iter()
+                    .any(|s| matches!(s, DockSlotKind::HiddenTrayChevron)),
+                "Clean & Minimal bottom dock for {:?} must keep HiddenTrayChevron reachable even when tray meters are hidden",
+                th
+            );
+
+            // When ALL dock elements are toggled OFF, zero chevron should be emitted
+            cfg.w_shelf.show_plate = false;
+            cfg.w_shelf.show_rim = false;
+            cfg.w_shelf.show_art = false;
+            cfg.w_apps.show_icons = false;
+            cfg.w_apps.show_cards = false;
+            cfg.w_apps.show_indicators = false;
+            cfg.w_apps.show_separators = false;
+            cfg.w_clock.show_time = false;
+            cfg.w_clock.show_date = false;
+            cfg.w_hud.show_telemetry = false;
+            cfg.w_hud.show_active_app = false;
+            cfg.w_util.show_start = false;
+            cfg.w_util.show_search = false;
+            cfg.w_util.show_taskview = false;
+            cfg.w_util.show_trash = false;
+            cfg.w_util.show_studio = false;
+            assert!(cfg.is_dock_all_elements_off());
+            eng.rebuild_slots(&cfg);
+            assert!(
+                !eng.slots
+                    .iter()
+                    .any(|s| matches!(s, DockSlotKind::HiddenTrayChevron)),
+                "Clean & Minimal dock for {:?} must emit zero chevron when all dock elements are OFF",
+                th
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_enum_windows_sync_extends_to_30s_with_hooks() {
+        let mut eng = MacDockEngine::new(HINSTANCE::default());
+        eng.shell_hook_msg = 0xC123;
+        eng.set_win_event_hooks_active(false);
+        assert_eq!(eng.fallback_full_sync_interval(), Duration::from_secs(4));
+
+        eng.set_win_event_hooks_active(true);
+        assert_eq!(eng.fallback_full_sync_interval(), Duration::from_secs(30));
+
+        // If SHELLHOOK registration failed, stay on 4s safety interval even if WinEvent is active
+        eng.shell_hook_msg = 0;
+        assert_eq!(eng.fallback_full_sync_interval(), Duration::from_secs(4));
+
+        // Eco effective FPS throttles ambient dock timer cadence cleanly
+        assert!(
+            compute_dock_timer_ms(false, false, false, true, 18)
+                >= compute_dock_timer_ms(false, false, false, true, 60)
+        );
+        assert!(compute_dock_timer_ms(false, false, false, true, 18) >= 50);
+    }
+
+    #[test]
+    fn dock_88px_icons_18px_labels_safe_mag_and_menu_commands() {
+        let mut cfg = AppConfig::default();
+        cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassDark);
+        cfg.mac_dock_icon_size = 88;
+        cfg.mac_dock_mag_pct = 185;
+        cfg.w_apps.label_font_size_px = 18;
+
+        let (spec, is_vert, base_sz, shelf_cross, edge_gap, _wing) = dock_cross_metrics(&cfg, 1.0);
+        assert!(!is_vert);
+        assert!((base_sz - 88.0).abs() < 0.01);
+        assert!(shelf_cross >= base_sz + 10.0 && shelf_cross <= 128.0);
+        assert!(edge_gap >= 0.0);
+
+        // Safe magnification cap prevents 88px icons from oversizing on 1080p or 720p monitors
+        let mag_1080 = dock_safe_max_scale(&cfg, &spec, base_sz, 1080.0, 1.0);
+        let mag_720 = dock_safe_max_scale(&cfg, &spec, base_sz, 720.0, 1.0);
+        assert!(mag_1080 >= 1.0 && base_sz * mag_1080 <= 140.5);
+        assert!(mag_720 >= 1.0 && base_sz * mag_720 <= 720.0 * 0.18 + 0.5);
+
+        // Dynamic inline window pill width & truncation scale cleanly from 10..20 px
+        let (pw10, tc10, sc10) = dock_inline_label_metrics(10, 1.0);
+        let (pw18, tc18, sc18) = dock_inline_label_metrics(18, 1.0);
+        let (pw20, tc20, sc20) = dock_inline_label_metrics(20, 1.0);
+        assert!((pw10 - 136.0).abs() < 0.01 && tc10 == 14 && sc10 == 12);
+        assert!(pw18 > 195.0 && pw18 < 220.0 && tc18 >= 24 && sc18 >= 19);
+        assert!((pw20 - 220.0).abs() < 0.01 && tc20 == 28 && sc20 == 22);
+
+        // Context menu command handler toggles Top Bar and sets quick Icon Size preset (88 px)
+        let mut eng = MacDockEngine::new(HINSTANCE::default());
+        assert!(cfg.clean_top_bar_enabled);
+        let act_tb = eng.handle_widget_menu_cmd(IDM_CLEAN_TOPBAR_TOGGLE, &mut cfg);
+        assert!(matches!(act_tb, Some(MacDockAction::ConfigUpdated)));
+        assert!(!cfg.clean_top_bar_enabled);
+        let idx_88 = DOCK_ICON_SIZE_PRESETS
+            .iter()
+            .position(|&p| p == 88)
+            .expect("88px preset must exist");
+        cfg.mac_dock_icon_size = 44;
+        let act_sz = eng.handle_widget_menu_cmd(IDM_DOCK_ICON_SIZE_BASE + idx_88, &mut cfg);
+        assert!(matches!(act_sz, Some(MacDockAction::ConfigUpdated)));
+        assert_eq!(cfg.mac_dock_icon_size, 88);
+    }
+
+    #[test]
+    fn dock_32_pin_drop_insert_drag_reorder_and_uwp_aumid_name() {
+        assert!(is_pinnable_drop_path(r"C:\Tools\code.exe"));
+        assert!(is_pinnable_drop_path(r"C:\Users\Demo\Desktop\Slack.lnk"));
+        assert!(is_pinnable_drop_path(
+            r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+        ));
+        assert!(!is_pinnable_drop_path(r"C:\Users\Demo\Documents\readme.txt"));
+        assert_eq!(
+            derive_dropped_pin_name(r"C:\Windows\notepad.exe"),
+            "Notepad"
+        );
+        assert_eq!(
+            derive_dropped_pin_name(
+                r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+            ),
+            "WindowsCalculator"
+        );
+
+        let mut cfg = AppConfig::default();
+        cfg.mac_dock_pinned = vec![
+            AppShortcut {
+                name: "First".into(),
+                path: r"C:\Apps\first.exe".into(),
+                offset_x: 0,
+                offset_y: 0,
+            },
+            AppShortcut {
+                name: "Third".into(),
+                path: r"C:\Apps\third.exe".into(),
+                offset_x: 0,
+                offset_y: 0,
+            },
+        ];
+
+        // Drop insert at index 1 places Second between First and Third, ignores duplicate First
+        let inserted = pin_dropped_items_at(
+            &mut cfg,
+            &[
+                ("Second".into(), r"C:\Apps\second.exe".into()),
+                ("First".into(), r"c:\apps\first.exe".into()),
+                (
+                    "".into(),
+                    r"shell:AppsFolder\Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
+                ),
+            ],
+            1,
+        );
+        assert!(inserted);
+        assert_eq!(cfg.mac_dock_pinned.len(), 4);
+        assert_eq!(cfg.mac_dock_pinned[0].name, "First");
+        assert_eq!(cfg.mac_dock_pinned[1].name, "Second");
+        assert_eq!(cfg.mac_dock_pinned[2].name, "WindowsTerminal");
+        assert_eq!(cfg.mac_dock_pinned[3].name, "Third");
+
+        // Drag-to-reorder moves Third (3) to slot 0 cleanly
+        assert!(reorder_pinned_app(&mut cfg.mac_dock_pinned, 3, 0));
+        assert_eq!(cfg.mac_dock_pinned[0].name, "Third");
+        assert_eq!(cfg.mac_dock_pinned[1].name, "First");
+        assert!(!reorder_pinned_app(&mut cfg.mac_dock_pinned, 1, 1));
+        assert!(!reorder_pinned_app(&mut cfg.mac_dock_pinned, 99, 0));
+
+        // Respects MAX_PINNED_APPS (32) cap cleanly
+        let extra: Vec<(String, String)> = (0..40)
+            .map(|i| (format!("Extra{}", i), format!(r"C:\Apps\extra_{}.exe", i)))
+            .collect();
+        let tail_idx = cfg.mac_dock_pinned.len();
+        assert!(pin_dropped_items_at(&mut cfg, &extra, tail_idx));
+        assert_eq!(cfg.mac_dock_pinned.len(), MAX_PINNED_APPS);
+        assert_eq!(MAX_PINNED_APPS, 32);
     }
 }

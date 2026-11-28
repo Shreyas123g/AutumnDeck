@@ -3357,6 +3357,7 @@ impl SettingsController {
         if let Some(ref rt) = self.dc_rt {
             crate::realistic_pbr::evict_rt(rt);
             crate::horology_pbr::evict_rt(rt);
+            crate::dock_themes::evict_luxury_hud_rt(rt);
         }
         self.dc_rt = None;
         self.backbuf.release();

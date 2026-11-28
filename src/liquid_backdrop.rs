@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
 use windows::core::{s, w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -12,8 +13,9 @@ use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, SetWindowPos, ShowWindow,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WM_NCHITTEST,
-    WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    SW_HIDE, WM_NCHITTEST, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const ACRYLIC_BACKDROP_CLASS: PCWSTR = w!("AutumnDeckGlassAcrylicWnd");
@@ -147,12 +149,45 @@ pub struct LiquidBackdropWindow {
     last_abgr: u32,
     last_owner: HWND,
     live_active: bool,
+    last_resize_at: Option<Instant>,
 }
 
 impl Default for LiquidBackdropWindow {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Returns `true` when an intermediate Fish-Eye hover frame can safely defer resizing
+/// Windows 11 `ACCENT_ENABLE_ACRYLICBLURBEHIND` HWNDs so `dwm.exe` does not synchronously
+/// rebuild the Acrylic blur graph 45-60 times per second during hover motion.
+pub(crate) fn should_defer_acrylic_motion_resize(
+    motion_active: bool,
+    prev: &[AcrylicPillRect],
+    next: &[AcrylicPillRect],
+    elapsed_since_resize: Option<Duration>,
+) -> bool {
+    if !motion_active || prev.len() != next.len() || prev.is_empty() {
+        return false;
+    }
+    let mut max_delta = 0i32;
+    for (a, b) in prev.iter().zip(next.iter()) {
+        if a.rounded != b.rounded {
+            return false;
+        }
+        max_delta = max_delta
+            .max((a.screen_rect.left - b.screen_rect.left).abs())
+            .max((a.screen_rect.top - b.screen_rect.top).abs())
+            .max((a.screen_rect.right - b.screen_rect.right).abs())
+            .max((a.screen_rect.bottom - b.screen_rect.bottom).abs());
+    }
+    if max_delta == 0 {
+        return true;
+    }
+    if max_delta < 4 {
+        return true;
+    }
+    elapsed_since_resize.is_some_and(|e| e < Duration::from_millis(48))
 }
 
 impl LiquidBackdropWindow {
@@ -164,6 +199,7 @@ impl LiquidBackdropWindow {
             last_abgr: 0,
             last_owner: HWND::default(),
             live_active: false,
+            last_resize_at: None,
         }
     }
 
@@ -224,6 +260,20 @@ impl LiquidBackdropWindow {
         abgr_tint: u32,
         want_visible: bool,
     ) -> bool {
+        self.sync_pills_ex(hinst, ctx, owner_fg_hwnd, pills, abgr_tint, want_visible, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_pills_ex(
+        &mut self,
+        hinst: HINSTANCE,
+        ctx: &mut LiquidBackdropContext,
+        owner_fg_hwnd: HWND,
+        pills: &[AcrylicPillRect],
+        abgr_tint: u32,
+        want_visible: bool,
+        motion_active: bool,
+    ) -> bool {
         let count = pills.len().min(MAX_ACRYLIC_PILLS);
         if !want_visible || count == 0 || owner_fg_hwnd.0.is_null() || !ctx.ensure_init() {
             self.hide();
@@ -255,10 +305,16 @@ impl LiquidBackdropWindow {
         let slice = &pills[..active];
         let grew = self.hwnds.len() > prev_pool;
         let need_accent = grew || self.last_abgr != abgr_tint || !self.live_active;
-        let need_layout = grew
-            || self.visible_count != active
-            || self.last_pills.as_slice() != slice
-            || self.last_owner != owner_fg_hwnd;
+        let structural_change =
+            grew || self.visible_count != active || self.last_owner != owner_fg_hwnd || !self.live_active;
+        let defer_resize = !structural_change
+            && should_defer_acrylic_motion_resize(
+                motion_active,
+                self.last_pills.as_slice(),
+                slice,
+                self.last_resize_at.map(|t| t.elapsed()),
+            );
+        let need_layout = structural_change || (!defer_resize && self.last_pills.as_slice() != slice);
 
         for (i, pill) in slice.iter().enumerate() {
             let hw = self.hwnds[i];
@@ -287,8 +343,9 @@ impl LiquidBackdropWindow {
                 let h = (rc.bottom - rc.top).max(4);
                 let was_shown = i < self.visible_count;
                 let flags = if was_shown && self.last_owner == owner_fg_hwnd {
-                    // Preserve z-order on smooth resize/move without triggering a DWM z-order storm
-                    SWP_NOACTIVATE | SWP_NOZORDER
+                    // Use SWP_ASYNCWINDOWPOS on resize/move so Windows 11 DWM Acrylic never
+                    // synchronously stalls the dock UI thread during Fish-Eye magnification.
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS
                 } else {
                     SWP_NOACTIVATE | SWP_SHOWWINDOW
                 };
@@ -307,8 +364,11 @@ impl LiquidBackdropWindow {
         }
 
         self.visible_count = active;
-        self.last_pills.clear();
-        self.last_pills.extend_from_slice(slice);
+        if need_layout {
+            self.last_pills.clear();
+            self.last_pills.extend_from_slice(slice);
+            self.last_resize_at = Some(Instant::now());
+        }
         self.last_abgr = abgr_tint;
         self.last_owner = owner_fg_hwnd;
         self.live_active = true;
@@ -423,5 +483,46 @@ mod tests {
             let _ = DestroyWindow(owner);
         }
         assert!(!win.is_live_active());
+    }
+
+    #[test]
+    fn acrylic_motion_resize_defers_intermediate_hover_frames_and_snaps_on_settle() {
+        let p0 = [AcrylicPillRect {
+            screen_rect: RECT { left: 100, top: 900, right: 700, bottom: 964 },
+            rounded: true,
+        }];
+        let p_small = [AcrylicPillRect {
+            screen_rect: RECT { left: 98, top: 900, right: 702, bottom: 964 },
+            rounded: true,
+        }];
+        let p_big = [AcrylicPillRect {
+            screen_rect: RECT { left: 80, top: 900, right: 720, bottom: 964 },
+            rounded: true,
+        }];
+
+        assert!(should_defer_acrylic_motion_resize(
+            true,
+            &p0,
+            &p_small,
+            Some(Duration::from_millis(100)),
+        ));
+        assert!(should_defer_acrylic_motion_resize(
+            true,
+            &p0,
+            &p_big,
+            Some(Duration::from_millis(16)),
+        ));
+        assert!(!should_defer_acrylic_motion_resize(
+            true,
+            &p0,
+            &p_big,
+            Some(Duration::from_millis(60)),
+        ));
+        assert!(!should_defer_acrylic_motion_resize(
+            false,
+            &p0,
+            &p_small,
+            Some(Duration::from_millis(5)),
+        ));
     }
 }

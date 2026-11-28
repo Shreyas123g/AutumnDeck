@@ -700,6 +700,7 @@ impl DockThumbPopup {
         self.icon_cache.clear();
         if let Some(ref rt) = self.dc_rt {
             crate::realistic_pbr::evict_rt(rt);
+            crate::dock_themes::evict_luxury_hud_rt(rt);
         }
         self.dc_rt = None;
         self.tf_title = None;
@@ -1194,6 +1195,7 @@ impl DockThumbPopup {
             } else {
                 if let Some(ref rt) = self.dc_rt {
                     crate::realistic_pbr::evict_rt(rt);
+                    crate::dock_themes::evict_luxury_hud_rt(rt);
                 }
                 self.dc_rt = None;
                 self.icon_cache.clear();
@@ -1258,6 +1260,7 @@ struct DockMonitorPane {
     dirty_paint: bool,
     motion_active: bool,
     window_shown: bool,
+    last_hover_mouse_pt: POINT,
 }
 
 impl DockMonitorPane {
@@ -1316,6 +1319,7 @@ impl DockMonitorPane {
             dirty_paint: true,
             motion_active: false,
             window_shown: false,
+            last_hover_mouse_pt: POINT { x: i32::MIN, y: i32::MIN },
         }
     }
 
@@ -2033,6 +2037,25 @@ impl TrayAnimState {
     }
 }
 
+/// Determines whether the bottom/side dock should run the continuous battery charging/low-battery
+/// ambient shimmer. Returns `(actively_charging, bat_low)`.
+/// Prevents 24/7 45-FPS idle dock repaints when:
+/// - The Clean & Minimal Top Bar owns the system tray (so no `TrayStatusCluster` is on the dock), OR
+/// - The laptop is sitting plugged in on AC at 99-100% full charge.
+pub(crate) fn dock_tray_battery_shimmer_flags(
+    has_tray_slot: bool,
+    top_bar_active: bool,
+    bat_charging: bool,
+    bat_pct: Option<u8>,
+) -> (bool, bool) {
+    if !has_tray_slot || top_bar_active {
+        return (false, false);
+    }
+    let actively_charging = bat_charging && bat_pct.unwrap_or(100) < 99;
+    let bat_low = bat_pct.map(|p| p <= 20).unwrap_or(false) && !bat_charging;
+    (actively_charging, bat_low)
+}
+
 fn compute_dock_timer_ms(
     fast_active: bool,
     hover_active: bool,
@@ -2540,15 +2563,34 @@ impl MacDockEngine {
         }
     }
 
+    fn dock_tray_shimmer_state(&self, cfg: &AppConfig) -> (bool, bool) {
+        let has_tray_slot = self
+            .slots
+            .iter()
+            .any(|s| matches!(s, DockSlotKind::TrayStatusCluster));
+        dock_tray_battery_shimmer_flags(
+            has_tray_slot,
+            cfg.is_clean_top_bar_active(),
+            self.tray_bat_charging,
+            self.tray_bat_pct,
+        )
+    }
+
+    pub fn is_hover_animating(&self) -> bool {
+        self.panes
+            .iter()
+            .any(|p| p.motion_active || p.cursor_in_dock || p.click_ripple_t < 0.995)
+    }
+
     pub fn tick_idle_poll(&mut self, cfg: &AppConfig) {
         if !cfg.mac_dock_enabled {
             return;
         }
         let now = Instant::now();
-        let bat_low = self.tray_bat_pct.map(|p| p <= 20).unwrap_or(false) && !self.tray_bat_charging;
+        let (bat_chg, bat_low) = self.dock_tray_shimmer_state(cfg);
         let tray_anim_active =
             self.tray_anim
-                .is_active(cfg, self.tray_vol_muted, self.tray_bat_charging, bat_low);
+                .is_active(cfg, self.tray_vol_muted, bat_chg, bat_low);
         if self.panes.is_empty()
             || self.dirty_windows
             || self.menu_open
@@ -2709,12 +2751,12 @@ impl MacDockEngine {
             || self.pop_until.values().any(|&t| t > now);
         let osd_active = self.vol_osd_until.map(|t| t > now).unwrap_or(false);
         let any_shown = self.panes.iter().any(|p| p.window_shown && p.slide_t > 0.25);
-        let bat_low = self.tray_bat_pct.map(|p| p <= 20).unwrap_or(false) && !self.tray_bat_charging;
+        let (bat_chg, bat_low) = self.dock_tray_shimmer_state(cfg);
         let tray_reactive = any_shown
             && self.tray_anim.is_active(
                 cfg,
                 self.tray_vol_muted,
-                self.tray_bat_charging,
+                bat_chg,
                 bat_low,
             );
         let mut fast_16 = bouncing || osd_active || tray_reactive;
@@ -2931,6 +2973,7 @@ impl MacDockEngine {
         self.solid_brush = None;
         if let Some(ref rt) = self.dc_rt {
             crate::realistic_pbr::evict_rt(rt);
+            crate::dock_themes::evict_luxury_hud_rt(rt);
         }
         self.dc_rt = None;
         self.slots.clear();
@@ -3602,11 +3645,11 @@ impl MacDockEngine {
                 self.mark_dirty_paint();
             }
         }
-        let bat_low = self.tray_bat_pct.map(|p| p <= 20).unwrap_or(false) && !self.tray_bat_charging;
+        let (bat_chg, bat_low) = self.dock_tray_shimmer_state(cfg);
         if self.tray_anim.step(
             dt,
             self.tray_vol_muted,
-            self.tray_bat_charging,
+            bat_chg,
             bat_low,
             cfg.tb_ambient_anim && cfg.w_tray.battery_style != TrayBatteryMeterStyle::Hidden,
         ) {
@@ -5211,7 +5254,16 @@ impl MacDockEngine {
             self.panes[pi].tooltip_shown_after_dwell = false;
         }
         self.panes[pi].last_inside_time = Some(now);
-        if cfg.tb_hover_react || !was_in {
+        let mut hover_pt = POINT::default();
+        let got_hover_pt = unsafe { GetCursorPos(&mut hover_pt).is_ok() };
+        let moved_enough = !was_in
+            || !got_hover_pt
+            || (hover_pt.x - self.panes[pi].last_hover_mouse_pt.x).abs() >= 2
+            || (hover_pt.y - self.panes[pi].last_hover_mouse_pt.y).abs() >= 2;
+        if got_hover_pt && moved_enough {
+            self.panes[pi].last_hover_mouse_pt = hover_pt;
+        }
+        if !was_in || (cfg.tb_hover_react && moved_enough) {
             self.panes[pi].dirty_paint = true;
         }
         if !was_in && !self.panes[pi].window_shown {
@@ -8345,13 +8397,14 @@ impl MacDockEngine {
         let live_hw_blur =
             if !acrylic_pills.is_empty() && !cfg.is_dock_all_elements_off() && cfg.tint_alpha > 0 {
             let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, false, cfg.tint_alpha);
-            pane.liquid_backdrop.sync_pills(
+            pane.liquid_backdrop.sync_pills_ex(
                 self.hinst,
                 &mut self.liquid_ctx,
                 pane.hwnd,
                 &acrylic_pills,
                 abgr,
                 true,
+                pane.motion_active,
             )
         } else {
             pane.liquid_backdrop.hide();
@@ -8384,6 +8437,7 @@ impl MacDockEngine {
         if !ok {
             if let Some(ref rt) = self.dc_rt {
                 crate::realistic_pbr::evict_rt(rt);
+                crate::dock_themes::evict_luxury_hud_rt(rt);
             }
             pane.backdrop_bmp = None;
             self.solid_brush = None;
@@ -15564,5 +15618,37 @@ mod tests {
         assert!(pin_dropped_items_at(&mut cfg, &extra, tail_idx));
         assert_eq!(cfg.mac_dock_pinned.len(), MAX_PINNED_APPS);
         assert_eq!(MAX_PINNED_APPS, 32);
+    }
+
+    #[test]
+    fn dock_tray_battery_shimmer_skips_when_top_bar_owns_tray_or_full_charge() {
+        // Clean & Minimal Top Bar active: bottom dock does not render tray -> 0% idle CPU
+        assert_eq!(
+            dock_tray_battery_shimmer_flags(true, true, true, Some(60)),
+            (false, false)
+        );
+        // No tray cluster slot on dock -> 0% idle CPU
+        assert_eq!(
+            dock_tray_battery_shimmer_flags(false, false, true, Some(60)),
+            (false, false)
+        );
+        // Laptop plugged in at 100% / 99% -> not actively charging -> 0% idle CPU
+        assert_eq!(
+            dock_tray_battery_shimmer_flags(true, false, true, Some(100)),
+            (false, false)
+        );
+        assert_eq!(
+            dock_tray_battery_shimmer_flags(true, false, true, Some(99)),
+            (false, false)
+        );
+        // Actively charging (<99%) or low battery (<=20%) with tray on dock -> shimmer allowed
+        assert_eq!(
+            dock_tray_battery_shimmer_flags(true, false, true, Some(72)),
+            (true, false)
+        );
+        assert_eq!(
+            dock_tray_battery_shimmer_flags(true, false, false, Some(15)),
+            (false, true)
+        );
     }
 }

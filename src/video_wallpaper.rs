@@ -271,6 +271,39 @@ fn compute_target_frame_interval_us(fps_cap: WallpaperFpsCap, monitor_hz: u32) -
     }
 }
 
+/// Computes the effective pacer interval when UI interaction (Dock hover, Settings Studio,
+/// battery/Eco mode) requests gentler Main-UI-thread wallpaper cadence so foreground UI stays crisp.
+fn compute_effective_pacer_interval_us(
+    fps_cap: WallpaperFpsCap,
+    monitor_hz: u32,
+    interactive_yield: bool,
+) -> u64 {
+    let base = compute_target_frame_interval_us(fps_cap, monitor_hz);
+    if interactive_yield {
+        base.max(33_333)
+    } else {
+        base
+    }
+}
+
+/// Computes how long a paused, maximized-covered video holds its `IMFMediaEngine` before
+/// dropping ONLY the heavyweight Media Foundation decoder/surface pool while keeping the
+/// warm D3D11 Flip-Model SwapChain & frozen last frame visible (zero blanking).
+pub(crate) fn compute_cover_reclaim_delay_ms(
+    trim_on_pause: bool,
+    native_video_w: u32,
+    native_video_h: u32,
+) -> u64 {
+    if trim_on_pause {
+        4_000
+    } else if native_video_w >= 2560 || native_video_h >= 1440 {
+        // 4K / UHD videos hold 300-500 MB of MF/DXVA surfaces: auto-reclaim after 8s covered
+        8_000
+    } else {
+        15_000
+    }
+}
+
 /// Minimum interval between GPU `Present()` calls when a hard FPS cap is selected, with ~1.2ms
 /// tolerance so VSync jitter on 60Hz/30Hz displays never halves the frame rate.
 fn compute_min_present_interval_us(fps_cap: WallpaperFpsCap) -> u64 {
@@ -1127,6 +1160,8 @@ pub struct VideoWallpaperEngine {
     pump_queued: Arc<AtomicBool>,
     monitor_hz: u32,
     fps_cap: WallpaperFpsCap,
+    interactive_yield: bool,
+    native_video_size: (u32, u32),
     last_presented_at: Option<Instant>,
     enabled: bool,
     active_path: String,
@@ -1205,6 +1240,8 @@ impl VideoWallpaperEngine {
             pump_queued: Arc::new(AtomicBool::new(false)),
             monitor_hz,
             fps_cap: WallpaperFpsCap::Auto,
+            interactive_yield: false,
+            native_video_size: (0, 0),
             last_presented_at: None,
             enabled: false,
             active_path: String::new(),
@@ -1527,8 +1564,19 @@ impl VideoWallpaperEngine {
     }
 
     fn sync_pacer_cadence(&mut self) {
-        let interval_us = compute_target_frame_interval_us(self.fps_cap, self.monitor_hz);
+        let interval_us = compute_effective_pacer_interval_us(
+            self.fps_cap,
+            self.monitor_hz,
+            self.interactive_yield,
+        );
         self.pacer_interval_us.store(interval_us, Ordering::Release);
+    }
+
+    pub fn set_interactive_yield(&mut self, yield_ui: bool) {
+        if self.interactive_yield != yield_ui {
+            self.interactive_yield = yield_ui;
+            self.sync_pacer_cadence();
+        }
     }
 
     /// Applies wallpaper configuration. When `force_static_refresh` is true (e.g., user explicitly
@@ -1583,7 +1631,7 @@ impl VideoWallpaperEngine {
         if path_changed
             || !was_enabled
             || self.static_mode
-            || (self.engine.is_none() && (!self.paused_by_cover || !self.trim_on_pause))
+            || (self.engine.is_none() && (!self.paused_by_cover || !self.pause_trimmed))
         {
             if path_changed {
                 self.pending_resume_sec = 0.0;
@@ -2361,21 +2409,16 @@ impl VideoWallpaperEngine {
                 if let Ok(dxgi_dev) = dev.cast::<IDXGIDevice>() {
                     if let Ok(adapter) = dxgi_dev.GetAdapter() {
                         if let Ok(factory) = adapter.GetParent::<IDXGIFactory2>() {
-                            // Prefer triple-buffered FLIP_DISCARD with a frame-latency waitable
-                            // object so the GPU pipeline queues decoded frames without stalling
-                            // the UI thread, falling back cleanly on legacy drivers / WARP.
+                            // Prefer lean double-buffered FLIP_DISCARD with a frame-latency waitable
+                            // object (1-frame max latency) to minimize GPU/driver backbuffer memory
+                            // while keeping VSync-aligned smooth playback without stalling UI.
                             let candidates = [
                                 (
-                                    3u32,
+                                    2u32,
                                     DXGI_SWAP_EFFECT_FLIP_DISCARD,
                                     DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                                 ),
-                                (3u32, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_CHAIN_FLAG(0)),
-                                (
-                                    3u32,
-                                    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                                    DXGI_SWAP_CHAIN_FLAG(0),
-                                ),
+                                (2u32, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_CHAIN_FLAG(0)),
                                 (
                                     2u32,
                                     DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
@@ -2411,7 +2454,7 @@ impl VideoWallpaperEngine {
                                     if sc_flag == DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
                                     {
                                         if let Ok(sc2) = sc.cast::<IDXGISwapChain2>() {
-                                            let _ = sc2.SetMaximumFrameLatency(2);
+                                            let _ = sc2.SetMaximumFrameLatency(1);
                                             let waitable = sc2.GetFrameLatencyWaitableObject();
                                             if !waitable.is_invalid() && !waitable.0.is_null() {
                                                 self.frame_latency_waitable = waitable;
@@ -2548,7 +2591,7 @@ impl VideoWallpaperEngine {
                         let _ = mt.SetMultithreadProtected(true);
                     }
                     if let Ok(dxgi3) = dev.cast::<IDXGIDevice3>() {
-                        let _ = dxgi3.SetMaximumFrameLatency(2);
+                        let _ = dxgi3.SetMaximumFrameLatency(1);
                     }
                     has_video_dev = used_video_flags && dev.cast::<ID3D11VideoDevice>().is_ok();
                 }
@@ -3065,6 +3108,7 @@ impl VideoWallpaperEngine {
             };
             if reuse_ok {
                 self.cached_crop = None;
+                self.native_video_size = (0, 0);
                 self.end_poll_ticks = 0;
                 self.place_behind_icons();
                 self.set_frame_timer(true);
@@ -3092,9 +3136,10 @@ impl VideoWallpaperEngine {
                 &MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
                 DXGI_FORMAT_B8G8R8A8_UNORM.0 as u32,
             );
-            // Do NOT set MF_LOW_LATENCY = 1 for prerecorded file playback: low-latency mode
-            // disables Media Foundation B-frame lookahead & hardware decoder surface pipelining,
-            // causing dropped frames, stutter, or CPU decode fallback on standard MP4/HEVC/AV1 files.
+            // Prefer MF_MEDIA_ENGINE_REAL_TIME_MODE (0x8) to keep Media Engine's internal
+            // pre-rendered video sample ring lean (preventing 9x 4K BGRA = ~300-450 MB RAM bloat)
+            // while keeping full hardware DXVA decode; fall back cleanly to 0 if unsupported.
+            const MF_MEDIA_ENGINE_REAL_TIME_MODE_FLAG: u32 = 0x8;
             let eng_opt: Option<IMFMediaEngine> = {
                 let _mf = MfCallGuard::enter();
                 CoCreateInstance::<_, IMFMediaEngineClassFactory>(
@@ -3103,7 +3148,12 @@ impl VideoWallpaperEngine {
                     CLSCTX_INPROC_SERVER,
                 )
                 .ok()
-                .and_then(|factory| factory.CreateInstance(0, &attrs).ok())
+                .and_then(|factory| {
+                    factory
+                        .CreateInstance(MF_MEDIA_ENGINE_REAL_TIME_MODE_FLAG, &attrs)
+                        .or_else(|_| factory.CreateInstance(0, &attrs))
+                        .ok()
+                })
                 .map(|eng| {
                     let _ = eng.SetLoop(true);
                     let _ = eng.SetAutoPlay(true);
@@ -3152,6 +3202,7 @@ impl VideoWallpaperEngine {
         self.pause_started_at = None;
         self.has_presented_frame = false;
         self.cached_crop = None;
+        self.native_video_size = (0, 0);
         self.end_poll_ticks = 0;
         self.initial_settle_done = false;
         self.player_started_at = None;
@@ -3173,6 +3224,7 @@ impl VideoWallpaperEngine {
         self._cb = None;
         self.clear_sample_textures();
         self.cached_crop = None;
+        self.native_video_size = (0, 0);
         self.end_poll_ticks = 0;
         self.pending_cover_pause = false;
         self.has_presented_frame = false;
@@ -3193,6 +3245,7 @@ impl VideoWallpaperEngine {
         self._cb = None;
         self.clear_sample_textures();
         self.cached_crop = None;
+        self.native_video_size = (0, 0);
         self.end_poll_ticks = 0;
         self.drop_swap_chain();
         self.dxgi_mgr = None;
@@ -3332,11 +3385,21 @@ impl VideoWallpaperEngine {
             }
             self.trim_gpu_memory();
         } else if should_pause && self.paused_by_cover {
-            if self.trim_on_pause
+            let has_frozen_swapchain = self.swap_chain.is_some() && self.swap_chain_has_frame;
+            let reclaim_delay_ms = compute_cover_reclaim_delay_ms(
+                self.trim_on_pause,
+                self.native_video_size.0,
+                self.native_video_size.1,
+            );
+            // Automatically reclaim heavyweight IMFMediaEngine decoder/surface commit (~300-500 MB
+            // on 4K videos) once covered for `reclaim_delay_ms`, whenever the Flip-Model SwapChain
+            // already holds the exact frozen last frame (zero blanking, zero flash), or when the
+            // user explicitly enabled `trim_on_pause` via the backdrop fallback.
+            if (has_frozen_swapchain || self.trim_on_pause)
                 && !self.pause_trimmed
                 && self
                     .pause_started_at
-                    .is_some_and(|at| at.elapsed() >= Duration::from_millis(6000))
+                    .is_some_and(|at| at.elapsed() >= Duration::from_millis(reclaim_delay_ms))
             {
                 self.pause_trimmed = true;
                 {
@@ -3346,8 +3409,8 @@ impl VideoWallpaperEngine {
                         self.pending_resume_sec = cur_t;
                     }
                 }
-                if self.swap_chain.is_some() && self.swap_chain_has_frame {
-                    // Fast Win11-safe path: drop ONLY IMFMediaEngine decoder/demuxer (~300+ MB)
+                if has_frozen_swapchain {
+                    // Fast Win11-safe path: drop ONLY IMFMediaEngine decoder/demuxer (~300-500 MB)
                     // while keeping the Flip-Model DXGI SwapChain & `video_hwnd` alive on screen
                     // with its exact last rendered frame — zero GPU readback stall & zero blanking!
                     drop(eng);
@@ -3425,6 +3488,7 @@ impl VideoWallpaperEngine {
                 && self.screen_w > 0
                 && self.screen_h > 0
             {
+                self.native_video_size = (vw, vh);
                 let va = vw as f32 / vh as f32;
                 let ma = self.screen_w as f32 / self.screen_h as f32;
                 let rect = if (va - ma).abs() < 0.01 {
@@ -3525,7 +3589,7 @@ impl VideoWallpaperEngine {
                     return;
                 }
                 // Wait strictly 1:1 right before Present() so the waitable swapchain semaphore
-                // never leaks and never stalls the UI thread when the GPU queue is full.
+                // can never leak if TransferVideoFrame returns an error on a seek frame.
                 if !waitable_h.0.is_null() {
                     let wait_ms = if force_current { 16 } else { 0 };
                     if WaitForSingleObject(waitable_h, wait_ms) != WAIT_OBJECT_0 {
@@ -4364,5 +4428,23 @@ mod tests {
             let parsed = crate::config::parse_config_ini(&ini).expect("parse config ini");
             assert_eq!(parsed.wallpaper_fps_cap, cap);
         }
+
+        // 5. 4K covered auto-reclaim delay and interactive UI yield cadence
+        assert_eq!(compute_cover_reclaim_delay_ms(true, 1920, 1080), 4_000);
+        assert_eq!(compute_cover_reclaim_delay_ms(false, 3840, 2160), 8_000);
+        assert_eq!(compute_cover_reclaim_delay_ms(false, 2560, 1440), 8_000);
+        assert_eq!(compute_cover_reclaim_delay_ms(false, 1920, 1080), 15_000);
+        assert_eq!(
+            compute_effective_pacer_interval_us(WallpaperFpsCap::Auto, 60, false),
+            16_666
+        );
+        assert_eq!(
+            compute_effective_pacer_interval_us(WallpaperFpsCap::Auto, 60, true),
+            33_333
+        );
+        assert_eq!(
+            compute_effective_pacer_interval_us(WallpaperFpsCap::Fps30, 60, true),
+            33_333
+        );
     }
 }

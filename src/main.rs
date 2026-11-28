@@ -1764,6 +1764,7 @@ unsafe extern "system" fn global_wnd_proc(
                         state.settings.tick_preview_ext(state.widgets.telemetry_extended());
                         sync_studio_live(state);
                     }
+                    sync_wallpaper_interactive_yield(state);
                     update_viz_timer(state);
 
                     if state.maintenance_ticks >= 75 {
@@ -2646,6 +2647,14 @@ fn should_run_workarea_watchdog(
     reserves_changed || now.duration_since(last_check) >= Duration::from_secs(15)
 }
 
+fn sync_wallpaper_interactive_yield(state: &mut AppState) {
+    let yield_ui = state.settings.is_visible()
+        || (state.config.mac_dock_enabled && state.mac_dock.is_hover_animating())
+        || state.on_battery_or_saver
+        || state.config.performance_mode == config::PerformanceMode::Eco;
+    state.wallpaper.set_interactive_yield(yield_ui);
+}
+
 fn update_dock_timer(state: &mut AppState) {
     let eff_fps = state
         .config
@@ -2665,6 +2674,7 @@ fn update_dock_timer(state: &mut AppState) {
             }
         }
     }
+    sync_wallpaper_interactive_yield(state);
 }
 
 #[allow(clippy::too_many_arguments)]

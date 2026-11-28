@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use windows::core::{w, BOOL, GUID, HRESULT, HSTRING, Interface, PCWSTR, PCSTR};
+use windows::core::{w, BOOL, GUID, HRESULT, HSTRING, Interface, PCWSTR, PCSTR, PWSTR};
 use windows::Devices::Radios::{Radio, RadioAccessStatus, RadioKind, RadioState};
 use windows::Foundation::{IPropertyValue, PropertyType, PropertyValue};
 use windows::Media::Control::{
@@ -64,6 +64,10 @@ use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_BINARY, REG_DWORD,
 };
 use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::System::Threading::{
+    GetCurrentThread, OpenProcess, QueryFullProcessImageNameW, SetThreadPriority,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, THREAD_PRIORITY_BELOW_NORMAL,
+};
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationInvokePattern,
@@ -279,18 +283,24 @@ impl SystemMediaEngine {
         let cca1 = Arc::clone(&cc_active);
         let aoa1 = Arc::clone(&audio_outputs_active);
         let aseq1 = Arc::clone(&audio_action_seq);
-        let media_thread = thread::spawn(move || {
-            run_smtc_and_cc_worker(sh1, rx, st1, awk1, cca1, aoa1, aseq1, hwnd_raw, notify_msg);
-        });
+        let media_thread = thread::Builder::new()
+            .name("autumn-media-cc".to_string())
+            .spawn(move || {
+                run_smtc_and_cc_worker(sh1, rx, st1, awk1, cca1, aoa1, aseq1, hwnd_raw, notify_msg);
+            })
+            .ok();
 
         let sh2 = Arc::clone(&shared);
         let st2 = Arc::clone(&stop);
         let wk2 = Arc::clone(&stop_wake);
         let fms2 = Arc::clone(&viz_frame_ms);
         let need2 = Arc::clone(&viz_needed);
-        let audio_thread = thread::spawn(move || {
-            run_wasapi_loopback_worker(sh2, st2, wk2, fms2, need2, hwnd_raw, notify_msg);
-        });
+        let audio_thread = thread::Builder::new()
+            .name("autumn-wasapi-viz".to_string())
+            .spawn(move || {
+                run_wasapi_loopback_worker(sh2, st2, wk2, fms2, need2, hwnd_raw, notify_msg);
+            })
+            .ok();
 
         Self {
             shared,
@@ -303,8 +313,8 @@ impl SystemMediaEngine {
             audio_action_seq,
             viz_frame_ms,
             viz_needed,
-            media_thread: Some(media_thread),
-            audio_thread: Some(audio_thread),
+            media_thread,
+            audio_thread,
         }
     }
 
@@ -494,6 +504,7 @@ fn run_smtc_and_cc_worker(
         return;
     }
     unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
     }
 
@@ -507,11 +518,13 @@ fn run_smtc_and_cc_worker(
     let mut prefer_desktop = false;
     let mut prev_media_key = (String::new(), String::new(), false, 0u64);
 
-    let mut last_cc_sync = Instant::now() - Duration::from_secs(10);
+    let mut last_cc_sync = Instant::now() - Duration::from_secs(20);
     let mut last_audio_enum = Instant::now() - Duration::from_secs(10);
     let mut last_media_sync = Instant::now() - Duration::from_secs(10);
     let mut cached_player_pids: HashMap<u32, DesktopPlayerKind> = HashMap::new();
-    let mut last_player_pid_scan = Instant::now() - Duration::from_secs(10);
+    let mut cached_pid_classes: HashMap<u32, Option<DesktopPlayerKind>> = HashMap::new();
+    let mut last_player_pid_scan = Instant::now() - Duration::from_secs(20);
+    let mut cc_heavy_cache = CcHeavyCache::default();
     let mut last_thumb_key = String::new();
     let mut last_cover_seq = 0u64;
     let mut cached_cover: Option<Arc<Vec<u8>>> = None;
@@ -635,8 +648,14 @@ fn run_smtc_and_cc_worker(
             }
         }
 
-        // Poll SMTC + Desktop Media Players (VLC, MPC-HC, PotPlayer, foobar2000, etc.) every ~350ms
-        if last_media_sync.elapsed() >= Duration::from_millis(350) {
+        // Poll SMTC + Desktop Media Players calmly (500ms while playing, 1000ms while idle)
+        // so background media monitoring uses ~0% CPU instead of hammering Win32 snapshots.
+        let media_poll_ms = if prev_media_key.2 || active_desktop_hwnd.load(Ordering::Relaxed) != 0 {
+            500
+        } else {
+            1000
+        };
+        if last_media_sync.elapsed() >= Duration::from_millis(media_poll_ms) {
             last_media_sync = Instant::now();
 
             // 1. Read SMTC session state
@@ -670,11 +689,17 @@ fn run_smtc_and_cc_worker(
             }
 
             // 2. Read WASAPI active audio sessions & desktop media player windows
-            let desk_opt = detect_desktop_player(
-                &mut cached_sess_mgr,
-                &mut cached_player_pids,
-                &mut last_player_pid_scan,
-            );
+            // Skip full process snapshot while SMTC is already actively playing.
+            let desk_opt = if smtc_playing {
+                None
+            } else {
+                detect_desktop_player(
+                    &mut cached_sess_mgr,
+                    &mut cached_player_pids,
+                    &mut cached_pid_classes,
+                    &mut last_player_pid_scan,
+                )
+            };
 
             if smtc_playing {
                 prefer_desktop = false;
@@ -764,17 +789,21 @@ fn run_smtc_and_cc_worker(
             }
         }
 
-        // Poll Control Center hardware/OS state every ~3000ms (or immediately after non-audio toggle),
-        // plus ultra-lightweight cached COM volume/mute/endpoint check on every wake (~160ms, <30us)
-        // so keyboard volume keys, device switches, and Windows mixer update instantly.
+        // Poll Control Center hardware/OS state calmly (6s when CC visible, 12s when covered,
+        // or immediately on any user toggle), plus ultra-lightweight cached COM volume/mute check
+        // on each wake (~450ms, <15us with zero endpoint re-enumeration RPCs).
         let want_outputs = audio_outputs_active.load(Ordering::Relaxed);
+        let cc_vis = cc_active.load(Ordering::Relaxed);
+        let cc_interval_ms = if cc_vis { 6000 } else { 12_000 };
         if !stop.load(Ordering::Relaxed)
-            && (had_action || prev_cc.is_none() || last_cc_sync.elapsed() >= Duration::from_millis(3000))
+            && (had_action
+                || prev_cc.is_none()
+                || last_cc_sync.elapsed() >= Duration::from_millis(cc_interval_ms))
         {
             let seq_before = audio_action_seq.load(Ordering::Acquire);
             last_cc_sync = Instant::now();
-            let mut cc = if had_action || cc_active.load(Ordering::Relaxed) {
-                collect_cc_snapshot(&mut cached_vol, want_outputs)
+            let mut cc = if had_action || cc_vis {
+                collect_cc_snapshot(&mut cached_vol, want_outputs, &mut cc_heavy_cache, had_action)
             } else {
                 let seed = prev_cc.as_ref().cloned().unwrap_or_default();
                 collect_cc_snapshot_light(&seed, &mut cached_vol, want_outputs)
@@ -854,7 +883,7 @@ fn run_smtc_and_cc_worker(
             }
         }
 
-        if !wait_for_action_or_timeout(&action_wake, Duration::from_millis(160)) {
+        if !wait_for_action_or_timeout(&action_wake, Duration::from_millis(450)) {
             break;
         }
     }
@@ -1232,85 +1261,40 @@ fn set_wifi_radio_wlan(enable: bool) -> bool {
     }
 }
 
-fn read_wifi_state() -> (bool, String) {
-    let mut radio_on = false;
+fn read_radios_flags() -> (bool, bool) {
+    let mut wifi_on = false;
+    let mut bt_on = false;
     if let Ok(op) = Radio::GetRadiosAsync() {
         if let Ok(list) = op.join() {
             for r in list {
-                if r.Kind().ok() == Some(RadioKind::WiFi) {
-                    radio_on = r.State().ok() == Some(RadioState::On);
+                match r.Kind().ok() {
+                    Some(RadioKind::WiFi) => wifi_on = r.State().ok() == Some(RadioState::On),
+                    Some(RadioKind::Bluetooth) => bt_on = r.State().ok() == Some(RadioState::On),
+                    _ => {}
                 }
             }
         }
     }
-    let mut ssid = String::new();
-    unsafe {
-        let mut neg = 0u32;
-        let mut client = windows::Win32::Foundation::HANDLE::default();
-        if WlanOpenHandle(2, None, &mut neg, &mut client) == 0 {
-            let mut list_ptr: *mut WLAN_INTERFACE_INFO_LIST = null_mut();
-            if WlanEnumInterfaces(client, None, &mut list_ptr) == 0 && !list_ptr.is_null() {
-                let cnt = (*list_ptr).dwNumberOfItems as usize;
-                let base = (*list_ptr).InterfaceInfo.as_ptr();
-                for i in 0..cnt {
-                    let info = &*base.add(i);
-                    if info.isState == windows::Win32::NetworkManagement::WiFi::wlan_interface_state_connected {
-                        radio_on = true;
-                        let mut data_sz = 0u32;
-                        let mut data_ptr: *mut c_void = null_mut();
-                        if WlanQueryInterface(
-                            client,
-                            &info.InterfaceGuid,
-                            wlan_intf_opcode_current_connection,
-                            None,
-                            &mut data_sz,
-                            &mut data_ptr,
-                            None,
-                        ) == 0
-                            && !data_ptr.is_null()
-                        {
-                            let attr = &*(data_ptr as *const WLAN_CONNECTION_ATTRIBUTES);
-                            let len = (attr.wlanAssociationAttributes.dot11Ssid.uSSIDLength as usize).min(32);
-                            if len > 0 {
-                                ssid = String::from_utf8_lossy(
-                                    &attr.wlanAssociationAttributes.dot11Ssid.ucSSID[..len],
-                                )
-                                .to_string();
-                            }
-                            WlanFreeMemory(data_ptr);
-                        }
-                    }
-                }
-                WlanFreeMemory(list_ptr as *mut c_void);
-            }
-            let _ = WlanCloseHandle(client, None);
-        }
+    (wifi_on, bt_on)
+}
+
+fn read_wifi_state() -> (bool, String) {
+    let (mut radio_on, _) = read_radios_flags();
+    let (connected, wlan_label, _) = read_wifi_wlan_fast();
+    if connected {
+        radio_on = true;
     }
     let label = if !radio_on {
         "Off".to_string()
-    } else if !ssid.is_empty() {
-        ssid
+    } else if connected {
+        wlan_label
     } else {
         "Disconnected".to_string()
     };
     (radio_on, label)
 }
 
-fn read_bt_state() -> (bool, String) {
-    let mut bt_on = false;
-    if let Ok(op) = Radio::GetRadiosAsync() {
-        if let Ok(list) = op.join() {
-            for r in list {
-                if r.Kind().ok() == Some(RadioKind::Bluetooth) {
-                    bt_on = r.State().ok() == Some(RadioState::On);
-                }
-            }
-        }
-    }
-    if !bt_on {
-        return (false, "Off".to_string());
-    }
-
+fn read_bt_connected_sub() -> String {
     let key_conn = DEVPROPKEY {
         fmtid: GUID::from_u128(0x83da6326_97a6_4088_9453_a1923f573b29),
         pid: 15,
@@ -1387,14 +1371,13 @@ fn read_bt_state() -> (bool, String) {
             let _ = SetupDiDestroyDeviceInfoList(hdev);
         }
     }
-    let sub = if names.len() == 1 {
+    if names.len() == 1 {
         names[0].clone()
     } else if names.len() > 1 {
         format!("Connected ({})", names.len())
     } else {
         "Not connected".to_string()
-    };
-    (true, sub)
+    }
 }
 
 fn read_reg_dword(root: HKEY, subkey: PCWSTR, name: PCWSTR) -> Option<u32> {
@@ -1848,6 +1831,7 @@ struct CachedAudioVolume {
     enumerator: Option<IMMDeviceEnumerator>,
     default_id: String,
     ep: Option<IAudioEndpointVolume>,
+    last_ep_verify: Instant,
 }
 
 impl CachedAudioVolume {
@@ -1856,12 +1840,14 @@ impl CachedAudioVolume {
             enumerator: None,
             default_id: String::new(),
             ep: None,
+            last_ep_verify: Instant::now() - Duration::from_secs(10),
         }
     }
 
     fn invalidate(&mut self) {
         self.default_id.clear();
         self.ep = None;
+        self.last_ep_verify = Instant::now() - Duration::from_secs(10);
     }
 
     fn ensure_enumerator(&mut self) -> Option<&IMMDeviceEnumerator> {
@@ -1874,12 +1860,20 @@ impl CachedAudioVolume {
     }
 
     /// Ensures `self.ep` points to the CURRENT default multimedia render endpoint.
-    /// Returns `Some((ep, endpoint_changed))`.
-    fn ensure_current_ep(&mut self) -> Option<(&IAudioEndpointVolume, bool)> {
+    /// Reuses the live `IAudioEndpointVolume` handle directly between 2.5s endpoint-change checks
+    /// so passive volume polling performs zero `GetDefaultAudioEndpoint` COM RPCs.
+    fn ensure_current_ep(&mut self, force_verify: bool) -> Option<(&IAudioEndpointVolume, bool)> {
+        if !force_verify
+            && self.ep.is_some()
+            && self.last_ep_verify.elapsed() < Duration::from_millis(2500)
+        {
+            return self.ep.as_ref().map(|e| (e, false));
+        }
         unsafe {
             let enumerator = self.ensure_enumerator()?.clone();
             let dev = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia).ok()?;
             let cur_id = read_mmdevice_id(&dev).unwrap_or_default();
+            self.last_ep_verify = Instant::now();
             if self.ep.is_some() && !cur_id.is_empty() && cur_id == self.default_id {
                 return self.ep.as_ref().map(|e| (e, false));
             }
@@ -1894,7 +1888,17 @@ impl CachedAudioVolume {
     /// Reads `(vol_pct, vol_muted, default_endpoint_changed)` from the current default output.
     fn read_volume(&mut self) -> (u8, bool, bool) {
         unsafe {
-            if let Some((ep, changed)) = self.ensure_current_ep() {
+            if let Some((ep, changed)) = self.ensure_current_ep(false) {
+                if let (Ok(scalar), Ok(muted)) = (ep.GetMasterVolumeLevelScalar(), ep.GetMute()) {
+                    return (
+                        (scalar * 100.0).round().clamp(0.0, 100.0) as u8,
+                        muted.as_bool(),
+                        changed,
+                    );
+                }
+                self.invalidate();
+            }
+            if let Some((ep, changed)) = self.ensure_current_ep(true) {
                 if let (Ok(scalar), Ok(muted)) = (ep.GetMasterVolumeLevelScalar(), ep.GetMute()) {
                     return (
                         (scalar * 100.0).round().clamp(0.0, 100.0) as u8,
@@ -1911,7 +1915,7 @@ impl CachedAudioVolume {
     fn set_volume(&mut self, pct: u8, mute_opt: Option<bool>) {
         unsafe {
             let scalar = (pct.min(100) as f32) / 100.0;
-            if let Some((ep, _)) = self.ensure_current_ep() {
+            if let Some((ep, _)) = self.ensure_current_ep(true) {
                 let mut ok = ep.SetMasterVolumeLevelScalar(scalar, null()).is_ok();
                 if ok {
                     if let Some(m) = mute_opt {
@@ -1923,7 +1927,7 @@ impl CachedAudioVolume {
                 }
                 self.invalidate();
             }
-            if let Some((ep, _)) = self.ensure_current_ep() {
+            if let Some((ep, _)) = self.ensure_current_ep(true) {
                 let _ = ep.SetMasterVolumeLevelScalar(scalar, null());
                 if let Some(m) = mute_opt {
                     let _ = ep.SetMute(m, null());
@@ -1934,7 +1938,7 @@ impl CachedAudioVolume {
 
     fn toggle_mute(&mut self) {
         unsafe {
-            if let Some((ep, _)) = self.ensure_current_ep() {
+            if let Some((ep, _)) = self.ensure_current_ep(true) {
                 if let Ok(muted) = ep.GetMute() {
                     if ep.SetMute(!muted.as_bool(), null()).is_ok() {
                         return;
@@ -1942,7 +1946,7 @@ impl CachedAudioVolume {
                 }
                 self.invalidate();
             }
-            if let Some((ep, _)) = self.ensure_current_ep() {
+            if let Some((ep, _)) = self.ensure_current_ep(true) {
                 if let Ok(muted) = ep.GetMute() {
                     let _ = ep.SetMute(!muted.as_bool(), null());
                 }
@@ -2155,24 +2159,99 @@ fn set_master_volume(pct: u8, mute_opt: Option<bool>) {
     }
 }
 
+struct CcHeavyCache {
+    last_refresh: Option<Instant>,
+    bt_sub: String,
+    cap_on: bool,
+    acc_on: bool,
+    saver_com: Option<bool>,
+    hot_com: bool,
+    near_com: Option<bool>,
+}
+
+impl Default for CcHeavyCache {
+    fn default() -> Self {
+        Self {
+            last_refresh: None,
+            bt_sub: "Not connected".to_string(),
+            cap_on: false,
+            acc_on: false,
+            saver_com: None,
+            hot_com: false,
+            near_com: None,
+        }
+    }
+}
+
 fn collect_cc_snapshot(
     cached_vol: &mut CachedAudioVolume,
     include_outputs: bool,
+    heavy: &mut CcHeavyCache,
+    force_heavy: bool,
 ) -> CcSnapshot {
-    let (wifi_on, wifi_name) = read_wifi_state();
-    let (wlan_conn, _, wlan_sig) = read_wifi_wlan_fast();
+    // Single Radio::GetRadiosAsync() + single Wlan query instead of duplicating both
+    let (mut wifi_on, bt_on) = read_radios_flags();
+    let (wlan_conn, wlan_label, wlan_sig) = read_wifi_wlan_fast();
+    if wlan_conn {
+        wifi_on = true;
+    }
+    let wifi_name = if !wifi_on {
+        "Off".to_string()
+    } else if wlan_conn {
+        wlan_label
+    } else {
+        "Disconnected".to_string()
+    };
     let wifi_signal = if wifi_on {
         if wlan_conn && wlan_sig > 0 { wlan_sig } else { 85 }
     } else {
         0
     };
-    let (bt_on, bt_sub) = read_bt_state();
+
+    let refresh_heavy = force_heavy
+        || heavy
+            .last_refresh
+            .map(|t| t.elapsed() >= Duration::from_secs(15))
+            .unwrap_or(true);
+    if refresh_heavy {
+        heavy.last_refresh = Some(Instant::now());
+        heavy.bt_sub = if bt_on {
+            read_bt_connected_sub()
+        } else {
+            "Off".to_string()
+        };
+        let (cap, acc) = scan_process_flags();
+        heavy.cap_on = cap;
+        heavy.acc_on = acc;
+        heavy.saver_com = try_get_system_setting_bool(
+            "SettingsHandlers_OneCore_BatterySaver.dll",
+            "SystemSettings_BatterySaver_LandingPage_OverrideControl",
+        );
+        heavy.hot_com = try_get_system_setting_bool(
+            "NetworkMobileSettings.dll",
+            "SystemSettings_Connections_InternetSharingEnabled",
+        )
+        .unwrap_or(false);
+        heavy.near_com = try_get_system_setting_bool(
+            "SettingsHandlers_SharedExperiences_Rome.dll",
+            "SystemSettings_SharedExperiences_NearShareQuickAction",
+        );
+    }
+
+    let bt_sub = if !bt_on {
+        "Off".to_string()
+    } else if heavy.bt_sub == "Off" {
+        read_bt_connected_sub()
+    } else {
+        heavy.bt_sub.clone()
+    };
     let air_on = read_reg_dword(
         HKEY_LOCAL_MACHINE,
         w!(r"SYSTEM\CurrentControlSet\Control\RadioManagement\SystemRadioState"),
         PCWSTR::null(),
     ) == Some(1);
-    let (cap_on, mut acc_on) = scan_process_flags();
+    let cap_on = heavy.cap_on;
+    let mut acc_on = heavy.acc_on;
     if !acc_on {
         if read_reg_dword(
             HKEY_CURRENT_USER,
@@ -2193,29 +2272,14 @@ fn collect_cc_snapshot(
         ) == Some(1)
         {
             saver_on = true;
-        } else if let Some(v) = try_get_system_setting_bool(
-            "SettingsHandlers_OneCore_BatterySaver.dll",
-            "SystemSettings_BatterySaver_LandingPage_OverrideControl",
-        ) {
+        } else if let Some(v) = heavy.saver_com {
             saver_on = v;
         }
     }
     // Fresh SettingsHandlers_Display instances return unhydrated false at 0ms; CloudStore holds the live state.
     let night_on = read_night_light();
-    let hot_on = if read_hotspot_state() {
-        true
-    } else {
-        try_get_system_setting_bool(
-            "NetworkMobileSettings.dll",
-            "SystemSettings_Connections_InternetSharingEnabled",
-        )
-        .unwrap_or(false)
-    };
-    let near_on = try_get_system_setting_bool(
-        "SettingsHandlers_SharedExperiences_Rome.dll",
-        "SystemSettings_SharedExperiences_NearShareQuickAction",
-    )
-    .unwrap_or_else(|| {
+    let hot_on = read_hotspot_state() || heavy.hot_com;
+    let near_on = heavy.near_com.unwrap_or_else(|| {
         read_reg_dword(
             HKEY_CURRENT_USER,
             w!(r"Software\Microsoft\Windows\CurrentVersion\CDP"),
@@ -2482,6 +2546,7 @@ fn run_wasapi_loopback_worker(
         return;
     }
     unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
 
@@ -2757,10 +2822,15 @@ fn run_wasapi_loopback_worker(
                     }
                 } else {
                     // Only query COM endpoint peak meter when loopback buffer was silent AND volume > 0% & unmuted.
-                    let hw_meter_peak = meter_opt
-                        .as_ref()
-                        .and_then(|m| m.GetPeakValue().ok())
-                        .unwrap_or(0.0);
+                    // When long-silent (>30 ticks), probe every other tick to cut idle COM RPCs in half.
+                    let hw_meter_peak = if silent_ticks <= 30 || silent_ticks % 2 == 0 {
+                        meter_opt
+                            .as_ref()
+                            .and_then(|m| m.GetPeakValue().ok())
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
                     if hw_meter_peak > 0.003 {
                         // Fallback scaled monotonically by master endpoint volume so low volume never spikes full-up
                         silent_ticks = 0;
@@ -2819,7 +2889,7 @@ fn run_wasapi_loopback_worker(
                 let active_sleep_ms = viz_frame_ms.load(Ordering::Relaxed).clamp(8, 66) as u64;
                 if !sleep_or_stop(
                     &stop_wake,
-                    Duration::from_millis(if silent_ticks > 30 { 140 } else { active_sleep_ms }),
+                    Duration::from_millis(if silent_ticks > 30 { 250 } else { active_sleep_ms }),
                 ) {
                     break;
                 }
@@ -3530,22 +3600,83 @@ fn parse_desktop_player_title(kind: DesktopPlayerKind, raw: &str) -> Option<(Str
     Some((cleaned.to_string(), kind.display_name().to_string()))
 }
 
+unsafe fn query_pid_desktop_player_kind(pid: u32) -> Option<DesktopPlayerKind> {
+    if pid == 0 {
+        return None;
+    }
+    let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+        return None;
+    };
+    let mut buf = [0u16; 320];
+    let mut len = buf.len() as u32;
+    let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+    let _ = CloseHandle(h);
+    if !ok || len == 0 {
+        return None;
+    }
+    let full = String::from_utf16_lossy(&buf[..len as usize]);
+    let exe = full
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&full)
+        .to_ascii_lowercase();
+    DesktopPlayerKind::from_exe(&exe)
+}
+
+/// Pure helper determining whether a full `CreateToolhelp32Snapshot` scan is due.
+pub(crate) fn should_run_full_player_pid_scan(
+    elapsed: Duration,
+    has_known_players: bool,
+) -> bool {
+    let interval = if has_known_players {
+        Duration::from_secs(6)
+    } else {
+        Duration::from_secs(12)
+    };
+    elapsed >= interval
+}
+
 fn detect_desktop_player(
     cached_mgr: &mut Option<IAudioSessionManager2>,
     cached_pids: &mut HashMap<u32, DesktopPlayerKind>,
+    cached_pid_classes: &mut HashMap<u32, Option<DesktopPlayerKind>>,
     last_pid_scan: &mut Instant,
 ) -> Option<DesktopPlayerMatch> {
     unsafe {
         let active_pids = query_active_audio_pids(cached_mgr);
-        let need_rescan = last_pid_scan.elapsed() >= Duration::from_millis(1400)
-            || active_pids.iter().any(|pid| !cached_pids.contains_key(pid));
-        if need_rescan {
+
+        // Classify any newly seen active-audio PID with a single O(1) OpenProcess query (~10us)
+        // instead of triggering a full system-wide CreateToolhelp32Snapshot every 350ms whenever
+        // a browser or chat app holds an audio session.
+        if cached_pid_classes.len() > 128 {
+            cached_pid_classes.clear();
+        }
+        for &pid in &active_pids {
+            let kind_opt = *cached_pid_classes
+                .entry(pid)
+                .or_insert_with(|| query_pid_desktop_player_kind(pid));
+            if let Some(kind) = kind_opt {
+                cached_pids.insert(pid, kind);
+            }
+        }
+
+        if should_run_full_player_pid_scan(last_pid_scan.elapsed(), !cached_pids.is_empty()) {
             *cached_pids = collect_desktop_player_pids();
+            cached_pid_classes.clear();
+            for (&pid, &kind) in cached_pids.iter() {
+                cached_pid_classes.insert(pid, Some(kind));
+            }
+            for &pid in &active_pids {
+                cached_pid_classes
+                    .entry(pid)
+                    .or_insert_with(|| cached_pids.get(&pid).copied());
+            }
             *last_pid_scan = Instant::now();
         }
         let pids = &*cached_pids;
 
-        if pids.is_empty() && active_pids.is_empty() {
+        // If ZERO known desktop media player processes exist, skip EnumWindows completely!
+        if pids.is_empty() {
             return None;
         }
 
@@ -3568,7 +3699,9 @@ fn detect_desktop_player(
             let ctx = &mut *(lparam.0 as *mut EnumCtx<'_>);
             let mut pid = 0u32;
             GetWindowThreadProcessId(hw, Some(&mut pid));
-            let known_kind = ctx.pids.get(&pid).copied();
+            let Some(kind) = ctx.pids.get(&pid).copied() else {
+                return BOOL(1);
+            };
 
             let mut tbuf = [0u16; 512];
             let tlen = GetWindowTextW(hw, &mut tbuf);
@@ -3576,22 +3709,6 @@ fn detect_desktop_player(
                 return BOOL(1);
             }
             let raw_title = String::from_utf16_lossy(&tbuf[..tlen as usize]);
-
-            let inferred_kind = known_kind.or_else(|| {
-                let low = raw_title.to_ascii_lowercase();
-                if low.ends_with(" - vlc media player") {
-                    Some(DesktopPlayerKind::Vlc)
-                } else if low.ends_with(" - potplayer") || low.ends_with(" - potplayer64") {
-                    Some(DesktopPlayerKind::PotPlayer)
-                } else if low.ends_with(" - mpv") || low.ends_with(" - mpv.net") {
-                    Some(DesktopPlayerKind::Mpv)
-                } else {
-                    None
-                }
-            });
-            let Some(kind) = inferred_kind else {
-                return BOOL(1);
-            };
 
             let cls = hwnd_class_name(hw);
             let cls_low = cls.to_ascii_lowercase();
@@ -3619,7 +3736,7 @@ fn detect_desktop_player(
         }
 
         let mut ctx = EnumCtx {
-            pids: &pids,
+            pids,
             active_pids: &active_pids,
             cands: Vec::new(),
         };
@@ -4102,5 +4219,14 @@ mod tests {
         assert!(!s3.audio_outputs[0].is_default);
         assert!(s3.audio_outputs[1].is_default);
         assert_eq!(engine.audio_action_seq.load(Ordering::Acquire), 3);
+    }
+
+    #[test]
+    fn desktop_player_full_pid_scan_is_throttled_when_idle() {
+        assert!(!should_run_full_player_pid_scan(Duration::from_millis(350), false));
+        assert!(!should_run_full_player_pid_scan(Duration::from_secs(11), false));
+        assert!(should_run_full_player_pid_scan(Duration::from_secs(12), false));
+        assert!(!should_run_full_player_pid_scan(Duration::from_secs(5), true));
+        assert!(should_run_full_player_pid_scan(Duration::from_secs(6), true));
     }
 }

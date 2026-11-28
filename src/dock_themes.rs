@@ -11,7 +11,8 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1LinearGradientBrush, ID2D1PathGeometry, ID2D1RadialGradientBrush, ID2D1RenderTarget,
     ID2D1SolidColorBrush, ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT,
     D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_BRUSH_PROPERTIES,
-    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_CAP_STYLE_ROUND, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_CAP_STYLE_ROUND,
+    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_GAMMA_2_2,
     D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
     D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
@@ -2330,8 +2331,8 @@ pub fn rgba(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
     }
 }
 
-unsafe fn create_grad(
-    rt: &ID2D1DCRenderTarget,
+unsafe fn create_grad_rt(
+    rt: &ID2D1RenderTarget,
     start: Vector2,
     end: Vector2,
     stops: &[D2D1_GRADIENT_STOP],
@@ -2346,8 +2347,17 @@ unsafe fn create_grad(
     rt.CreateLinearGradientBrush(&props, None, &col).ok()
 }
 
-unsafe fn create_radial_grad(
+unsafe fn create_grad(
     rt: &ID2D1DCRenderTarget,
+    start: Vector2,
+    end: Vector2,
+    stops: &[D2D1_GRADIENT_STOP],
+) -> Option<ID2D1LinearGradientBrush> {
+    create_grad_rt(rt, start, end, stops)
+}
+
+unsafe fn create_radial_grad_rt(
+    rt: &ID2D1RenderTarget,
     center: Vector2,
     offset: Vector2,
     rx: f32,
@@ -2364,6 +2374,17 @@ unsafe fn create_radial_grad(
         radiusY: ry.max(1.0),
     };
     rt.CreateRadialGradientBrush(&props, None, &col).ok()
+}
+
+unsafe fn create_radial_grad(
+    rt: &ID2D1DCRenderTarget,
+    center: Vector2,
+    offset: Vector2,
+    rx: f32,
+    ry: f32,
+    stops: &[D2D1_GRADIENT_STOP],
+) -> Option<ID2D1RadialGradientBrush> {
+    create_radial_grad_rt(rt, center, offset, rx, ry, stops)
 }
 
 /// Active screen-aligned Gaussian-blurred desktop wallpaper backdrop bound during a dock paint pass.
@@ -2662,8 +2683,8 @@ pub unsafe fn draw_macos_soft_shadow(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_macos_soft_shadow_alpha(
-    rt: &ID2D1DCRenderTarget,
+unsafe fn draw_macos_soft_shadow_rt(
+    rt: &ID2D1RenderTarget,
     br: &ID2D1SolidColorBrush,
     r: D2D_RECT_F,
     rad: f32,
@@ -2714,6 +2735,20 @@ pub unsafe fn draw_macos_soft_shadow_alpha(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_macos_soft_shadow_alpha(
+    rt: &ID2D1DCRenderTarget,
+    br: &ID2D1SolidColorBrush,
+    r: D2D_RECT_F,
+    rad: f32,
+    is_circle: bool,
+    is_light: bool,
+    u: f32,
+    alpha_mul: f32,
+) {
+    draw_macos_soft_shadow_rt(rt, br, r, rad, is_circle, is_light, u, alpha_mul);
+}
+
 /// Photorealistic 5-stop vertical Fresnel optical glass rim (bright curved top catchlight,
 /// translucent crystal sides, crisp secondary bottom bounce + subtle outer ambient edge).
 #[allow(dead_code, clippy::too_many_arguments)]
@@ -2731,8 +2766,8 @@ pub unsafe fn draw_fresnel_glass_rim(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_fresnel_glass_rim_alpha(
-    rt: &ID2D1DCRenderTarget,
+unsafe fn draw_fresnel_glass_rim_rt(
+    rt: &ID2D1RenderTarget,
     br: &ID2D1SolidColorBrush,
     r: D2D_RECT_F,
     rad: f32,
@@ -2801,7 +2836,7 @@ pub unsafe fn draw_fresnel_glass_rim_alpha(
             D2D1_GRADIENT_STOP { position: 1.00, color: rgba(245, 198, 232, (0.24 * b).min(0.48) * am) },
         ]
     };
-    if let Some(pg) = create_grad(
+    if let Some(pg) = create_grad_rt(
         rt,
         Vector2 { X: r.left, Y: r.top },
         Vector2 { X: r.right, Y: r.bottom },
@@ -2849,7 +2884,7 @@ pub unsafe fn draw_fresnel_glass_rim_alpha(
     };
     let cx = (r.left + r.right) * 0.5;
     let sw = (1.15 * b).clamp(1.0, 1.55) * u;
-    if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: r.top }, Vector2 { X: cx, Y: r.bottom }, &stops) {
+    if let Some(g) = create_grad_rt(rt, Vector2 { X: cx, Y: r.top }, Vector2 { X: cx, Y: r.bottom }, &stops) {
         if is_circle {
             let cy = (r.top + r.bottom) * 0.5;
             rt.DrawEllipse(
@@ -2869,13 +2904,69 @@ pub unsafe fn draw_fresnel_glass_rim_alpha(
     }
 }
 
-/// Photorealistic Apple OS26 Liquid Glass 3D squircle keycap:
-/// 4-pass soft shadow + Gaussian-blurred convex-refracted wallpaper + radial milky top dome mist
-/// + lower internal light bounce + 5-stop curved pure-white Fresnel specular rim.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_os26_liquid_glass_keycap(
+pub unsafe fn draw_fresnel_glass_rim_alpha(
     rt: &ID2D1DCRenderTarget,
-    d2d: Option<&ID2D1Factory>,
+    br: &ID2D1SolidColorBrush,
+    r: D2D_RECT_F,
+    rad: f32,
+    is_circle: bool,
+    is_light: bool,
+    boost: f32,
+    u: f32,
+    alpha_mul: f32,
+) {
+    draw_fresnel_glass_rim_rt(rt, br, r, rad, is_circle, is_light, boost, u, alpha_mul);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Os26KeycapCacheKey {
+    rt_ptr: usize,
+    w_q: i32,
+    h_q: i32,
+    rad_q: i32,
+    is_light: bool,
+    is_hovered: bool,
+    is_active: bool,
+    u_q: u16,
+    u_tint: u8,
+    card_pct: u8,
+}
+
+struct Os26KeycapCacheEntry {
+    key: Os26KeycapCacheKey,
+    pad: f32,
+    bmp: ID2D1Bitmap,
+    last_used: u64,
+}
+
+struct Os26KeycapCacheStore {
+    stamp: u64,
+    entries: Vec<Os26KeycapCacheEntry>,
+}
+
+const MAX_OS26_KEYCAP_CACHE: usize = 64;
+
+thread_local! {
+    static OS26_KEYCAP_CACHE: RefCell<Os26KeycapCacheStore> = const {
+        RefCell::new(Os26KeycapCacheStore {
+            stamp: 0,
+            entries: Vec::new(),
+        })
+    };
+}
+
+fn evict_os26_keycap_cache_ptr(ptr: usize) {
+    OS26_KEYCAP_CACHE.with(|c| {
+        if let Ok(mut store) = c.try_borrow_mut() {
+            store.entries.retain(|e| e.key.rt_ptr != ptr);
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_os26_keycap_procedural_rt(
+    rt: &ID2D1RenderTarget,
     br: &ID2D1SolidColorBrush,
     k_r: D2D_RECT_F,
     rad: f32,
@@ -2883,30 +2974,22 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
     is_hovered: bool,
     is_active: bool,
     u: f32,
+    card_k: f32,
+    live_hw: bool,
+    has_blur: bool,
+    u_tint: u8,
 ) {
-    let card_k = active_dock_card_alpha();
-    if card_k <= 0.01 {
-        return;
-    }
     let w = (k_r.right - k_r.left).max(4.0);
     let h = (k_r.bottom - k_r.top).max(4.0);
     let cx = (k_r.left + k_r.right) * 0.5;
     let k_rr = D2D1_ROUNDED_RECT { rect: k_r, radiusX: rad, radiusY: rad };
-
-    // 1. Soft multi-pass macOS elevation drop shadow
-    draw_macos_soft_shadow_alpha(rt, br, k_r, rad, false, is_light, u, card_k);
-
-    // 2. Real Gaussian-blurred + 0.84x convex-lens-refracted desktop wallpaper clipped inside keycap!
-    let has_blur = draw_backdrop_blurred_rrect(rt, d2d, k_r, rad, 0.84, 0.96 * card_k);
-
-    // 3. Ultra-clear MacBook Liquid Glass optical body glaze (scales smoothly with Dock Glass Opacity & Icon Card Opacity)
-    let live_hw = is_live_hw_blur_active();
     let k_theme = if is_light {
         TaskbarTheme::Os26LiquidGlassLight
     } else {
         TaskbarTheme::Os26LiquidGlassDark
     };
-    let u_tint = active_dock_tint_alpha_for(k_theme);
+
+    // 3. Ultra-clear MacBook Liquid Glass optical body glaze
     let body_stops = if is_light {
         let raw_hi = if live_hw {
             if is_hovered { 0.34 } else { 0.24 }
@@ -2970,7 +3053,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
             D2D1_GRADIENT_STOP { position: 1.0, color: rgba(8, 18, 32, a_bot) },
         ]
     };
-    if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: k_r.top }, Vector2 { X: cx, Y: k_r.bottom }, &body_stops) {
+    if let Some(g) = create_grad_rt(rt, Vector2 { X: cx, Y: k_r.top }, Vector2 { X: cx, Y: k_r.bottom }, &body_stops) {
         rt.FillRoundedRectangle(&k_rr, &g);
     }
 
@@ -2988,7 +3071,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         D2D1_GRADIENT_STOP { position: 0.45, color: rgba(232, 244, 255, dome_a * 0.38) },
         D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 255, 255, 0.0) },
     ];
-    if let Some(rg) = create_radial_grad(
+    if let Some(rg) = create_radial_grad_rt(
         rt,
         Vector2 { X: cx, Y: k_r.top + h * 0.06 },
         Vector2 { X: 0.0, Y: 0.0 },
@@ -3006,7 +3089,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         D2D1_GRADIENT_STOP { position: 0.55, color: rgba(210, 232, 255, bot_a * 0.28) },
         D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 255, 255, 0.0) },
     ];
-    if let Some(bg) = create_radial_grad(
+    if let Some(bg) = create_radial_grad_rt(
         rt,
         Vector2 { X: cx, Y: k_r.bottom - h * 0.02 },
         Vector2 { X: 0.0, Y: 0.0 },
@@ -3019,7 +3102,180 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
 
     // 6. Curved 5-stop pure-white Fresnel specular rim
     let boost = if is_hovered { 1.24 } else if is_active { 1.12 } else { 1.0 };
-    draw_fresnel_glass_rim_alpha(rt, br, k_r, rad, false, is_light, boost, u, card_k);
+    draw_fresnel_glass_rim_rt(rt, br, k_r, rad, false, is_light, boost, u, card_k);
+}
+
+/// Photorealistic Apple OS26 Liquid Glass 3D squircle keycap:
+/// 4-pass soft shadow + Gaussian-blurred convex-refracted wallpaper + radial milky top dome mist
+/// + lower internal light bounce + 5-stop curved pure-white Fresnel specular rim.
+/// When live Windows 11 DWM Acrylic is active underneath, caches the baked procedural keycap
+/// bitmap per `(size, state, tint, opacity)` so dock hover repaints blit via 1 cached DrawBitmap
+/// instead of re-allocating 5 COM gradients + 2 software radial gradients per icon every frame.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_os26_liquid_glass_keycap(
+    rt: &ID2D1DCRenderTarget,
+    d2d: Option<&ID2D1Factory>,
+    br: &ID2D1SolidColorBrush,
+    k_r: D2D_RECT_F,
+    rad: f32,
+    is_light: bool,
+    is_hovered: bool,
+    is_active: bool,
+    u: f32,
+) {
+    let card_k = active_dock_card_alpha();
+    if card_k <= 0.01 {
+        return;
+    }
+    let w = (k_r.right - k_r.left).max(4.0);
+    let h = (k_r.bottom - k_r.top).max(4.0);
+    let live_hw = is_live_hw_blur_active();
+    let k_theme = if is_light {
+        TaskbarTheme::Os26LiquidGlassLight
+    } else {
+        TaskbarTheme::Os26LiquidGlassDark
+    };
+    let u_tint = active_dock_tint_alpha_for(k_theme);
+
+    if live_hw && w <= 220.0 && h <= 220.0 {
+        let base_rt: &ID2D1RenderTarget = rt;
+        let key = Os26KeycapCacheKey {
+            rt_ptr: base_rt.as_raw() as usize,
+            w_q: ((w.round() as i32 + 1) & !1).clamp(16, 224),
+            h_q: ((h.round() as i32 + 1) & !1).clamp(16, 224),
+            rad_q: (rad.round() as i32).clamp(2, 64),
+            is_light,
+            is_hovered,
+            is_active,
+            u_q: (u.clamp(0.5, 4.0) * 100.0).round() as u16,
+            u_tint,
+            card_pct: (card_k * 100.0).round().clamp(0.0, 100.0) as u8,
+        };
+        let hit = OS26_KEYCAP_CACHE.with(|c| {
+            let mut store = c.try_borrow_mut().ok()?;
+            store.stamp = store.stamp.wrapping_add(1);
+            let stamp = store.stamp;
+            if let Some(e) = store.entries.iter_mut().find(|e| e.key == key) {
+                e.last_used = stamp;
+                return Some((e.bmp.clone(), e.pad));
+            }
+            None
+        });
+        let cached_opt = if hit.is_some() {
+            hit
+        } else {
+            let pad = (10.0 * u).ceil().clamp(8.0, 32.0);
+            let bw = key.w_q as f32 + pad * 2.0;
+            let bh = key.h_q as f32 + pad * 2.0;
+            let sz = D2D_SIZE_F { width: bw, height: bh };
+            if let Ok(crt) = rt.CreateCompatibleRenderTarget(
+                Some(&sz),
+                None,
+                None,
+                D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
+            ) {
+                let crt_rt: &ID2D1RenderTarget = &crt;
+                if let Ok(cbr) = crt_rt.CreateSolidColorBrush(&rgba(255, 255, 255, 1.0), None) {
+                    let local_r = D2D_RECT_F {
+                        left: pad,
+                        top: pad,
+                        right: pad + key.w_q as f32,
+                        bottom: pad + key.h_q as f32,
+                    };
+                    crt_rt.BeginDraw();
+                    crt_rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    crt_rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+                    draw_macos_soft_shadow_rt(
+                        crt_rt,
+                        &cbr,
+                        local_r,
+                        key.rad_q as f32,
+                        false,
+                        is_light,
+                        u,
+                        card_k,
+                    );
+                    paint_os26_keycap_procedural_rt(
+                        crt_rt,
+                        &cbr,
+                        local_r,
+                        key.rad_q as f32,
+                        is_light,
+                        is_hovered,
+                        is_active,
+                        u,
+                        card_k,
+                        true,
+                        true,
+                        u_tint,
+                    );
+                    if crt_rt.EndDraw(None, None).is_ok() {
+                        if let Ok(bmp) = crt.GetBitmap() {
+                            OS26_KEYCAP_CACHE.with(|c| {
+                                if let Ok(mut store) = c.try_borrow_mut() {
+                                    store.stamp = store.stamp.wrapping_add(1);
+                                    let stamp = store.stamp;
+                                    if store.entries.len() >= MAX_OS26_KEYCAP_CACHE {
+                                        if let Some((evict_idx, _)) = store
+                                            .entries
+                                            .iter()
+                                            .enumerate()
+                                            .min_by_key(|(_, e)| e.last_used)
+                                        {
+                                            store.entries.swap_remove(evict_idx);
+                                        }
+                                    }
+                                    store.entries.push(Os26KeycapCacheEntry {
+                                        key,
+                                        pad,
+                                        bmp: bmp.clone(),
+                                        last_used: stamp,
+                                    });
+                                }
+                            });
+                            Some((bmp, pad))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some((bmp, pad)) = cached_opt {
+            let dst = D2D_RECT_F {
+                left: k_r.left - pad,
+                top: k_r.top - pad,
+                right: k_r.right + pad,
+                bottom: k_r.bottom + pad,
+            };
+            rt.DrawBitmap(&bmp, Some(&dst), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+            return;
+        }
+    }
+
+    // Fallback / non-live-hw-blur path (e.g., Settings preview or software wallpaper refraction)
+    draw_macos_soft_shadow_rt(rt, br, k_r, rad, false, is_light, u, card_k);
+    let has_blur = draw_backdrop_blurred_rrect(rt, d2d, k_r, rad, 0.84, 0.96 * card_k);
+    paint_os26_keycap_procedural_rt(
+        rt,
+        br,
+        k_r,
+        rad,
+        is_light,
+        is_hovered,
+        is_active,
+        u,
+        card_k,
+        live_hw,
+        has_blur,
+        u_tint,
+    );
 }
 
 /// Renders ONE sleek unified photorealistic floating tray+clock capsule for barless
@@ -8426,11 +8682,17 @@ pub fn evict_luxury_hud_rt(rt: &ID2D1RenderTarget) {
             store.entries.retain(|e| e.rt_ptr != ptr);
         }
     });
+    evict_os26_keycap_cache_ptr(ptr);
 }
 
 #[cfg(test)]
 pub fn clear_luxury_hud_caches() {
     LUX_HUD_CACHE.with(|c| {
+        if let Ok(mut store) = c.try_borrow_mut() {
+            store.entries.clear();
+        }
+    });
+    OS26_KEYCAP_CACHE.with(|c| {
         if let Ok(mut store) = c.try_borrow_mut() {
             store.entries.clear();
         }

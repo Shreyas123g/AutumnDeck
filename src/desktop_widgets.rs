@@ -13035,6 +13035,10 @@ impl DesktopWidgets {
         if !self.visible || self.hwnd.0.is_null() {
             return;
         }
+        if self.covered_by_maximized {
+            self.viz_dirty = true;
+            return;
+        }
         let audio_sw_on = self.cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].enabled;
         if (self.cfg.show_music || self.cfg.show_cc || audio_sw_on)
             && self.drag_widget.is_none()
@@ -13061,6 +13065,7 @@ impl DesktopWidgets {
                 self.covered_by_maximized = true;
                 self.covered_since = Some(Instant::now());
                 self.covered_trimmed = false;
+                self.media_engine.set_cc_active(false);
             } else if !self.covered_trimmed
                 && self
                     .covered_since
@@ -13098,6 +13103,8 @@ impl DesktopWidgets {
         self.covered_by_maximized = false;
         self.covered_since = None;
         self.covered_trimmed = false;
+        self.media_engine
+            .set_cc_active(self.cfg.widgets_enabled && self.cfg.show_cc);
         if self.visible && !self.hwnd.0.is_null() {
             self.last_fx_tick = Instant::now();
             self.viz_dirty = true;
@@ -13907,7 +13914,8 @@ impl DesktopWidgets {
     pub fn apply_config(&mut self, cfg: &AppConfig) {
         self.cfg = cfg.clone();
         self.visible = cfg.widgets_enabled;
-        self.media_engine.set_cc_active(cfg.widgets_enabled && cfg.show_cc);
+        self.media_engine
+            .set_cc_active(!self.covered_by_maximized && cfg.widgets_enabled && cfg.show_cc);
         self.media_engine.set_audio_outputs_active(
             cfg.widgets_enabled && cfg.ext_widgets[ExtWidgetId::AudioSwitcher.idx()].enabled,
         );

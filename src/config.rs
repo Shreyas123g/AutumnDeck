@@ -6950,88 +6950,6 @@ pub fn portable_data_dir_display() -> String {
     }
 }
 
-/// Converts a standard installation into True Portable Mode inside `exe_dir`:
-/// creates `portable.txt`, migrates `config.ini`, backups, `pill_cache.ini`, `Themes/`,
-/// `wallpapers/`, and `Diagnostics/` into `<exe_dir>\Data\`, and rewrites embedded
-/// `src_data_dir` references in `config.ini` to the portable `Data` directory.
-pub fn convert_to_portable_in(
-    exe_dir: &Path,
-    src_data_dir: &Path,
-    cfg: &AppConfig,
-) -> Result<PathBuf, String> {
-    let dst_data_dir = exe_dir.join("Data");
-    fs::create_dir_all(&dst_data_dir)
-        .map_err(|e| format!("Cannot create portable Data folder: {}", e))?;
-
-    let marker = exe_dir.join("portable.txt");
-    let marker_body = "AutumnDeck Portable Mode\r\nKeep this file beside AutumnDeck.exe to store all settings, themes, wallpapers, and logs inside .\\Data\\\r\n";
-    fs::write(&marker, marker_body)
-        .map_err(|e| format!("Cannot write portable.txt (folder may be read-only): {}", e))?;
-
-    if !src_data_dir.eq_ignore_ascii_case_path(&dst_data_dir) && src_data_dir.exists() {
-        for sub in ["Themes", "wallpapers", "Diagnostics"] {
-            let s = src_data_dir.join(sub);
-            if s.is_dir() {
-                copy_dir_recursive_if_missing(&s, &dst_data_dir.join(sub));
-            }
-        }
-        for fname in ["pill_cache.ini", "config.ini.bak"] {
-            let s = src_data_dir.join(fname);
-            let d = dst_data_dir.join(fname);
-            if s.is_file() && !d.exists() {
-                let _ = fs::copy(&s, &d);
-            }
-        }
-    }
-
-    let src_str = src_data_dir.to_string_lossy().to_string();
-    let dst_str = dst_data_dir.to_string_lossy().to_string();
-    let mut portable_cfg = cfg.clone();
-    if !src_str.is_empty() && !src_str.eq_ignore_ascii_case(&dst_str) {
-        if portable_cfg
-            .wallpaper_path
-            .to_ascii_lowercase()
-            .starts_with(&src_str.to_ascii_lowercase())
-        {
-            let tail = &portable_cfg.wallpaper_path[src_str.len()..];
-            portable_cfg.wallpaper_path = format!("{}{}", dst_str, tail);
-        }
-    }
-    let ini = serialize_config_ini(&portable_cfg);
-    let dst_ini = dst_data_dir.join("config.ini");
-    write_atomic_synced(&dst_ini, &ini)
-        .map_err(|e| format!("Failed writing portable config.ini: {}", e))?;
-    let _ = write_atomic_synced(&dst_data_dir.join("config.ini.bak"), &ini);
-    Ok(dst_data_dir)
-}
-
-trait PathEqIgnoreCase {
-    fn eq_ignore_ascii_case_path(&self, other: &Path) -> bool;
-}
-
-impl PathEqIgnoreCase for Path {
-    fn eq_ignore_ascii_case_path(&self, other: &Path) -> bool {
-        self.to_string_lossy()
-            .eq_ignore_ascii_case(&other.to_string_lossy())
-    }
-}
-
-pub fn convert_current_setup_to_portable(cfg: &AppConfig) -> Result<PathBuf, String> {
-    let exe = self_exe_path();
-    let Some(exe_dir) = exe.parent() else {
-        return Err("Unable to determine AutumnDeck executable directory.".to_string());
-    };
-    let appdata = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let src_dir = if is_portable_mode() {
-        app_data_dir()
-    } else {
-        appdata.join("AutumnDeck")
-    };
-    convert_to_portable_in(exe_dir, &src_dir, cfg)
-}
-
 fn copy_dir_recursive_if_missing(src: &Path, dst: &Path) {
     if fs::create_dir_all(dst).is_err() {
         return;
@@ -9809,7 +9727,7 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
     }
 
     #[test]
-    fn portable_mode_paths_conversion_and_32_pin_roundtrip() {
+    fn portable_mode_paths_and_32_pin_roundtrip() {
         let base = std::env::temp_dir().join(format!(
             "autumn_portable_test_{}",
             std::process::id()
@@ -9819,12 +9737,7 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         let fake_appdata = base.join("FakeAppData");
         let src_data = fake_appdata.join("AutumnDeck");
         fs::create_dir_all(&exe_dir).unwrap();
-        fs::create_dir_all(src_data.join("Themes")).unwrap();
-        fs::create_dir_all(src_data.join("wallpapers")).unwrap();
-        fs::create_dir_all(src_data.join("Diagnostics")).unwrap();
-        fs::write(src_data.join("Themes").join("custom.ini"), "ok=1\n").unwrap();
-        fs::write(src_data.join("wallpapers").join("sample.mp4"), b"vid").unwrap();
-        fs::write(src_data.join("pill_cache.ini"), "cache\n").unwrap();
+        fs::create_dir_all(&src_data).unwrap();
 
         // Standard mode (no portable.txt, no --portable) uses APPDATA\AutumnDeck
         let (std_dir, std_port) =
@@ -9838,14 +9751,23 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert!(cli_port);
         assert_eq!(cli_dir, exe_dir.join("Data"));
 
-        // Convert to Portable creates portable.txt, copies subdirs, rewrites wallpaper path, and persists 32 pins + 48px macOS max icons + 18px label font + card opacity
+        // Presence of portable.txt beside AutumnDeck.exe automatically activates Portable Mode
+        let dst_dir = exe_dir.join("Data");
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(exe_dir.join("portable.txt"), "AutumnDeck Portable Mode\r\n").unwrap();
+        let (auto_dir, auto_port) =
+            resolve_app_data_dir(Some(&exe_dir), false, Some(&fake_appdata));
+        assert!(auto_port);
+        assert_eq!(auto_dir, dst_dir);
+
+        // Persist and roundtrip 32 pins + 48px macOS max icons + 18px label font + 0% card opacity
         let mut cfg = AppConfig::default();
         assert_eq!(cfg.mac_dock_icon_size, 36);
         assert_eq!(cfg.w_apps.card_opacity_pct, 100);
         cfg.mac_dock_icon_size = 48;
         cfg.w_apps.label_font_size_px = 18;
         cfg.w_apps.card_opacity_pct = 0;
-        cfg.wallpaper_path = src_data
+        cfg.wallpaper_path = dst_dir
             .join("wallpapers")
             .join("sample.mp4")
             .to_string_lossy()
@@ -9860,23 +9782,9 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
             .collect();
         assert_eq!(MAX_PINNED_APPS, 32);
 
-        let dst_dir = convert_to_portable_in(&exe_dir, &src_data, &cfg)
-            .expect("convert_to_portable_in must succeed");
-        assert_eq!(dst_dir, exe_dir.join("Data"));
-        assert!(exe_dir.join("portable.txt").is_file());
-        assert!(dst_dir.join("config.ini").is_file());
-        assert!(dst_dir.join("config.ini.bak").is_file());
-        assert!(dst_dir.join("Themes").join("custom.ini").is_file());
-        assert!(dst_dir.join("wallpapers").join("sample.mp4").is_file());
-        assert!(dst_dir.join("pill_cache.ini").is_file());
+        let ini = serialize_config_ini(&cfg);
+        write_atomic_synced(&dst_dir.join("config.ini"), &ini).unwrap();
 
-        // Now resolve_app_data_dir automatically detects portable.txt without CLI flag
-        let (auto_dir, auto_port) =
-            resolve_app_data_dir(Some(&exe_dir), false, Some(&fake_appdata));
-        assert!(auto_port);
-        assert_eq!(auto_dir, dst_dir);
-
-        // Verify saved portable config.ini roundtrips all 32 pins, 48px icon size, 18px label font, 0% card opacity, and rewritten wallpaper path
         let raw_ini = fs::read_to_string(dst_dir.join("config.ini")).unwrap();
         let parsed = parse_config_ini(&raw_ini).expect("portable config.ini must parse");
         assert_eq!(parsed.mac_dock_icon_size, 48);
@@ -9884,13 +9792,7 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
         assert_eq!(parsed.w_apps.card_opacity_pct, 0);
         assert_eq!(parsed.mac_dock_pinned.len(), 32);
         assert_eq!(parsed.mac_dock_pinned[31].name, "App 31");
-        assert!(
-            parsed
-                .wallpaper_path
-                .starts_with(&dst_dir.to_string_lossy().to_string()),
-            "Portable conversion must rewrite cached wallpaper path into portable Data folder: {}",
-            parsed.wallpaper_path
-        );
+        assert_eq!(parsed.wallpaper_path, cfg.wallpaper_path);
 
         // Clamp guard verification for macOS icon size (24..=48), shelf/card opacity (0..=100), and label font size (10..=20)
         let clamp_ini = "[Taskbar]\nmac_dock_icon_size=140\nw_apps_label_font_size=28\nw_apps_card_opacity=220\nw_shelf_glass_pct=150\n";

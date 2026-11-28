@@ -58,8 +58,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::config::{
     apply_win_explorer_pref, apply_win_explorer_pref_checked, apps_style_badge, apps_style_horology,
     apps_style_label, apps_style_subtitle, apps_styles_in_folder, cc_style_badge, cc_style_horology,
-    cc_style_label, cc_style_subtitle, cc_styles_in_folder, convert_current_setup_to_portable,
-    default_dock_pinned, discover_video_wallpapers, discover_wallpapers_fast_local,
+    cc_style_label, cc_style_subtitle, cc_styles_in_folder, default_dock_pinned, discover_video_wallpapers, discover_wallpapers_fast_local,
     is_portable_mode, is_startup_enabled, is_static_image_wallpaper_path, open_app_data_folder,
     open_kofi_support_page, portable_data_dir_display, read_win_taskbar_prefs, set_startup_enabled, vitals_style_badge, vitals_style_horology,
     vitals_style_label, vitals_style_subtitle, vitals_styles_in_folder, AppConfig, AppShortcut,
@@ -1352,7 +1351,6 @@ enum HitZone {
     ToggleStartup,
     ToggleGameModePause,
     BtnExportDiagnostics,
-    BtnConvertPortable,
     BtnToggleNow,
     BtnQuitApp,
     OnboardStep(u8),
@@ -5820,31 +5818,6 @@ impl SettingsController {
                     true,
                     format!("Opened {} folder", portable_data_dir_display()),
                 ));
-                SettingsCommand::None
-            }
-            HitZone::BtnConvertPortable => {
-                if is_portable_mode() {
-                    open_app_data_folder();
-                    self.setup_feedback = Some((
-                        true,
-                        format!("Portable Mode active: {}", portable_data_dir_display()),
-                    ));
-                } else {
-                    match convert_current_setup_to_portable(cfg) {
-                        Ok(dst) => {
-                            self.setup_feedback = Some((
-                                true,
-                                format!(
-                                    "Converted to Portable Mode → {}",
-                                    dst.to_string_lossy()
-                                ),
-                            ));
-                        }
-                        Err(e) => {
-                            self.setup_feedback = Some((false, e));
-                        }
-                    }
-                }
                 SettingsCommand::None
             }
             HitZone::BtnRunOnboarding => {
@@ -11416,9 +11389,6 @@ impl SettingsController {
                 }
                 if in_rect(x, y, 500.0, 356.0, 722.0, 414.0) {
                     return HitZone::BtnRunOnboarding;
-                }
-                if in_rect(x, y, 556.0, 430.0, 716.0, 456.0) {
-                    return HitZone::BtnConvertPortable;
                 }
                 for (idx, mode) in [
                     (0usize, PerformanceMode::Smooth),
@@ -21679,43 +21649,7 @@ impl SettingsController {
                 if portable_on { &r.sage } else { &r.warm_sub },
             ),
         };
-        draw_txt(rt, fb_txt, &r.tf_sub, rect_f(50.0, 428.0, 548.0, 458.0, u), fb_br);
-
-        let port_rr = rrect(556.0, 430.0, 716.0, 456.0, 7.0, u);
-        let port_hov = self.hovered == HitZone::BtnConvertPortable;
-        rt.FillRoundedRectangle(
-            &port_rr,
-            if port_hov {
-                &r.card_hover
-            } else if portable_on {
-                &r.card_active
-            } else {
-                &r.amber_dim
-            },
-        );
-        rt.DrawRoundedRectangle(
-            &port_rr,
-            if portable_on {
-                &r.sage
-            } else if port_hov {
-                &r.sun_gold
-            } else {
-                &r.card_border
-            },
-            1.0 * u,
-            None,
-        );
-        draw_txt(
-            rt,
-            if portable_on {
-                "Portable: Active ✓"
-            } else {
-                "Convert to Portable"
-            },
-            &r.tf_badge,
-            port_rr.rect,
-            if portable_on { &r.sage } else { &r.sun_gold },
-        );
+        draw_txt(rt, fb_txt, &r.tf_sub, rect_f(50.0, 428.0, 712.0, 458.0, u), fb_br);
 
         // Performance Mode Strip (Smooth / Balanced / Eco) (38..722, 470..528)
         let perf_rr = rrect(38.0, 470.0, 722.0, 528.0, 9.0, u);
@@ -28474,11 +28408,11 @@ mod tests {
         assert_eq!(cfg.w_apps.card_opacity_pct, 100);
         assert!(!cfg.clean_top_bar_enabled);
 
-        // 3. Settings tab exposes Portable Mode status + Convert to Portable pill without disturbing (140, 445)
+        // 3. Settings tab shows full-width config/portable status strip without Convert to Portable button
         sc.active_tab = StudioTab::Settings;
         assert_eq!(sc.hit_test(140.0, 445.0), HitZone::None);
-        assert_eq!(sc.hit_test(636.0, 443.0), HitZone::BtnConvertPortable);
-        assert!(sc.render_d2d(&cfg), "Settings tab with Portable Mode pill must render cleanly");
+        assert_eq!(sc.hit_test(636.0, 443.0), HitZone::None);
+        assert!(sc.render_d2d(&cfg), "Settings tab status strip must render cleanly");
 
         sc.release_idle_resources();
         unsafe {

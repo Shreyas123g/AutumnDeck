@@ -24,6 +24,18 @@ const WCA_ACCENT_POLICY: u32 = 19;
 const DWMWA_COLOR_NONE_U32: u32 = 0xFFFFFFFE;
 const MAX_ACRYLIC_PILLS: usize = 4;
 
+/// Controls which Windows 11 DWM composition tint profile sits behind a glass dock/bar:
+/// - `ClearBlur`: hardware rounded-corner `ACCENT_ENABLE_ACRYLICBLURBEHIND` at alpha `1`, yielding
+///   pure real-time 30px Gaussian glass blur with zero Win11 milky luminosity haze and crisp
+///   `DWMWCP_ROUND` corners (no legacy `ACCENT_ENABLE_BLURBEHIND` square-corner artifacts).
+/// - `FrostedAcrylic`: hardware rounded-corner `ACCENT_ENABLE_ACRYLICBLURBEHIND` ramping smoothly
+///   from crystal blur (`a = 1`) through translucent macOS glass (`a = 18..48`) to rich frost (`a = 128..224`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackdropBlurStyle {
+    ClearBlur,
+    FrostedAcrylic,
+}
+
 static REGISTER_ONCE: Once = Once::new();
 
 #[repr(C)]
@@ -112,13 +124,19 @@ impl LiquidBackdropContext {
         self.swca_fn.is_some()
     }
 
-    fn apply_acrylic(&self, hwnd: HWND, abgr: u32) {
+    fn apply_backdrop(&self, hwnd: HWND, abgr: u32, style: BackdropBlurStyle) {
         let Some(swca) = self.swca_fn else {
             return;
         };
-        // Windows 11 DWM Acrylic ignores alpha == 0; clamp alpha into [8, 220] for crystal translucency.
-        let a = ((abgr >> 24) & 0xFF).clamp(8, 220);
-        let safe_abgr = (a << 24) | (abgr & 0x00FF_FFFF);
+        // Windows 11 DWM Acrylic disables transparency only when alpha == 0; alpha == 1 gives pure
+        // real-time Gaussian blur with crisp `DWMWCP_ROUND` corners and zero milky luminosity wash!
+        let safe_abgr = match style {
+            BackdropBlurStyle::ClearBlur => (1u32 << 24) | (abgr & 0x00FF_FFFF),
+            BackdropBlurStyle::FrostedAcrylic => {
+                let a = ((abgr >> 24) & 0xFF).clamp(1, 224);
+                (a << 24) | (abgr & 0x00FF_FFFF)
+            }
+        };
         let mut p = AccentPolicy {
             accent_state: ACCENT_ENABLE_ACRYLICBLURBEHIND,
             accent_flags: 2,
@@ -147,6 +165,7 @@ pub struct LiquidBackdropWindow {
     visible_count: usize,
     last_pills: Vec<AcrylicPillRect>,
     last_abgr: u32,
+    last_style: BackdropBlurStyle,
     last_owner: HWND,
     live_active: bool,
     last_resize_at: Option<Instant>,
@@ -197,6 +216,7 @@ impl LiquidBackdropWindow {
             visible_count: 0,
             last_pills: Vec::new(),
             last_abgr: 0,
+            last_style: BackdropBlurStyle::FrostedAcrylic,
             last_owner: HWND::default(),
             live_active: false,
             last_resize_at: None,
@@ -274,6 +294,30 @@ impl LiquidBackdropWindow {
         want_visible: bool,
         motion_active: bool,
     ) -> bool {
+        self.sync_pills_styled(
+            hinst,
+            ctx,
+            owner_fg_hwnd,
+            pills,
+            abgr_tint,
+            BackdropBlurStyle::FrostedAcrylic,
+            want_visible,
+            motion_active,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_pills_styled(
+        &mut self,
+        hinst: HINSTANCE,
+        ctx: &mut LiquidBackdropContext,
+        owner_fg_hwnd: HWND,
+        pills: &[AcrylicPillRect],
+        abgr_tint: u32,
+        blur_style: BackdropBlurStyle,
+        want_visible: bool,
+        motion_active: bool,
+    ) -> bool {
         let count = pills.len().min(MAX_ACRYLIC_PILLS);
         if !want_visible || count == 0 || owner_fg_hwnd.0.is_null() || !ctx.ensure_init() {
             self.hide();
@@ -304,7 +348,8 @@ impl LiquidBackdropWindow {
 
         let slice = &pills[..active];
         let grew = self.hwnds.len() > prev_pool;
-        let need_accent = grew || self.last_abgr != abgr_tint || !self.live_active;
+        let need_accent =
+            grew || self.last_abgr != abgr_tint || self.last_style != blur_style || !self.live_active;
         let structural_change =
             grew || self.visible_count != active || self.last_owner != owner_fg_hwnd || !self.live_active;
         let defer_resize = !structural_change
@@ -335,7 +380,7 @@ impl LiquidBackdropWindow {
                 }
             }
             if need_accent {
-                ctx.apply_acrylic(hw, abgr_tint);
+                ctx.apply_backdrop(hw, abgr_tint, blur_style);
             }
             if need_layout {
                 let rc = pill.screen_rect;
@@ -370,6 +415,7 @@ impl LiquidBackdropWindow {
             self.last_resize_at = Some(Instant::now());
         }
         self.last_abgr = abgr_tint;
+        self.last_style = blur_style;
         self.last_owner = owner_fg_hwnd;
         self.live_active = true;
         true
@@ -478,6 +524,19 @@ mod tests {
         let ok = win.sync_pills(hinst, &mut ctx, owner, &pills, pack_abgr(240, 246, 255, 28), true);
         assert!(ok);
         assert!(win.is_live_active());
+        // Verify smooth style switch to ClearBlur (ACCENT_ENABLE_BLURBEHIND) for crystal macOS glass
+        let ok_clear = win.sync_pills_styled(
+            hinst,
+            &mut ctx,
+            owner,
+            &pills,
+            pack_abgr(228, 234, 244, 16),
+            BackdropBlurStyle::ClearBlur,
+            true,
+            false,
+        );
+        assert!(ok_clear);
+        assert_eq!(win.last_style, BackdropBlurStyle::ClearBlur);
         win.destroy();
         unsafe {
             let _ = DestroyWindow(owner);

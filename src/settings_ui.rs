@@ -13280,9 +13280,53 @@ impl SettingsController {
                                 rt,
                                 "ICON SCALE, MAGNIFICATION & GLASS MATERIAL",
                                 &r.tf_sec,
-                                rect_f(44.0, 274.0, 520.0, 289.0, u),
+                                rect_f(44.0, 274.0, 440.0, 289.0, u),
                                 &r.sun_gold,
                             );
+                            if cfg.tb_match_wallpaper {
+                                let wp_prof = crate::theme::resolve_wallpaper_profile(cfg);
+                                let wp_pal = extracted_wallpaper_palette()
+                                    .map(|(_, p)| p)
+                                    .unwrap_or_else(|| resolve_palette_for(cfg, true));
+                                let pill_rr = rrect(456.0, 271.0, 722.0, 291.0, 10.0, u);
+                                rt.FillRoundedRectangle(&pill_rr, &r.card_active);
+                                rt.DrawRoundedRectangle(&pill_rr, &r.card_border, 0.8 * u, None);
+                                for (si, &sw_rgb) in wp_pal.swatches.iter().enumerate() {
+                                    let (sr, sg, sb) = crate::theme::u32_to_rgb(sw_rgb);
+                                    let pt = Vector2 {
+                                        X: (468.0 + (si as f32) * 14.0) * u,
+                                        Y: 281.0 * u,
+                                    };
+                                    if let Some(br) = solid(rt, rgb_u8(sr, sg, sb, 1.0)) {
+                                        rt.FillEllipse(
+                                            &D2D1_ELLIPSE {
+                                                point: pt,
+                                                radiusX: 4.5 * u,
+                                                radiusY: 4.5 * u,
+                                            },
+                                            &br,
+                                        );
+                                    }
+                                    rt.DrawEllipse(
+                                        &D2D1_ELLIPSE {
+                                            point: pt,
+                                            radiusX: 4.5 * u,
+                                            radiusY: 4.5 * u,
+                                        },
+                                        &r.card_border,
+                                        0.75 * u,
+                                        None,
+                                    );
+                                }
+                                let mood = wp_prof.mood_tag();
+                                draw_txt(
+                                    rt,
+                                    &mood,
+                                    &r.tf_badge,
+                                    rect_f(538.0, 272.0, 716.0, 290.0, u),
+                                    &r.cream,
+                                );
+                            }
 
                             let cur_ico = cfg.mac_dock_icon_size.clamp(24, 48);
                             let t_sz = ((cur_ico as f32 - 24.0) / 24.0).clamp(0.0, 1.0);
@@ -13339,17 +13383,26 @@ impl SettingsController {
 
                             let shelf_pct = cfg.w_shelf.glass_alpha_pct.min(100);
                             let t_shelf = (shelf_pct as f32 / 100.0).clamp(0.0, 1.0);
+                            let shelf_lbl = if shelf_pct == 0 {
+                                "0% Off".to_string()
+                            } else if shelf_pct <= 20 {
+                                format!("{}% Clear", shelf_pct)
+                            } else if shelf_pct <= 65 {
+                                format!("{}% Glass", shelf_pct)
+                            } else {
+                                format!("{}% Frost", shelf_pct)
+                            };
                             draw_slider_row(
                                 rt,
                                 r,
                                 u,
-                                "Dock Shelf / Card Opacity",
+                                "Dock Card / Shelf Opacity",
                                 44.0,
                                 232.0,
                                 640.0,
                                 382.0,
                                 t_shelf,
-                                &format!("{}%", shelf_pct),
+                                &shelf_lbl,
                                 self.dragging_slider == Some(SliderKind::MacDockShelfOpacity)
                                     || self.hovered
                                         == HitZone::Slider(SliderKind::MacDockShelfOpacity),

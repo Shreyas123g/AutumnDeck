@@ -114,8 +114,9 @@ use crate::config::{
 };
 use crate::desktop_widgets::{launch_app_path, load_app_bitmap_for_path, wic_src_to_d2d};
 use crate::dock_themes::{
-    bind_active_dock_backdrop_full, chamfer_geo, clean_acrylic_tint_abgr_with_alpha,
-    dock_spec, draw_clean_top_bar, draw_d2d_text, draw_dock_clock_module,
+    bind_active_dock_backdrop_full, bind_active_dock_backdrop_wp, chamfer_geo,
+    clean_acrylic_tint_abgr_for_cfg, dock_spec, draw_clean_top_bar, draw_d2d_text,
+    draw_dock_clock_module,
     draw_dock_divider_styled, draw_dock_indicator_styled, draw_dock_shelf_and_art_with_ripple,
     draw_dock_slot_fx_styled, draw_dock_tooltip, draw_top_bar_popover,
     draw_unified_floating_tray_capsule, is_ambient_animated_cfg, layout_clean_top_bar,
@@ -125,7 +126,9 @@ use crate::dock_themes::{
     DockShelfShape, DockVisualSpec, TaskbarWidgetId, TopBarPopoverHit, TopBarPopoverInfo,
     TopBarPopoverKind, TopBarPopoverLayout,
 };
-use crate::liquid_backdrop::{AcrylicPillRect, LiquidBackdropContext, LiquidBackdropWindow};
+use crate::liquid_backdrop::{
+    AcrylicPillRect, BackdropBlurStyle, LiquidBackdropContext, LiquidBackdropWindow,
+};
 use crate::system_media::CcSnapshot;
 use crate::taskbar_hide::{
     has_maximized_or_fullscreen_on_monitor, is_fullscreen_game_on_monitor,
@@ -7861,6 +7864,13 @@ impl MacDockEngine {
         cfg.clean_top_bar_style.as_str().hash(&mut h);
         cfg.clean_top_bar_desktop_only.hash(&mut h);
         cfg.tb_match_wallpaper.hash(&mut h);
+        if cfg.tb_match_wallpaper {
+            let wp_pal = effective_taskbar_palette(cfg);
+            wp_pal.accent.hash(&mut h);
+            wp_pal.accent_light.hash(&mut h);
+            wp_pal.glass_top.hash(&mut h);
+            wp_pal.rim.hash(&mut h);
+        }
         cfg.tint_alpha.hash(&mut h);
         cfg.w_apps.label_font_size_px.hash(&mut h);
         clock_label.hash(&mut h);
@@ -7915,7 +7925,7 @@ impl MacDockEngine {
             right: (pane.top_win_rect.left + bar_r.right.round() as i32 - inset).max(pane.top_win_rect.left + 8),
             bottom: (pane.top_win_rect.top + bar_r.bottom.round() as i32 - inset).max(pane.top_win_rect.top + 8),
         };
-        let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, true, cfg.tint_alpha);
+        let abgr = clean_acrylic_tint_abgr_for_cfg(cfg, true, cfg.tint_alpha, 100);
         let live_hw_blur = pane.top_backdrop.sync_pills(
             self.hinst,
             &mut self.liquid_ctx,
@@ -8083,7 +8093,7 @@ impl MacDockEngine {
             right: (self.top_popover.win_rect.left + pr.right.round() as i32 - 2).max(self.top_popover.win_rect.left + 8),
             bottom: (self.top_popover.win_rect.top + pr.bottom.round() as i32 - 2).max(self.top_popover.win_rect.top + 8),
         };
-        let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, true, cfg.tint_alpha);
+        let abgr = clean_acrylic_tint_abgr_for_cfg(cfg, true, cfg.tint_alpha, 100);
         let live_hw = self.top_popover.backdrop.sync_pills(
             self.hinst,
             &mut self.liquid_ctx,
@@ -8390,20 +8400,29 @@ impl MacDockEngine {
         let u = pane.dpi_u;
         let acrylic_pills = collect_dock_acrylic_pills(pane, cfg, u);
         let shelf_card_pct = cfg.w_shelf.glass_alpha_pct.min(100);
-        let eff_shelf_tint =
-            ((cfg.tint_alpha as u32 * shelf_card_pct as u32 + 50) / 100).min(255) as u8;
+        // Smooth macOS outer dock card hardware blur continuum:
+        //    0%:     Card hidden (pure floating icons)
+        //   1..=20%: Crystal clear transparent glass (no DWM frost — sharp wallpaper shows right through!)
+        //  21..=100%: Rounded hardware Gaussian blur (`ACCENT_ENABLE_ACRYLICBLURBEHIND`) ramping seamlessly
+        //             from alpha=1 (zero milky washout, authentic macOS glass) up to rich frosted satin!
         let live_hw_blur = if !acrylic_pills.is_empty()
             && !cfg.is_dock_all_elements_off()
             && cfg.tint_alpha > 0
-            && shelf_card_pct > 0
+            && shelf_card_pct > 20
         {
-            let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, false, eff_shelf_tint);
-            pane.liquid_backdrop.sync_pills_ex(
+            let blur_style = if shelf_card_pct <= 28 {
+                BackdropBlurStyle::ClearBlur
+            } else {
+                BackdropBlurStyle::FrostedAcrylic
+            };
+            let abgr = clean_acrylic_tint_abgr_for_cfg(cfg, false, cfg.tint_alpha, shelf_card_pct);
+            pane.liquid_backdrop.sync_pills_styled(
                 self.hinst,
                 &mut self.liquid_ctx,
                 pane.hwnd,
                 &acrylic_pills,
                 abgr,
+                blur_style,
                 true,
                 pane.motion_active,
             )
@@ -8552,11 +8571,22 @@ impl MacDockEngine {
             canvas_left: pane.canvas_rect.left as f32,
             canvas_top: pane.canvas_rect.top as f32,
         });
-        let _backdrop_guard = bind_active_dock_backdrop_full(
+        let wp_tint = if cfg.tb_match_wallpaper {
+            let prof = crate::theme::resolve_wallpaper_profile(cfg);
+            Some((
+                prof.primary_accent,
+                prof.secondary_accent,
+                prof.edge_zone_rgb(cfg.mac_dock_edge),
+            ))
+        } else {
+            None
+        };
+        let _backdrop_guard = bind_active_dock_backdrop_wp(
             backdrop_ctx,
             live_hw_blur,
             cfg.tint_alpha,
             cfg.w_apps.card_opacity_pct,
+            wp_tint,
         );
 
         let br_opt = self
@@ -8736,8 +8766,11 @@ impl MacDockEngine {
                     &br,
                     u_rect,
                     cfg.tb_theme,
+                    cfg,
+                    pal,
                     any_tray_hov,
                     u,
+                    false,
                 );
             }
 
@@ -15544,9 +15577,35 @@ mod tests {
         assert!((a_def - 0.32).abs() < 0.001);
         assert!((a_zero - 0.04).abs() < 0.001);
         assert!((a_full - 0.96).abs() < 0.001);
-        let abgr_lo = clean_acrylic_tint_abgr_with_alpha(TaskbarTheme::Os26LiquidGlassLight, false, 0);
-        let abgr_hi = clean_acrylic_tint_abgr_with_alpha(TaskbarTheme::Os26LiquidGlassLight, false, 255);
+        let abgr_lo = crate::dock_themes::clean_acrylic_tint_abgr_with_alpha(
+            TaskbarTheme::Os26LiquidGlassLight,
+            false,
+            0,
+        );
+        let abgr_hi = crate::dock_themes::clean_acrylic_tint_abgr_with_alpha(
+            TaskbarTheme::Os26LiquidGlassLight,
+            false,
+            255,
+        );
         assert!((abgr_lo >> 24) < (abgr_hi >> 24));
+
+        // New continuous macOS shelf opacity ramp (`clean_acrylic_tint_abgr_for_cfg`):
+        // starts crystal-clear at 21% (zero milky wash) and ramps monotonically to 100%,
+        // and dynamically shifts RGB when Match Wallpaper is active.
+        let mut shelf_cfg = AppConfig::default();
+        shelf_cfg.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassLight);
+        let a21 = clean_acrylic_tint_abgr_for_cfg(&shelf_cfg, false, shelf_cfg.tint_alpha, 21) >> 24;
+        let a50 = clean_acrylic_tint_abgr_for_cfg(&shelf_cfg, false, shelf_cfg.tint_alpha, 50) >> 24;
+        let a75 = clean_acrylic_tint_abgr_for_cfg(&shelf_cfg, false, shelf_cfg.tint_alpha, 75) >> 24;
+        let a100 = clean_acrylic_tint_abgr_for_cfg(&shelf_cfg, false, shelf_cfg.tint_alpha, 100) >> 24;
+        assert!(a21 <= 3, "21% crystal blur must start near alpha=1 (got {})", a21);
+        assert!(a21 < a50 && a50 < a75 && a75 < a100, "Shelf DWM frost must ramp monotonically: {} < {} < {} < {}", a21, a50, a75, a100);
+        // Non-compounding resolve_shelf_spec: changing w_shelf.glass_alpha_pct must not alter spec.bg_alpha_bias
+        shelf_cfg.w_shelf.glass_alpha_pct = 100;
+        let bias_100 = resolve_shelf_spec(&shelf_cfg).bg_alpha_bias;
+        shelf_cfg.w_shelf.glass_alpha_pct = 25;
+        let bias_25 = resolve_shelf_spec(&shelf_cfg).bg_alpha_bias;
+        assert!((bias_100 - bias_25).abs() < 0.0001, "resolve_shelf_spec must not double-multiply glass_alpha_pct");
 
         // SingleLinePill clock gives generous width in both 12h and 24h modes so date never clips!
         let mut clk_cfg = AppConfig::default();

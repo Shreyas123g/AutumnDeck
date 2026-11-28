@@ -130,8 +130,8 @@ pub fn resolve_shelf_spec(cfg: &AppConfig) -> DockVisualSpec {
     if let Some(art) = cfg.w_shelf.art_override {
         s.art = art;
     }
-    let glass_k = (cfg.w_shelf.glass_alpha_pct as f32 / 100.0).clamp(0.0, 1.0);
-    s.bg_alpha_bias = (s.bg_alpha_bias * glass_k).clamp(0.0, 0.98);
+    // Note: `w_shelf.glass_alpha_pct` (Dock Shelf / Card Opacity) is applied cleanly in a single
+    // non-compounding pass inside `draw_dock_shelf_and_art_with_ripple` & DWM backdrop selection.
     let rim_k = (cfg.w_shelf.rim_alpha_pct as f32 / 100.0).clamp(0.0, 1.0);
     s.rim_outer.3 = (s.rim_outer.3 * rim_k).clamp(0.0, 1.0);
     s.rim_inner.3 = (s.rim_inner.3 * rim_k).clamp(0.0, 1.0);
@@ -2401,11 +2401,16 @@ pub struct DockBackdropCtx {
     pub canvas_top: f32,
 }
 
+/// Active wallpaper harmony tint bound during a dock paint pass when `cfg.tb_match_wallpaper` is ON:
+/// `(primary_accent, secondary_accent, edge_glass_rgb)`.
+pub type DockWallpaperTint = ((u8, u8, u8), (u8, u8, u8), (u8, u8, u8));
+
 thread_local! {
     static ACTIVE_DOCK_BACKDROP: RefCell<Option<DockBackdropCtx>> = const { RefCell::new(None) };
     static ACTIVE_LIVE_HW_BLUR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ACTIVE_DOCK_TINT_ALPHA: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
     static ACTIVE_DOCK_CARD_ALPHA: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+    static ACTIVE_DOCK_WP_TINT: std::cell::Cell<Option<DockWallpaperTint>> = const { std::cell::Cell::new(None) };
 }
 
 pub struct DockBackdropGuard;
@@ -2418,6 +2423,7 @@ impl Drop for DockBackdropGuard {
         ACTIVE_LIVE_HW_BLUR.with(|c| c.set(false));
         ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(None));
         ACTIVE_DOCK_CARD_ALPHA.with(|c| c.set(1.0));
+        ACTIVE_DOCK_WP_TINT.with(|c| c.set(None));
     }
 }
 
@@ -2437,6 +2443,7 @@ pub fn bind_active_dock_backdrop_ex(
     ACTIVE_LIVE_HW_BLUR.with(|c| c.set(live_hw_blur));
     ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(None));
     ACTIVE_DOCK_CARD_ALPHA.with(|c| c.set(1.0));
+    ACTIVE_DOCK_WP_TINT.with(|c| c.set(None));
     DockBackdropGuard
 }
 
@@ -2455,13 +2462,29 @@ pub fn bind_active_dock_backdrop_full(
     tint_alpha: u8,
     card_opacity_pct: u8,
 ) -> DockBackdropGuard {
+    bind_active_dock_backdrop_wp(ctx, live_hw_blur, tint_alpha, card_opacity_pct, None)
+}
+
+pub fn bind_active_dock_backdrop_wp(
+    ctx: Option<DockBackdropCtx>,
+    live_hw_blur: bool,
+    tint_alpha: u8,
+    card_opacity_pct: u8,
+    wp_tint: Option<DockWallpaperTint>,
+) -> DockBackdropGuard {
     ACTIVE_DOCK_BACKDROP.with(|c| {
         *c.borrow_mut() = ctx;
     });
     ACTIVE_LIVE_HW_BLUR.with(|c| c.set(live_hw_blur));
     ACTIVE_DOCK_TINT_ALPHA.with(|c| c.set(Some(tint_alpha)));
     ACTIVE_DOCK_CARD_ALPHA.with(|c| c.set((card_opacity_pct.min(100) as f32) / 100.0));
+    ACTIVE_DOCK_WP_TINT.with(|c| c.set(wp_tint));
     DockBackdropGuard
+}
+
+#[inline]
+pub fn active_dock_wp_tint() -> Option<DockWallpaperTint> {
+    ACTIVE_DOCK_WP_TINT.with(|c| c.get())
 }
 
 #[inline]
@@ -2766,7 +2789,7 @@ pub unsafe fn draw_fresnel_glass_rim(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn draw_fresnel_glass_rim_rt(
+unsafe fn draw_fresnel_glass_rim_rt_tinted(
     rt: &ID2D1RenderTarget,
     br: &ID2D1SolidColorBrush,
     r: D2D_RECT_F,
@@ -2776,6 +2799,7 @@ unsafe fn draw_fresnel_glass_rim_rt(
     boost: f32,
     u: f32,
     alpha_mul: f32,
+    prism_tint: Option<((u8, u8, u8), (u8, u8, u8))>,
 ) {
     let am = alpha_mul.clamp(0.0, 1.0);
     if am <= 0.01 {
@@ -2821,19 +2845,24 @@ unsafe fn draw_fresnel_glass_rim_rt(
         right: (r.right - 1.05 * u).max(r.left + 2.0 * u),
         bottom: (r.bottom - 1.05 * u).max(r.top + 2.0 * u),
     };
+    let (p_hi, p_lo) = prism_tint.unwrap_or(if is_light {
+        ((152, 224, 255), (255, 212, 238))
+    } else {
+        ((138, 218, 255), (245, 198, 232))
+    });
     let prism_stops = if is_light {
         [
-            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(152, 224, 255, (0.34 * b).min(0.65) * am) },
+            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(p_hi.0, p_hi.1, p_hi.2, (0.34 * b).min(0.65) * am) },
             D2D1_GRADIENT_STOP { position: 0.36, color: rgba(255, 255, 255, 0.0) },
             D2D1_GRADIENT_STOP { position: 0.68, color: rgba(255, 255, 255, 0.0) },
-            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 212, 238, (0.28 * b).min(0.55) * am) },
+            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(p_lo.0, p_lo.1, p_lo.2, (0.28 * b).min(0.55) * am) },
         ]
     } else {
         [
-            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(138, 218, 255, (0.32 * b).min(0.58) * am) },
+            D2D1_GRADIENT_STOP { position: 0.00, color: rgba(p_hi.0, p_hi.1, p_hi.2, (0.32 * b).min(0.58) * am) },
             D2D1_GRADIENT_STOP { position: 0.34, color: rgba(255, 255, 255, 0.0) },
             D2D1_GRADIENT_STOP { position: 0.66, color: rgba(255, 255, 255, 0.0) },
-            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(245, 198, 232, (0.24 * b).min(0.48) * am) },
+            D2D1_GRADIENT_STOP { position: 1.00, color: rgba(p_lo.0, p_lo.1, p_lo.2, (0.24 * b).min(0.48) * am) },
         ]
     };
     if let Some(pg) = create_grad_rt(
@@ -2916,7 +2945,34 @@ pub unsafe fn draw_fresnel_glass_rim_alpha(
     u: f32,
     alpha_mul: f32,
 ) {
-    draw_fresnel_glass_rim_rt(rt, br, r, rad, is_circle, is_light, boost, u, alpha_mul);
+    draw_fresnel_glass_rim_rt_tinted(rt, br, r, rad, is_circle, is_light, boost, u, alpha_mul, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_fresnel_glass_rim_tinted(
+    rt: &ID2D1DCRenderTarget,
+    br: &ID2D1SolidColorBrush,
+    r: D2D_RECT_F,
+    rad: f32,
+    is_circle: bool,
+    is_light: bool,
+    boost: f32,
+    u: f32,
+    alpha_mul: f32,
+    prism_tint: Option<((u8, u8, u8), (u8, u8, u8))>,
+) {
+    draw_fresnel_glass_rim_rt_tinted(
+        rt,
+        br,
+        r,
+        rad,
+        is_circle,
+        is_light,
+        boost,
+        u,
+        alpha_mul,
+        prism_tint,
+    );
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -2931,6 +2987,7 @@ struct Os26KeycapCacheKey {
     u_q: u16,
     u_tint: u8,
     card_pct: u8,
+    wp_tint_key: u32,
 }
 
 struct Os26KeycapCacheEntry {
@@ -2978,6 +3035,7 @@ unsafe fn paint_os26_keycap_procedural_rt(
     live_hw: bool,
     has_blur: bool,
     u_tint: u8,
+    wp_tint: Option<DockWallpaperTint>,
 ) {
     let w = (k_r.right - k_r.left).max(4.0);
     let h = (k_r.bottom - k_r.top).max(4.0);
@@ -2989,7 +3047,7 @@ unsafe fn paint_os26_keycap_procedural_rt(
         TaskbarTheme::Os26LiquidGlassDark
     };
 
-    // 3. Ultra-clear MacBook Liquid Glass optical body glaze
+    // 3. Ultra-clear MacBook Liquid Glass optical body glaze (harmonizes with wallpaper when Match Wallpaper is ON!)
     let body_stops = if is_light {
         let raw_hi = if live_hw {
             if is_hovered { 0.34 } else { 0.24 }
@@ -3011,10 +3069,19 @@ unsafe fn paint_os26_keycap_procedural_rt(
         };
         let a_hi = scale_dock_theme_alpha(k_theme, raw_hi, u_tint, 0.04, 0.96) * card_k;
         let a_lo = scale_dock_theme_alpha(k_theme, raw_lo, u_tint, 0.02, 0.92) * card_k;
+        let (c0, c1, c2) = if let Some((pri, sec, edge)) = wp_tint {
+            (
+                crate::theme::blend_oklab((255, 255, 255), sec, 0.14),
+                crate::theme::blend_oklab((238, 246, 254), edge, 0.42),
+                crate::theme::blend_oklab((222, 236, 252), pri, 0.26),
+            )
+        } else {
+            ((255, 255, 255), (238, 248, 255), (218, 236, 255))
+        };
         [
-            D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, a_hi) },
-            D2D1_GRADIENT_STOP { position: 0.52, color: rgba(238, 248, 255, a_lo) },
-            D2D1_GRADIENT_STOP { position: 1.0, color: rgba(218, 236, 255, a_hi * 0.88) },
+            D2D1_GRADIENT_STOP { position: 0.0, color: rgba(c0.0, c0.1, c0.2, a_hi) },
+            D2D1_GRADIENT_STOP { position: 0.52, color: rgba(c1.0, c1.1, c1.2, a_lo) },
+            D2D1_GRADIENT_STOP { position: 1.0, color: rgba(c2.0, c2.1, c2.2, a_hi * 0.88) },
         ]
     } else {
         let raw_top = if live_hw {
@@ -3047,28 +3114,40 @@ unsafe fn paint_os26_keycap_procedural_rt(
         let a_top = scale_dock_theme_alpha(k_theme, raw_top, u_tint, 0.03, 0.92) * card_k;
         let a_mid = scale_dock_theme_alpha(k_theme, raw_mid, u_tint, 0.02, 0.90) * card_k;
         let a_bot = scale_dock_theme_alpha(k_theme, raw_bot, u_tint, 0.03, 0.94) * card_k;
+        let (c0, c1, c2) = if let Some((pri, sec, edge)) = wp_tint {
+            (
+                crate::theme::blend_oklab((196, 224, 248), sec, 0.45),
+                crate::theme::blend_oklab((16, 28, 44), edge, 0.55),
+                crate::theme::blend_oklab((10, 18, 30), pri, 0.26),
+            )
+        } else {
+            ((196, 224, 248), (16, 30, 48), (8, 18, 32))
+        };
         [
-            D2D1_GRADIENT_STOP { position: 0.0, color: rgba(196, 224, 248, a_top) },
-            D2D1_GRADIENT_STOP { position: 0.45, color: rgba(16, 30, 48, a_mid) },
-            D2D1_GRADIENT_STOP { position: 1.0, color: rgba(8, 18, 32, a_bot) },
+            D2D1_GRADIENT_STOP { position: 0.0, color: rgba(c0.0, c0.1, c0.2, a_top) },
+            D2D1_GRADIENT_STOP { position: 0.45, color: rgba(c1.0, c1.1, c1.2, a_mid) },
+            D2D1_GRADIENT_STOP { position: 1.0, color: rgba(c2.0, c2.1, c2.2, a_bot) },
         ]
     };
     if let Some(g) = create_grad_rt(rt, Vector2 { X: cx, Y: k_r.top }, Vector2 { X: cx, Y: k_r.bottom }, &body_stops) {
         rt.FillRoundedRectangle(&k_rr, &g);
     }
 
-    // 4. Signature Apple OS26 cloudy milky-white radial top-dome mist (true radial gradient!)
+    // 4. Signature Apple OS26 radial top-dome sheen (subtly tinted when Match Wallpaper is ON)
     let raw_dome = if is_light {
-        if is_hovered { 0.66 } else { 0.52 }
+        if is_hovered { 0.58 } else { 0.44 }
     } else if is_hovered {
-        0.44
+        0.40
     } else {
-        0.34
+        0.30
     };
-    let dome_a = scale_dock_theme_alpha(k_theme, raw_dome, u_tint, 0.06, 0.92) * card_k;
+    let dome_a = scale_dock_theme_alpha(k_theme, raw_dome, u_tint, 0.05, 0.88) * card_k;
+    let dome_mid = wp_tint
+        .map(|(_, sec, _)| crate::theme::blend_oklab((236, 246, 255), sec, 0.32))
+        .unwrap_or((232, 244, 255));
     let dome_stops = [
         D2D1_GRADIENT_STOP { position: 0.00, color: rgba(255, 255, 255, dome_a) },
-        D2D1_GRADIENT_STOP { position: 0.45, color: rgba(232, 244, 255, dome_a * 0.38) },
+        D2D1_GRADIENT_STOP { position: 0.45, color: rgba(dome_mid.0, dome_mid.1, dome_mid.2, dome_a * 0.36) },
         D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 255, 255, 0.0) },
     ];
     if let Some(rg) = create_radial_grad_rt(
@@ -3082,11 +3161,19 @@ unsafe fn paint_os26_keycap_procedural_rt(
         rt.FillRoundedRectangle(&k_rr, &rg);
     }
 
-    // 5. Lower internal optical glass bounce glow (subtle bright curve near bottom rim)
-    let bot_a = (if is_light { 0.34 } else if is_hovered { 0.24 } else { 0.16 }) * card_k;
+    // 5. Lower internal optical glass bounce glow (picks up wallpaper primary glow when Match Wallpaper is ON!)
+    let bot_a = (if is_light { 0.32 } else if is_hovered { 0.24 } else { 0.16 }) * card_k;
+    let (b0, b1) = if let Some((pri, sec, _)) = wp_tint {
+        (
+            crate::theme::blend_oklab((232, 246, 255), pri, 0.46),
+            crate::theme::blend_oklab((210, 232, 255), sec, 0.40),
+        )
+    } else {
+        ((232, 246, 255), (210, 232, 255))
+    };
     let bot_stops = [
-        D2D1_GRADIENT_STOP { position: 0.00, color: rgba(232, 246, 255, bot_a) },
-        D2D1_GRADIENT_STOP { position: 0.55, color: rgba(210, 232, 255, bot_a * 0.28) },
+        D2D1_GRADIENT_STOP { position: 0.00, color: rgba(b0.0, b0.1, b0.2, bot_a) },
+        D2D1_GRADIENT_STOP { position: 0.55, color: rgba(b1.0, b1.1, b1.2, bot_a * 0.28) },
         D2D1_GRADIENT_STOP { position: 1.00, color: rgba(255, 255, 255, 0.0) },
     ];
     if let Some(bg) = create_radial_grad_rt(
@@ -3100,9 +3187,10 @@ unsafe fn paint_os26_keycap_procedural_rt(
         rt.FillRoundedRectangle(&k_rr, &bg);
     }
 
-    // 6. Curved 5-stop pure-white Fresnel specular rim
+    // 6. Curved 5-stop Fresnel specular rim (reflects wallpaper primary/secondary prism when Match Wallpaper is ON)
     let boost = if is_hovered { 1.24 } else if is_active { 1.12 } else { 1.0 };
-    draw_fresnel_glass_rim_rt(rt, br, k_r, rad, false, is_light, boost, u, card_k);
+    let prism_tint = wp_tint.map(|(pri, sec, _)| (sec, pri));
+    draw_fresnel_glass_rim_rt_tinted(rt, br, k_r, rad, false, is_light, boost, u, card_k, prism_tint);
 }
 
 /// Photorealistic Apple OS26 Liquid Glass 3D squircle keycap:
@@ -3136,6 +3224,15 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         TaskbarTheme::Os26LiquidGlassDark
     };
     let u_tint = active_dock_tint_alpha_for(k_theme);
+    let wp_tint = active_dock_wp_tint();
+    let wp_tint_key: u32 = if let Some((pri, sec, edge)) = wp_tint {
+        let p = ((pri.0 as u32 >> 3) << 10) | ((pri.1 as u32 >> 3) << 5) | (pri.2 as u32 >> 3);
+        let s = ((sec.0 as u32 >> 4) << 8) | ((sec.1 as u32 >> 4) << 4) | (sec.2 as u32 >> 4);
+        let e = ((edge.0 as u32 >> 5) << 6) | ((edge.1 as u32 >> 5) << 3) | (edge.2 as u32 >> 5);
+        1u32 | (p << 1) | (s << 16) ^ (e << 22)
+    } else {
+        0
+    };
 
     if live_hw && w <= 220.0 && h <= 220.0 {
         let base_rt: &ID2D1RenderTarget = rt;
@@ -3150,6 +3247,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
             u_q: (u.clamp(0.5, 4.0) * 100.0).round() as u16,
             u_tint,
             card_pct: (card_k * 100.0).round().clamp(0.0, 100.0) as u8,
+            wp_tint_key,
         };
         let hit = OS26_KEYCAP_CACHE.with(|c| {
             let mut store = c.try_borrow_mut().ok()?;
@@ -3208,6 +3306,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
                         true,
                         true,
                         u_tint,
+                        wp_tint,
                     );
                     if crt_rt.EndDraw(None, None).is_ok() {
                         if let Ok(bmp) = crt.GetBitmap() {
@@ -3275,6 +3374,7 @@ pub unsafe fn draw_os26_liquid_glass_keycap(
         live_hw,
         has_blur,
         u_tint,
+        wp_tint,
     );
 }
 
@@ -3287,9 +3387,28 @@ pub unsafe fn draw_unified_floating_tray_capsule(
     br: &ID2D1SolidColorBrush,
     rect: D2D_RECT_F,
     theme: TaskbarTheme,
+    cfg: &AppConfig,
+    pal: &ThemePalette,
     is_hovered: bool,
     u: f32,
+    is_preview: bool,
 ) {
+    let shelf_card_k = if is_preview {
+        1.0
+    } else {
+        (cfg.w_shelf.glass_alpha_pct.min(100) as f32) / 100.0
+    };
+    let glass_gate = if is_preview {
+        1.0
+    } else {
+        (cfg.tint_alpha as f32 / 24.0).clamp(0.0, 1.0)
+    };
+    let shelf_vis = shelf_card_k * glass_gate;
+    if shelf_vis <= 0.005 {
+        return;
+    }
+    let rim_vis = (shelf_card_k.powf(0.75) * glass_gate).clamp(0.0, 1.0);
+
     let spec = dock_spec(theme);
     let h = (rect.bottom - rect.top).max(16.0 * u);
     let rad = match theme {
@@ -3305,38 +3424,50 @@ pub unsafe fn draw_unified_floating_tray_capsule(
 
     let is_ghost = theme == TaskbarTheme::BorderlessGhost;
     if !is_ghost {
-        draw_macos_soft_shadow(rt, br, rect, rad, false, spec.light_mode_paper, u);
+        draw_macos_soft_shadow_alpha(rt, br, rect, rad, false, spec.light_mode_paper, u, shelf_vis);
     }
 
-    // Real Gaussian-blurred wallpaper inside frosted / glass / ghost unified capsules!
+    // Real Gaussian-blurred wallpaper inside frosted / glass / ghost unified capsules (only when opacity > 20%)!
     let blur_a = match theme {
         TaskbarTheme::MatterTilesLight
         | TaskbarTheme::MatterTilesDark
         | TaskbarTheme::RosePineTiles
         | TaskbarTheme::CatppuccinTiles => 0.35,
-        TaskbarTheme::BorderlessGhost => 0.88,
-        _ => 0.92,
+        TaskbarTheme::BorderlessGhost => 0.86,
+        _ => 0.90,
     };
-    let has_blur = draw_backdrop_blurred_rrect(rt, d2d, rect, rad, 0.96, blur_a);
+    let has_blur = if !is_live_hw_blur_active() && shelf_card_k > 0.20 {
+        let bk = ((shelf_card_k - 0.20) / 0.80).clamp(0.0, 1.0);
+        draw_backdrop_blurred_rrect(rt, d2d, rect, rad, 0.96, blur_a * bk * glass_gate)
+    } else {
+        false
+    };
 
-    let bg_a: f32 = match theme {
-        TaskbarTheme::BorderlessGhost => if has_blur { 0.30 } else { 0.44 },
-        TaskbarTheme::SquircleFrosted => if has_blur { 0.48 } else { 0.74 },
-        TaskbarTheme::PillsDetached => if has_blur { 0.54 } else { 0.84 },
-        TaskbarTheme::BubblesDark => if has_blur { 0.58 } else { 0.86 },
-        TaskbarTheme::BubblesLight => if has_blur { 0.64 } else { 0.92 },
-        TaskbarTheme::MatterTilesLight => 0.96,
-        TaskbarTheme::MatterTilesDark | TaskbarTheme::RosePineTiles | TaskbarTheme::CatppuccinTiles => 0.94,
-        _ => 0.88,
+    let raw_bg_a: f32 = match theme {
+        TaskbarTheme::BorderlessGhost => if has_blur { 0.26 } else { 0.40 },
+        TaskbarTheme::SquircleFrosted => if has_blur { 0.44 } else { 0.70 },
+        TaskbarTheme::PillsDetached => if has_blur { 0.50 } else { 0.80 },
+        TaskbarTheme::BubblesDark => if has_blur { 0.52 } else { 0.82 },
+        TaskbarTheme::BubblesLight => if has_blur { 0.58 } else { 0.88 },
+        TaskbarTheme::MatterTilesLight => 0.94,
+        TaskbarTheme::MatterTilesDark | TaskbarTheme::RosePineTiles | TaskbarTheme::CatppuccinTiles => 0.92,
+        _ => 0.82,
+    };
+    let bg_a = (raw_bg_a * (0.06 + 0.94 * shelf_card_k * shelf_card_k.sqrt()) * glass_gate).clamp(0.015, 0.95);
+    let (gt, gm, gb) = if cfg.tb_match_wallpaper {
+        let prof = crate::theme::resolve_wallpaper_profile(cfg);
+        prof.glass_gradient_for_edge(cfg.mac_dock_edge, spec.light_mode_paper)
+    } else {
+        (spec.bg_top, spec.bg_mid, spec.bg_bot)
     };
     let stops = [
-        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(spec.bg_top.0, spec.bg_top.1, spec.bg_top.2, (bg_a + 0.03).min(0.98)) },
-        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(spec.bg_bot.0, spec.bg_bot.1, spec.bg_bot.2, bg_a) },
+        D2D1_GRADIENT_STOP { position: 0.0, color: rgba(gt.0, gt.1, gt.2, (bg_a + 0.03 * shelf_vis).min(0.98)) },
+        D2D1_GRADIENT_STOP { position: 1.0, color: rgba(gb.0, gb.1, gb.2, bg_a) },
     ];
     if let Some(g) = create_grad(rt, Vector2 { X: cx, Y: rect.top }, Vector2 { X: cx, Y: rect.bottom }, &stops) {
         rt.FillRoundedRectangle(&rr, &g);
     } else {
-        br.SetColor(&rgba(spec.bg_mid.0, spec.bg_mid.1, spec.bg_mid.2, bg_a));
+        br.SetColor(&rgba(gm.0, gm.1, gm.2, bg_a));
         rt.FillRoundedRectangle(&rr, br);
     }
 
@@ -3351,21 +3482,42 @@ pub unsafe fn draw_unified_floating_tray_capsule(
         radiusX: (rad - 1.0 * u).max(2.0),
         radiusY: (rad - 1.0 * u).max(2.0),
     };
-    br.SetColor(&rgba(255, 255, 255, if spec.light_mode_paper { 0.30 } else { 0.09 }));
+    br.SetColor(&rgba(255, 255, 255, (if spec.light_mode_paper { 0.24 } else { 0.08 }) * shelf_vis));
     rt.FillRoundedRectangle(&top_h, br);
 
     match theme {
         TaskbarTheme::RosePineTiles | TaskbarTheme::CatppuccinTiles | TaskbarTheme::BubblesDark => {
+            let (rr_c, rg_c, rb_c) = if cfg.tb_match_wallpaper {
+                pal.rim
+            } else {
+                (spec.rim_outer.0, spec.rim_outer.1, spec.rim_outer.2)
+            };
             br.SetColor(&rgba(
-                spec.rim_outer.0,
-                spec.rim_outer.1,
-                spec.rim_outer.2,
-                if is_hovered { 0.86 } else { 0.48 },
+                rr_c,
+                rg_c,
+                rb_c,
+                (if is_hovered { 0.86 } else { 0.48 }) * rim_vis,
             ));
             rt.DrawRoundedRectangle(&rr, br, 1.15 * u, None);
         }
         _ => {
-            draw_fresnel_glass_rim(rt, br, rect, rad, false, spec.light_mode_paper, if is_hovered { 1.15 } else { 0.92 }, u);
+            let prism_tint = if cfg.tb_match_wallpaper {
+                Some((pal.accent_light, pal.accent))
+            } else {
+                None
+            };
+            draw_fresnel_glass_rim_tinted(
+                rt,
+                br,
+                rect,
+                rad,
+                false,
+                spec.light_mode_paper,
+                if is_hovered { 1.12 } else { 0.90 },
+                u,
+                rim_vis,
+                prism_tint,
+            );
         }
     }
 }
@@ -3502,10 +3654,14 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
         return;
     }
     let shelf_card_k = (cfg.w_shelf.glass_alpha_pct.min(100) as f32) / 100.0;
-    let shelf_vis = (cfg.tint_alpha as f32 / 24.0).clamp(0.0, 1.0) * shelf_card_k;
+    let glass_gate = (cfg.tint_alpha as f32 / 24.0).clamp(0.0, 1.0);
+    let shelf_vis = glass_gate * shelf_card_k;
     if shelf_vis <= 0.005 {
         return;
     }
+    let rim_vis = (shelf_card_k.powf(0.75) * glass_gate).clamp(0.0, 1.0);
+    let art_vis = (shelf_card_k.powf(1.10) * glass_gate).clamp(0.0, 1.0);
+    let wp_match_pal = if cfg.tb_match_wallpaper { Some(pal) } else { None };
     let spec = if is_preview {
         dock_spec(cfg.tb_theme)
     } else {
@@ -3617,6 +3773,8 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                 cursor_axis_norm,
                 is_vertical,
                 u,
+                art_vis,
+                wp_match_pal,
             );
             pop_shelf_clip(rt, clip_layer);
         }
@@ -3634,6 +3792,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                     cham_geo.as_ref(),
                     u,
                     is_preview,
+                    rim_vis,
                 );
             } else {
                 let custom_border = if cfg.amber_border && cfg.tb_match_wallpaper {
@@ -3705,66 +3864,73 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
             }
         }
 
-        // Photorealistic Gaussian-blurred wallpaper backdrop clipped inside Clean & Minimal glass shelves!
+        // Photorealistic Gaussian-blurred wallpaper backdrop clipped inside Clean & Minimal glass shelves
+        // when hardware DWM blur is not active (e.g. static preview or software fallback), only above 20%
+        // so `1%..20%` remains pure crystal-clear see-through glass!
+        let live_hw = is_live_hw_blur_active();
         let mut has_live_blur = false;
-        if is_clean_glass_art && !is_os26_rail && !is_preview {
-            let (lens_z, blur_op) = if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
-                (0.88, 0.96 * shelf_vis)
+        if is_clean_glass_art && !is_preview && !live_hw && shelf_card_k > 0.20 {
+            let (lens_z, blur_base) = if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
+                (0.88, 0.88)
+            } else if is_os26_rail {
+                (0.95, 0.80)
             } else {
-                (0.97, 0.92 * shelf_vis)
+                (0.97, 0.84)
             };
+            let blur_op = (((shelf_card_k - 0.20) / 0.80).clamp(0.0, 1.0) * blur_base * glass_gate)
+                .clamp(0.0, 0.92);
             has_live_blur = draw_backdrop_blurred_rrect(rt, d2d, shelf_r, rad, lens_z, blur_op);
         }
 
-        let live_hw = is_live_hw_blur_active();
-        let (def_a, min_a, max_a) = if is_os26_rail {
-            (if spec.light_mode_paper { 0.06 } else { 0.045 }, 0.005, 0.78)
-        } else if live_hw && has_live_blur {
-            // Crystal-clear MacBook Tahoe / Sequoia live GPU glass: keep veil whisper-translucent at preset, adjustable 0..100%!
-            let d = if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
-                0.08
-            } else if spec.bg_alpha_bias < 0.30 {
-                0.10
-            } else if spec.light_mode_paper {
-                (spec.bg_alpha_bias * 0.42).clamp(0.24, 0.46)
+        let t_user = (cfg.tint_alpha as f32 / 255.0).clamp(0.0, 1.0);
+        let base_a = if is_clean_glass_art || is_os26_rail {
+            // Authentic macOS Sonoma / Sequoia / OS26 outer card opacity curve:
+            //   0%       -> completely invisible (pure floating icons)
+            //   1..20%   -> crystal transparent glass pane (0.03..0.13 — sharp wallpaper shows right through!)
+            //   21..65%  -> translucent macOS glass (0.10..0.34 over crystal-clear DWM Gaussian blur!)
+            //   66..100% -> rich frosted-to-satin glass card (0.35..0.68 — never a chalky flat white slab!)
+            let glass_curve = if shelf_card_k <= 0.20 {
+                let u0 = (shelf_card_k / 0.20).clamp(0.0, 1.0);
+                0.025 + 0.105 * u0
             } else {
-                (spec.bg_alpha_bias * 0.36).clamp(0.18, 0.40)
+                let u1 = ((shelf_card_k - 0.20) / 0.80).clamp(0.0, 1.0);
+                0.075 + 0.22 * u1 + 0.36 * u1 * u1
             };
-            (d, 0.01, 0.92)
-        } else if has_live_blur {
-            let d = if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
-                0.10
-            } else if spec.bg_alpha_bias < 0.30 {
-                0.13
-            } else if spec.light_mode_paper {
-                (spec.bg_alpha_bias * 0.52).clamp(0.32, 0.56)
-            } else {
-                (spec.bg_alpha_bias * 0.44).clamp(0.22, 0.48)
-            };
-            (d, 0.02, 0.94)
-        } else if spec.bg_alpha_bias < 0.38 {
-            (spec.bg_alpha_bias.clamp(0.14, 0.42), 0.03, 0.92)
+            let tint_bias = 0.72 + 0.38 * t_user;
+            let hw_scale = if live_hw && shelf_card_k > 0.20 { 0.84 } else { 1.0 };
+            (glass_curve * tint_bias * hw_scale).clamp(0.015, 0.82) * glass_gate
         } else {
-            (spec.bg_alpha_bias.clamp(0.42, 0.94), 0.08, 0.98)
+            let (def_a, min_a, max_a) = if has_live_blur {
+                let d = if spec.light_mode_paper {
+                    (spec.bg_alpha_bias * 0.52).clamp(0.32, 0.56)
+                } else {
+                    (spec.bg_alpha_bias * 0.44).clamp(0.22, 0.48)
+                };
+                (d, 0.02, 0.94)
+            } else if spec.bg_alpha_bias < 0.38 {
+                (spec.bg_alpha_bias.clamp(0.14, 0.42), 0.03, 0.92)
+            } else {
+                (spec.bg_alpha_bias.clamp(0.42, 0.94), 0.08, 0.98)
+            };
+            scale_dock_theme_alpha(cfg.tb_theme, def_a, cfg.tint_alpha, min_a, max_a) * shelf_vis
         };
-        let base_a = scale_dock_theme_alpha(cfg.tb_theme, def_a, cfg.tint_alpha, min_a, max_a) * shelf_vis;
         let (gt, gm, gb) = if cfg.tb_match_wallpaper {
-            (
-                pal.glass_top,
-                (
-                    ((pal.glass_top.0 as u16 + pal.glass_bot.0 as u16) / 2) as u8,
-                    ((pal.glass_top.1 as u16 + pal.glass_bot.1 as u16) / 2) as u8,
-                    ((pal.glass_top.2 as u16 + pal.glass_bot.2 as u16) / 2) as u8,
-                ),
-                pal.glass_bot,
-            )
+            let prof = crate::theme::resolve_wallpaper_profile(cfg);
+            prof.glass_gradient_for_edge(cfg.mac_dock_edge, spec.light_mode_paper)
+        } else if is_os26_rail {
+            // Crisp modern macOS glass body (cool translucent silver-white for Light, smoked graphite for Dark)
+            if spec.light_mode_paper {
+                ((236, 242, 250), (222, 230, 240), (208, 218, 232))
+            } else {
+                ((32, 40, 54), (19, 25, 36), (12, 17, 26))
+            }
         } else {
             (spec.bg_top, spec.bg_mid, spec.bg_bot)
         };
         let stops = [
             D2D1_GRADIENT_STOP {
                 position: 0.0,
-                color: rgba(gt.0, gt.1, gt.2, (base_a + 0.06 * shelf_vis).min(0.97)),
+                color: rgba(gt.0, gt.1, gt.2, (base_a + 0.05 * shelf_vis).min(0.96)),
             },
             D2D1_GRADIENT_STOP {
                 position: 0.52,
@@ -3772,7 +3938,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
             },
             D2D1_GRADIENT_STOP {
                 position: 1.0,
-                color: rgba(gb.0, gb.1, gb.2, (base_a + 0.04 * shelf_vis).min(0.97)),
+                color: rgba(gb.0, gb.1, gb.2, (base_a + 0.03 * shelf_vis).min(0.96)),
             },
         ];
 
@@ -3802,7 +3968,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
         }
     }
 
-    if show_art {
+    if show_art && art_vis > 0.01 {
         let clip_layer = push_shelf_clip(rt, d2d, shelf_r, rad, spec.shape, cut);
         draw_internal_art(
             rt,
@@ -3814,6 +3980,8 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
             cursor_axis_norm,
             is_vertical,
             u,
+            art_vis,
+            wp_match_pal,
         );
         // Live optical click-ripple wave across refractive glass & clean frost shelves
         if let Some((rip_axis, rip_t)) = click_ripple {
@@ -3875,16 +4043,49 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
         pop_shelf_clip(rt, clip_layer);
     }
 
-    if show_rim {
+    if show_rim && rim_vis > 0.01 {
         if is_clean_glass_art && spec.layout != DockLayoutKind::FullEdgeTaskbar {
-            let boost = if is_os26_rail {
-                0.72
-            } else if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
-                1.16
-            } else {
-                0.96
+            // Authentic macOS physical glass dual-hairline bevel:
+            // 1) Razor-thin dark outer separation stroke around the glass pane
+            let outer_rr = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: shelf_r.left - 0.5 * u,
+                    top: shelf_r.top - 0.5 * u,
+                    right: shelf_r.right + 0.5 * u,
+                    bottom: shelf_r.bottom + 0.5 * u,
+                },
+                radiusX: rad + 0.5 * u,
+                radiusY: rad + 0.5 * u,
             };
-            draw_fresnel_glass_rim_alpha(rt, br, shelf_r, rad, false, spec.light_mode_paper, boost, u, shelf_vis);
+            br.SetColor(&rgba(0, 0, 0, (if spec.light_mode_paper { 0.14 } else { 0.30 }) * rim_vis));
+            rt.DrawRoundedRectangle(&outer_rr, br, 0.85 * u, None);
+
+            // 2) Luminous inner Fresnel specular edge (tinted with wallpaper harmony when Match Wallpaper is ON!)
+            let boost = if is_os26_rail {
+                0.76
+            } else if cfg.tb_theme == TaskbarTheme::LiquidGlassClear {
+                1.08
+            } else {
+                0.92
+            };
+            let prism_tint = if cfg.tb_match_wallpaper {
+                let prof = crate::theme::resolve_wallpaper_profile(cfg);
+                Some((prof.secondary_accent, prof.primary_accent))
+            } else {
+                None
+            };
+            draw_fresnel_glass_rim_tinted(
+                rt,
+                br,
+                shelf_r,
+                rad,
+                false,
+                spec.light_mode_paper,
+                boost,
+                u,
+                rim_vis,
+                prism_tint,
+            );
         } else {
             draw_shelf_rims(
                 rt,
@@ -3897,6 +4098,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                 cham_geo.as_ref(),
                 u,
                 is_preview,
+                rim_vis,
             );
         }
     }
@@ -4374,10 +4576,16 @@ unsafe fn draw_internal_art(
     cx_norm: f32,
     is_vertical: bool,
     u: f32,
+    art_vis: f32,
+    wp_pal: Option<&ThemePalette>,
 ) {
     let w = sr.right - sr.left;
     let h = sr.bottom - sr.top;
     let focus_axis = cx_norm.clamp(0.05, 0.95);
+    let av = art_vis.clamp(0.0, 1.0);
+    if av <= 0.005 {
+        return;
+    }
 
     match art {
         DockArtLayer::Quartz => {
@@ -4387,9 +4595,10 @@ unsafe fn draw_internal_art(
                 right: sr.right - 8.0 * u,
                 bottom: sr.top + h * 0.42,
             };
+            let hi = wp_pal.map(|p| p.accent_light).unwrap_or((255, 255, 255));
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.22) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(hi.0, hi.1, hi.2, 0.22 * av) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(hi.0, hi.1, hi.2, 0.0) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: sheen.left, Y: sheen.top }, Vector2 { X: sheen.left, Y: sheen.bottom }, &stops) {
                 rt.FillRectangle(&sheen, &g);
@@ -5327,31 +5536,35 @@ unsafe fn draw_internal_art(
             // Rendered natively via realistic_pbr::draw_pbr_surface_clipped
         }
         DockArtLayer::LiquidGlassRefract => {
-            // Optical liquid-glass refraction: luminous upper meniscus + cursor-tracking specular prism + lower light bounce
+            // Optical liquid-glass refraction: refined upper meniscus + cursor-tracking specular prism + lower light bounce,
+            // scaled smoothly by `av` (`Dock Shelf / Card Opacity`) and wallpaper-tinted when Match Wallpaper is active.
+            let (tint_a, tint_b) = wp_pal
+                .map(|p| (p.accent_light, p.accent))
+                .unwrap_or(((186, 232, 255), (214, 238, 255)));
             let dome = D2D_RECT_F {
                 left: sr.left + 3.0 * u,
                 top: sr.top + 0.8 * u,
                 right: sr.right - 3.0 * u,
-                bottom: sr.top + h * 0.44,
+                bottom: sr.top + h * 0.42,
             };
             let dome_stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.28 + 0.08 * hover_mix) },
-                D2D1_GRADIENT_STOP { position: 0.55, color: rgba(236, 248, 255, 0.08) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, (0.18 + 0.07 * hover_mix) * av) },
+                D2D1_GRADIENT_STOP { position: 0.55, color: rgba(tint_a.0, tint_a.1, tint_a.2, 0.06 * av) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: dome.left, Y: dome.top }, Vector2 { X: dome.left, Y: dome.bottom }, &dome_stops) {
                 rt.FillRectangle(&dome, &g);
             }
             // Cursor-tracking optical specular refraction band
-            let beam_a = 0.14 + 0.22 * hover_mix;
+            let beam_a = (0.11 + 0.19 * hover_mix) * av;
             if is_vertical {
                 let fy = sr.top + h * focus_axis;
                 let span = (h * 0.24).clamp(32.0 * u, 96.0 * u);
                 let s_stops = [
                     D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.0) },
-                    D2D1_GRADIENT_STOP { position: 0.38, color: rgba(186, 232, 255, beam_a * 0.65) },
+                    D2D1_GRADIENT_STOP { position: 0.38, color: rgba(tint_a.0, tint_a.1, tint_a.2, beam_a * 0.65) },
                     D2D1_GRADIENT_STOP { position: 0.50, color: rgba(255, 255, 255, beam_a) },
-                    D2D1_GRADIENT_STOP { position: 0.62, color: rgba(214, 238, 255, beam_a * 0.65) },
+                    D2D1_GRADIENT_STOP { position: 0.62, color: rgba(tint_b.0, tint_b.1, tint_b.2, beam_a * 0.60) },
                     D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
                 ];
                 if let Some(g) = create_grad(rt, Vector2 { X: sr.left, Y: fy - span }, Vector2 { X: sr.left, Y: fy + span }, &s_stops) {
@@ -5362,9 +5575,9 @@ unsafe fn draw_internal_art(
                 let span = (w * 0.22).clamp(38.0 * u, 118.0 * u);
                 let s_stops = [
                     D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.0) },
-                    D2D1_GRADIENT_STOP { position: 0.36, color: rgba(186, 232, 255, beam_a * 0.65) },
+                    D2D1_GRADIENT_STOP { position: 0.36, color: rgba(tint_a.0, tint_a.1, tint_a.2, beam_a * 0.65) },
                     D2D1_GRADIENT_STOP { position: 0.50, color: rgba(255, 255, 255, beam_a) },
-                    D2D1_GRADIENT_STOP { position: 0.64, color: rgba(214, 238, 255, beam_a * 0.65) },
+                    D2D1_GRADIENT_STOP { position: 0.64, color: rgba(tint_b.0, tint_b.1, tint_b.2, beam_a * 0.60) },
                     D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
                 ];
                 if let Some(g) = create_grad(rt, Vector2 { X: fx - span, Y: sr.top }, Vector2 { X: fx + span, Y: sr.bottom }, &s_stops) {
@@ -5375,9 +5588,9 @@ unsafe fn draw_internal_art(
             let pad_e = (h * 0.35).min(w * 0.16);
             let hl_stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.0) },
-                D2D1_GRADIENT_STOP { position: 0.25, color: rgba(255, 255, 255, 0.44 + 0.16 * hover_mix) },
-                D2D1_GRADIENT_STOP { position: 0.50, color: rgba(255, 255, 255, 0.72 + 0.18 * hover_mix) },
-                D2D1_GRADIENT_STOP { position: 0.75, color: rgba(255, 255, 255, 0.44 + 0.16 * hover_mix) },
+                D2D1_GRADIENT_STOP { position: 0.25, color: rgba(255, 255, 255, (0.36 + 0.14 * hover_mix) * av) },
+                D2D1_GRADIENT_STOP { position: 0.50, color: rgba(255, 255, 255, (0.58 + 0.16 * hover_mix) * av) },
+                D2D1_GRADIENT_STOP { position: 0.75, color: rgba(255, 255, 255, (0.36 + 0.14 * hover_mix) * av) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
             ];
             if let Some(hg) = create_grad(
@@ -5396,7 +5609,7 @@ unsafe fn draw_internal_art(
             }
             let bot_stops = [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.0) },
-                D2D1_GRADIENT_STOP { position: 0.50, color: rgba(224, 244, 255, 0.38 + 0.14 * hover_mix) },
+                D2D1_GRADIENT_STOP { position: 0.50, color: rgba(tint_a.0, tint_a.1, tint_a.2, (0.30 + 0.12 * hover_mix) * av) },
                 D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
             ];
             if let Some(bg) = create_grad(
@@ -5416,6 +5629,7 @@ unsafe fn draw_internal_art(
         }
         DockArtLayer::CleanFrost => {
             // Refined architectural frosted satin top reflection + silky cursor-tracking sheen
+            let hi = wp_pal.map(|p| p.accent_light).unwrap_or((255, 255, 255));
             let top_band = D2D_RECT_F {
                 left: sr.left,
                 top: sr.top,
@@ -5423,8 +5637,8 @@ unsafe fn draw_internal_art(
                 bottom: sr.top + h * 0.40,
             };
             let stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.18 + 0.06 * hover_mix) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(hi.0, hi.1, hi.2, (0.16 + 0.06 * hover_mix) * av) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(hi.0, hi.1, hi.2, 0.0) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: sr.left, Y: sr.top }, Vector2 { X: sr.left, Y: top_band.bottom }, &stops) {
                 rt.FillRectangle(&top_band, &g);
@@ -5434,7 +5648,7 @@ unsafe fn draw_internal_art(
                 let span = if is_vertical { (h * 0.22).clamp(28.0 * u, 88.0 * u) } else { (w * 0.20).clamp(36.0 * u, 110.0 * u) };
                 let h_stops = [
                     D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 255, 255, 0.0) },
-                    D2D1_GRADIENT_STOP { position: 0.50, color: rgba(255, 255, 255, 0.16 * hover_mix) },
+                    D2D1_GRADIENT_STOP { position: 0.50, color: rgba(hi.0, hi.1, hi.2, 0.16 * hover_mix * av) },
                     D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 255, 255, 0.0) },
                 ];
                 let (p0, p1) = if is_vertical {
@@ -5448,7 +5662,10 @@ unsafe fn draw_internal_art(
             }
         }
         DockArtLayer::LuminosityBloom => {
-            // Silky translucent frost infused with a gliding luminous warm bloom following the cursor
+            // Silky translucent frost infused with a gliding luminous bloom following the cursor
+            let (b_pri, b_sec) = wp_pal
+                .map(|p| (p.accent, p.accent_light))
+                .unwrap_or(((244, 112, 156), (255, 212, 178)));
             let top_band = D2D_RECT_F {
                 left: sr.left,
                 top: sr.top,
@@ -5456,16 +5673,16 @@ unsafe fn draw_internal_art(
                 bottom: sr.top + h * 0.45,
             };
             let t_stops = [
-                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(255, 232, 246, 0.22) },
-                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(255, 232, 246, 0.0) },
+                D2D1_GRADIENT_STOP { position: 0.0, color: rgba(b_sec.0, b_sec.1, b_sec.2, 0.20 * av) },
+                D2D1_GRADIENT_STOP { position: 1.0, color: rgba(b_sec.0, b_sec.1, b_sec.2, 0.0) },
             ];
             if let Some(g) = create_grad(rt, Vector2 { X: sr.left, Y: sr.top }, Vector2 { X: sr.left, Y: top_band.bottom }, &t_stops) {
                 rt.FillRectangle(&top_band, &g);
             }
             let cx_p = if is_vertical { (sr.left + sr.right) * 0.5 } else { sr.left + w * focus_axis };
             let cy_p = if is_vertical { sr.top + h * focus_axis } else { (sr.top + sr.bottom) * 0.5 };
-            let glow_a = 0.16 + 0.16 * hover_mix;
-            br.SetColor(&rgba(244, 112, 156, glow_a * 0.55));
+            let glow_a = (0.16 + 0.16 * hover_mix) * av;
+            br.SetColor(&rgba(b_pri.0, b_pri.1, b_pri.2, glow_a * 0.55));
             rt.FillEllipse(
                 &D2D1_ELLIPSE {
                     point: Vector2 { X: cx_p, Y: cy_p },
@@ -5474,7 +5691,7 @@ unsafe fn draw_internal_art(
                 },
                 br,
             );
-            br.SetColor(&rgba(255, 212, 178, glow_a * 0.48));
+            br.SetColor(&rgba(b_sec.0, b_sec.1, b_sec.2, glow_a * 0.48));
             rt.FillEllipse(
                 &D2D1_ELLIPSE {
                     point: Vector2 { X: cx_p, Y: cy_p },
@@ -5499,7 +5716,12 @@ unsafe fn draw_shelf_rims(
     cham_geo: Option<&ID2D1PathGeometry>,
     u: f32,
     is_preview: bool,
+    rim_vis: f32,
 ) {
+    let rv = rim_vis.clamp(0.0, 1.0);
+    if rv <= 0.005 {
+        return;
+    }
     if cham_geo.is_none() && spec.layout != DockLayoutKind::FullEdgeTaskbar {
         let inner_rr = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
@@ -5511,18 +5733,18 @@ unsafe fn draw_shelf_rims(
             radiusX: (rad - 1.0 * u).max(1.0),
             radiusY: (rad - 1.0 * u).max(1.0),
         };
-        br.SetColor(&rgba(spec.rim_inner.0, spec.rim_inner.1, spec.rim_inner.2, spec.rim_inner.3));
+        br.SetColor(&rgba(spec.rim_inner.0, spec.rim_inner.1, spec.rim_inner.2, spec.rim_inner.3 * rv));
         rt.DrawRoundedRectangle(&inner_rr, br, 1.0 * u, None);
     }
 
     let (or, og, ob, oa) = if cfg.amber_border && cfg.tb_match_wallpaper {
-        (pal.rim.0, pal.rim.1, pal.rim.2, 0.65)
+        (pal.rim.0, pal.rim.1, pal.rim.2, 0.68)
     } else if !cfg.amber_border && !spec.light_mode_paper {
         (218, 230, 245, 0.25)
     } else {
         spec.rim_outer
     };
-    br.SetColor(&rgba(or, og, ob, oa));
+    br.SetColor(&rgba(or, og, ob, oa * rv));
     if let Some(geo) = cham_geo {
         rt.DrawGeometry(geo, br, 1.35 * u, None);
         if spec.art == DockArtLayer::CyberHud {
@@ -6784,6 +7006,16 @@ pub unsafe fn draw_dock_indicator_styled(
     if let Some(bc) = brand_rgb {
         spec.dot_active = bc;
         spec.dot_glow = bc;
+    } else if cfg.tb_match_wallpaper && cfg.w_apps.custom_glow_rgb.is_none() {
+        let prof = crate::theme::resolve_wallpaper_profile(cfg);
+        let active_c = if spec.light_mode_paper {
+            prof.on_light_accent
+        } else {
+            prof.primary_accent
+        };
+        spec.dot_active = active_c;
+        spec.dot_glow = prof.secondary_accent;
+        spec.dot_idle = crate::theme::blend_oklab(spec.dot_idle, active_c, 0.55);
     }
     let is_vertical = matches!(edge, MacDockEdge::Left | MacDockEdge::Right);
 
@@ -7550,7 +7782,7 @@ pub unsafe fn draw_dock_preview_card(
                         right: px0 + pill_w * u,
                         bottom: base_y + 11.5 * u,
                     };
-                    draw_unified_floating_tray_capsule(rt, d2d, &br, pill_rect, theme, false, u);
+                    draw_unified_floating_tray_capsule(rt, d2d, &br, pill_rect, theme, cfg, pal, false, u, true);
                     br.SetColor(&rgba(ink_m.0, ink_m.1, ink_m.2, 0.80));
                     rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: pill_rect.left + 10.0 * u, Y: base_y }, radiusX: 1.9 * u, radiusY: 1.9 * u }, &br);
                     rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2 { X: pill_rect.left + 16.5 * u, Y: base_y }, radiusX: 1.9 * u, radiusY: 1.9 * u }, &br);
@@ -9411,6 +9643,55 @@ pub fn clean_acrylic_tint_abgr_with_alpha(
     pack(cr, cg, cb, (scaled * 255.0).round().clamp(2.0, 244.0) as u8)
 }
 
+/// Wallpaper-aware & shelf-opacity-aware hardware DWM Acrylic tint for Clean & Minimal docks and Top Bar.
+pub fn clean_acrylic_tint_abgr_for_cfg(
+    cfg: &AppConfig,
+    for_top_bar: bool,
+    tint_alpha: u8,
+    shelf_pct: u8,
+) -> u32 {
+    let spec = dock_spec(cfg.tb_theme);
+    let base = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, for_top_bar, tint_alpha);
+    let base_a = ((base >> 24) & 0xFF) as f32;
+    let (cr, cg, cb) = if cfg.tb_match_wallpaper {
+        let prof = crate::theme::resolve_wallpaper_profile(cfg);
+        let edge = if for_top_bar {
+            crate::config::MacDockEdge::Top
+        } else {
+            cfg.mac_dock_edge
+        };
+        let (gt, gm, _) = prof.glass_gradient_for_edge(edge, spec.light_mode_paper);
+        if spec.light_mode_paper {
+            crate::theme::blend_oklab((212, 222, 236), gm, 0.72)
+        } else {
+            crate::theme::blend_oklab(gt, prof.edge_zone_rgb(edge), 0.30)
+        }
+    } else if spec.light_mode_paper && !for_top_bar {
+        // Cool translucent silver-glass base — completely eliminates Win11 chalky-white Acrylic washout!
+        (208, 218, 232)
+    } else {
+        (
+            (base & 0xFF) as u8,
+            ((base >> 8) & 0xFF) as u8,
+            ((base >> 16) & 0xFF) as u8,
+        )
+    };
+    let eff_a = if for_top_bar {
+        base_a.round().clamp(1.0, 220.0) as u8
+    } else {
+        // Smooth continuous macOS glass ramp across shelf_pct = 21..=100:
+        //   21% -> alpha 1  (crystal-clear real-time Gaussian blur, ZERO milky washout!)
+        //   50% -> alpha ~20 (authentic translucent macOS Sequoia/Sonoma dock glass)
+        //   75% -> alpha ~58 (lush frosted glass)
+        //  100% -> alpha ~124 (rich satin frosted card)
+        let u = ((shelf_pct.saturating_sub(20) as f32) / 80.0).clamp(0.0, 1.0);
+        let max_frost = (base_a.max(68.0) * 1.12).clamp(96.0, 148.0);
+        let curve = 1.0 + (max_frost - 1.0) * (0.18 * u + 0.82 * u * u);
+        curve.round().clamp(1.0, 168.0) as u8
+    };
+    crate::liquid_backdrop::pack_abgr(cr, cg, cb, eff_a)
+}
+
 /// Computes deterministic hit-test & paint slot geometry for the Clean & Minimal macOS / Windhawk Status Menu Bar.
 pub fn layout_clean_top_bar(
     bar_r: D2D_RECT_F,
@@ -9821,8 +10102,19 @@ pub unsafe fn draw_clean_top_bar(
     };
     let base_a = scale_dock_theme_alpha(theme, raw_bar_a, cfg.tint_alpha, 0.02, 0.96);
 
-    let (gt, gb) = if cfg.tb_match_wallpaper {
-        (pal.glass_top, pal.glass_bot)
+    let wp_prof = if cfg.tb_match_wallpaper {
+        Some(crate::theme::resolve_wallpaper_profile(cfg))
+    } else {
+        None
+    };
+    let (gt, gb) = if let Some(prof) = wp_prof {
+        let edge = if info.at_bottom {
+            crate::config::MacDockEdge::Bottom
+        } else {
+            crate::config::MacDockEdge::Top
+        };
+        let (t, _, b) = prof.glass_gradient_for_edge(edge, is_light);
+        (t, b)
     } else {
         (spec.bg_top, spec.bg_bot)
     };
@@ -9862,10 +10154,31 @@ pub unsafe fn draw_clean_top_bar(
 
     // 5. Fresnel rim (for Floating Glass Pill) or razor-thin luminous hairline divider (for Full-Width Bar)
     if info.floating {
-        draw_fresnel_glass_rim(rt, br, bar_r, rad, false, is_light, 1.04, u);
+        let prism_tint = if cfg.tb_match_wallpaper {
+            Some((pal.accent_light, pal.accent))
+        } else {
+            None
+        };
+        draw_fresnel_glass_rim_tinted(rt, br, bar_r, rad, false, is_light, 1.04, u, 1.0, prism_tint);
     } else {
         let edge_y = if info.at_bottom { bar_r.top + 0.5 * u } else { bar_r.bottom - 0.5 * u };
-        let line_stops = if is_light {
+        let line_stops = if cfg.tb_match_wallpaper {
+            let (ar, ag, ab) = pal.rim;
+            let (sr, sg, sb) = pal.accent_light;
+            if is_light {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba(ar, ag, ab, 0.14) },
+                    D2D1_GRADIENT_STOP { position: 0.5, color: rgba(ar, ag, ab, 0.34) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba(sr, sg, sb, 0.14) },
+                ]
+            } else {
+                [
+                    D2D1_GRADIENT_STOP { position: 0.0, color: rgba(sr, sg, sb, 0.24) },
+                    D2D1_GRADIENT_STOP { position: 0.5, color: rgba(ar, ag, ab, 0.48) },
+                    D2D1_GRADIENT_STOP { position: 1.0, color: rgba(sr, sg, sb, 0.24) },
+                ]
+            }
+        } else if is_light {
             [
                 D2D1_GRADIENT_STOP { position: 0.0, color: rgba(0, 0, 0, 0.06) },
                 D2D1_GRADIENT_STOP { position: 0.5, color: rgba(0, 0, 0, 0.14) },
@@ -9899,20 +10212,28 @@ pub unsafe fn draw_clean_top_bar(
         let scx = (r.left + r.right) * 0.5;
         let scy = (r.top + r.bottom) * 0.5;
 
-        // Smooth macOS translucent rounded pill highlight on hover / press
+        // Smooth macOS translucent rounded pill highlight on hover / press (wallpaper-tinted when Match Wallpaper is ON)
         if is_hov || is_prs {
             let hrr = D2D1_ROUNDED_RECT { rect: r, radiusX: 6.0 * u, radiusY: 6.0 * u };
             let ha = if is_light {
-                if is_prs { 0.16 } else { 0.09 }
+                if is_prs { 0.18 } else { 0.11 }
             } else if is_prs {
-                0.28
+                0.30
             } else {
-                0.17
+                0.19
             };
-            br.SetColor(&if is_light { rgba(16, 24, 38, ha) } else { rgba(255, 255, 255, ha) });
-            rt.FillRoundedRectangle(&hrr, br);
-            br.SetColor(&if is_light { rgba(0, 0, 0, 0.08) } else { rgba(255, 255, 255, 0.26) });
-            rt.DrawRoundedRectangle(&hrr, br, 0.75 * u, None);
+            if let Some(prof) = wp_prof {
+                let hc = if is_light { prof.on_light_accent } else { prof.secondary_accent };
+                br.SetColor(&rgba(hc.0, hc.1, hc.2, ha));
+                rt.FillRoundedRectangle(&hrr, br);
+                br.SetColor(&rgba(hc.0, hc.1, hc.2, if is_light { 0.24 } else { 0.36 }));
+                rt.DrawRoundedRectangle(&hrr, br, 0.75 * u, None);
+            } else {
+                br.SetColor(&if is_light { rgba(16, 24, 38, ha) } else { rgba(255, 255, 255, ha) });
+                rt.FillRoundedRectangle(&hrr, br);
+                br.SetColor(&if is_light { rgba(0, 0, 0, 0.08) } else { rgba(255, 255, 255, 0.26) });
+                rt.DrawRoundedRectangle(&hrr, br, 0.75 * u, None);
+            }
         }
 
         match slot.item {
@@ -9920,7 +10241,15 @@ pub unsafe fn draw_clean_top_bar(
                 // Crisp 4-pane MacBook-minimal monochrome Start Prism mark
                 let s = 5.4 * u;
                 let g = 1.3 * u;
-                let (lr, lg, lb) = if is_hov { spec.dot_glow } else { ink };
+                let (lr, lg, lb) = if is_hov {
+                    if let Some(prof) = wp_prof {
+                        if is_light { prof.on_light_accent } else { prof.primary_accent }
+                    } else {
+                        spec.dot_glow
+                    }
+                } else {
+                    ink
+                };
                 if text_shadow {
                     br.SetColor(&rgba(0, 0, 0, 0.28));
                     for &(dx, dy) in &[(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {

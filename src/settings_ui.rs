@@ -525,6 +525,7 @@ enum SliderKind {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MatchTarget {
     Taskbar,
+    AllWidgets,
     DateTime,
     Apps,
     Vitals,
@@ -6843,26 +6844,76 @@ impl SettingsController {
                     self.draft_cfg.set_tb_match_wallpaper(next);
                     SettingsCommand::StyleUpdated
                 }
+                MatchTarget::AllWidgets => {
+                    let all_on = self.draft_cfg.dt_match_wallpaper
+                        && self.draft_cfg.apps_match_wallpaper
+                        && self.draft_cfg.vitals_match_wallpaper
+                        && self.draft_cfg.music_match_wallpaper
+                        && self.draft_cfg.cc_match_wallpaper
+                        && self.draft_cfg.ext_widgets.iter().all(|w| w.match_wallpaper);
+                    let next = !all_on;
+                    for c in [&mut self.draft_cfg, cfg] {
+                        c.dt_match_wallpaper = next;
+                        c.apps_match_wallpaper = next;
+                        c.vitals_match_wallpaper = next;
+                        c.music_match_wallpaper = next;
+                        c.cc_match_wallpaper = next;
+                        if next {
+                            c.dt_use_custom_color = false;
+                            c.apps_use_custom_color = false;
+                            c.vitals_use_custom_color = false;
+                            c.music_use_custom_color = false;
+                            c.cc_use_custom_color = false;
+                        }
+                        for ew in &mut c.ext_widgets {
+                            ew.match_wallpaper = next;
+                            if next {
+                                ew.use_custom_color = false;
+                            }
+                        }
+                    }
+                    self.applied_flash = true;
+                    if next {
+                        SettingsCommand::ResampleWallpaper
+                    } else {
+                        SettingsCommand::WidgetsConfigUpdated
+                    }
+                }
                 _ => {
                     let (enabled, sync_tgt) = match target {
                         MatchTarget::DateTime => {
                             self.draft_cfg.dt_match_wallpaper = !self.draft_cfg.dt_match_wallpaper;
+                            if self.draft_cfg.dt_match_wallpaper {
+                                self.draft_cfg.dt_use_custom_color = false;
+                            }
                             (self.draft_cfg.dt_match_wallpaper, WidgetCanvasTarget::DateTime)
                         }
                         MatchTarget::Apps => {
                             self.draft_cfg.apps_match_wallpaper = !self.draft_cfg.apps_match_wallpaper;
+                            if self.draft_cfg.apps_match_wallpaper {
+                                self.draft_cfg.apps_use_custom_color = false;
+                            }
                             (self.draft_cfg.apps_match_wallpaper, WidgetCanvasTarget::Apps)
                         }
                         MatchTarget::Vitals => {
                             self.draft_cfg.vitals_match_wallpaper = !self.draft_cfg.vitals_match_wallpaper;
+                            if self.draft_cfg.vitals_match_wallpaper {
+                                self.draft_cfg.vitals_use_custom_color = false;
+                            }
                             (self.draft_cfg.vitals_match_wallpaper, WidgetCanvasTarget::Vitals)
                         }
                         MatchTarget::Music => {
                             self.draft_cfg.music_match_wallpaper = !self.draft_cfg.music_match_wallpaper;
+                            if self.draft_cfg.music_match_wallpaper {
+                                self.draft_cfg.music_use_custom_color = false;
+                            }
                             (self.draft_cfg.music_match_wallpaper, WidgetCanvasTarget::Music)
                         }
                         MatchTarget::ControlCenter => {
                             self.draft_cfg.cc_match_wallpaper = !self.draft_cfg.cc_match_wallpaper;
+                            if self.draft_cfg.cc_match_wallpaper {
+                                self.draft_cfg.cc_use_custom_color = false;
+                            }
                             (self.draft_cfg.cc_match_wallpaper, WidgetCanvasTarget::ControlCenter)
                         }
                         MatchTarget::Ext(id) => {
@@ -6873,7 +6924,7 @@ impl SettingsController {
                             }
                             (ew.match_wallpaper, WidgetCanvasTarget::Ext(id))
                         }
-                        MatchTarget::Taskbar => unreachable!(),
+                        MatchTarget::Taskbar | MatchTarget::AllWidgets => unreachable!(),
                     };
                     self.sync_canvas_target_to_live(cfg, sync_tgt);
                     self.applied_flash = true;
@@ -9509,7 +9560,19 @@ impl SettingsController {
                             }
                         }
                     }
-                    // Bottom Footer (per-widget FX lives inside each widget's Customize page)
+                    // Bottom Footer (Global Match Wallpaper + live swatches + Hover FX + Live Anim + Apply + Exit)
+                    if in_rect(x, y, 26.0, 584.0, 182.0, 622.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::AllWidgets);
+                    }
+                    let any_wp_widget = self.draft_cfg.dt_match_wallpaper
+                        || self.draft_cfg.apps_match_wallpaper
+                        || self.draft_cfg.vitals_match_wallpaper
+                        || self.draft_cfg.music_match_wallpaper
+                        || self.draft_cfg.cc_match_wallpaper
+                        || self.draft_cfg.ext_widgets.iter().any(|w| w.match_wallpaper);
+                    if any_wp_widget && in_rect(x, y, 188.0, 584.0, 336.0, 622.0) {
+                        return HitZone::BtnResampleWallpaper;
+                    }
                     if in_rect(x, y, 342.0, 584.0, 458.0, 622.0) {
                         return HitZone::ToggleWidgetsHoverReact;
                     }
@@ -9941,6 +10004,9 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackGallery;
                     }
+                    if in_rect(x, y, 342.0, 98.0, 466.0, 132.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::DateTime);
+                    }
                     if in_rect(x, y, 474.0, 98.0, 584.0, 132.0) {
                         return HitZone::BtnResetWidgetPos;
                     }
@@ -10079,6 +10145,19 @@ impl SettingsController {
                         && in_rect(x, y, 240.0, 98.0, 308.0, 132.0)
                     {
                         return HitZone::OpenNotesTextEditor;
+                    }
+                    if target != WidgetCanvasTarget::Ext(ExtWidgetId::Notes)
+                        && in_rect(x, y, 236.0, 98.0, 308.0, 132.0)
+                    {
+                        let mt = match target {
+                            WidgetCanvasTarget::DateTime => MatchTarget::DateTime,
+                            WidgetCanvasTarget::Apps => MatchTarget::Apps,
+                            WidgetCanvasTarget::Vitals => MatchTarget::Vitals,
+                            WidgetCanvasTarget::Music => MatchTarget::Music,
+                            WidgetCanvasTarget::ControlCenter => MatchTarget::ControlCenter,
+                            WidgetCanvasTarget::Ext(id) => MatchTarget::Ext(id),
+                        };
+                        return HitZone::ToggleMatchWallpaper(mt);
                     }
                     if in_rect(x, y, 314.0, 98.0, 370.0, 132.0) {
                         return HitZone::BtnUndoCanvas;
@@ -10277,6 +10356,9 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackGallery;
                     }
+                    if in_rect(x, y, 342.0, 98.0, 466.0, 132.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Apps);
+                    }
                     if in_rect(x, y, 474.0, 98.0, 584.0, 132.0) {
                         return HitZone::BtnResetWidgetPos;
                     }
@@ -10445,6 +10527,9 @@ impl SettingsController {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackGallery;
                     }
+                    if in_rect(x, y, 342.0, 98.0, 466.0, 132.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Vitals);
+                    }
                     if in_rect(x, y, 474.0, 98.0, 584.0, 132.0) {
                         return HitZone::BtnResetWidgetPos;
                     }
@@ -10553,6 +10638,9 @@ impl SettingsController {
                 WidgetPage::CustomizeMusic => {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackGallery;
+                    }
+                    if in_rect(x, y, 342.0, 98.0, 466.0, 132.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Music);
                     }
                     if in_rect(x, y, 474.0, 98.0, 584.0, 132.0) {
                         return HitZone::BtnResetWidgetPos;
@@ -10667,6 +10755,9 @@ impl SettingsController {
                 WidgetPage::CustomizeControlCenter => {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackGallery;
+                    }
+                    if in_rect(x, y, 342.0, 98.0, 466.0, 132.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::ControlCenter);
                     }
                     if in_rect(x, y, 474.0, 98.0, 584.0, 132.0) {
                         return HitZone::BtnResetWidgetPos;
@@ -10933,6 +11024,9 @@ impl SettingsController {
                 WidgetPage::CustomizeExt(id) => {
                     if in_rect(x, y, 26.0, 98.0, 126.0, 132.0) {
                         return HitZone::BtnBackGallery;
+                    }
+                    if in_rect(x, y, 342.0, 98.0, 466.0, 132.0) {
+                        return HitZone::ToggleMatchWallpaper(MatchTarget::Ext(id));
                     }
                     if in_rect(x, y, 474.0, 98.0, 584.0, 132.0) {
                         return HitZone::BtnResetWidgetPos;
@@ -15035,17 +15129,19 @@ impl SettingsController {
                     }
                 }
 
-                // Per-widget customization hint pill + Global Engine Switches + Apply / Exit Footer
-                let hint_rr = rrect(26.0, 584.0, 336.0, 622.0, 9.0, u);
-                rt.FillRoundedRectangle(&hint_rr, &r.card_bg);
-                rt.DrawRoundedRectangle(&hint_rr, &r.card_border, 1.0 * u, None);
-                draw_txt(
-                    rt,
-                    "Select any widget card to customize its Layout & Hover FX",
-                    &r.tf_badge,
-                    hint_rr.rect,
-                    &r.warm_sub,
-                );
+                // Global Match Wallpaper (All Widgets) + Live Extracted Swatch Pill + Global Engine Switches + Apply / Exit Footer
+                let all_wp_on = self.draft_cfg.dt_match_wallpaper
+                    && self.draft_cfg.apps_match_wallpaper
+                    && self.draft_cfg.vitals_match_wallpaper
+                    && self.draft_cfg.music_match_wallpaper
+                    && self.draft_cfg.cc_match_wallpaper
+                    && self.draft_cfg.ext_widgets.iter().all(|w| w.match_wallpaper);
+                let any_wp_on = self.draft_cfg.dt_match_wallpaper
+                    || self.draft_cfg.apps_match_wallpaper
+                    || self.draft_cfg.vitals_match_wallpaper
+                    || self.draft_cfg.music_match_wallpaper
+                    || self.draft_cfg.cc_match_wallpaper
+                    || self.draft_cfg.ext_widgets.iter().any(|w| w.match_wallpaper);
 
                 let draw_footer_toggle = |x0: f32, x1: f32, label: &str, on: bool, zone: HitZone| {
                     let trr = rrect(x0, 584.0, x1, 622.0, 9.0, u);
@@ -15066,6 +15162,54 @@ impl SettingsController {
                     );
                     draw_switch_r(rt, r, x1 - 46.0, 592.0, u, on);
                 };
+                draw_footer_toggle(
+                    26.0,
+                    182.0,
+                    "Match Wallpaper",
+                    all_wp_on,
+                    HitZone::ToggleMatchWallpaper(MatchTarget::AllWidgets),
+                );
+
+                let pal_rr = rrect(188.0, 584.0, 336.0, 622.0, 9.0, u);
+                let rs_hov = any_wp_on && self.hovered == HitZone::BtnResampleWallpaper;
+                rt.FillRoundedRectangle(&pal_rr, if rs_hov { &r.card_hover } else { &r.card_bg });
+                rt.DrawRoundedRectangle(
+                    &pal_rr,
+                    if rs_hov { &r.sun_gold } else { &r.card_border },
+                    1.0 * u,
+                    None,
+                );
+                if any_wp_on {
+                    let wp_pal = extracted_wallpaper_palette()
+                        .map(|(_, p)| p)
+                        .unwrap_or_else(|| resolve_palette_for(&self.draft_cfg, true));
+                    for (si, &sw_rgb) in wp_pal.swatches.iter().enumerate() {
+                        let (sr, sg, sb) = crate::theme::u32_to_rgb(sw_rgb);
+                        let pt = Vector2 {
+                            X: (204.0 + (si as f32) * 20.0) * u,
+                            Y: 603.0 * u,
+                        };
+                        if let Some(br) = solid(rt, rgb_u8(sr, sg, sb, 1.0)) {
+                            rt.FillEllipse(&D2D1_ELLIPSE { point: pt, radiusX: 6.5 * u, radiusY: 6.5 * u }, &br);
+                        }
+                        rt.DrawEllipse(&D2D1_ELLIPSE { point: pt, radiusX: 6.5 * u, radiusY: 6.5 * u }, &r.card_border, 0.8 * u, None);
+                    }
+                    draw_txt(
+                        rt,
+                        "↻",
+                        &r.tf_btn,
+                        rect_f(302.0, 584.0, 334.0, 622.0, u),
+                        if rs_hov { &r.cream } else { &r.sun_gold },
+                    );
+                } else {
+                    draw_txt(
+                        rt,
+                        "Click card to edit",
+                        &r.tf_badge,
+                        pal_rr.rect,
+                        &r.warm_sub,
+                    );
+                }
                 draw_footer_toggle(
                     342.0,
                     458.0,
@@ -16566,7 +16710,16 @@ impl SettingsController {
 
             WidgetPage::CustomizeDateTime => {
                 let is_on = self.draft_cfg.show_datetime;
-                self.render_custom_header(rt, r, u, "Customize Date & Time Card", is_on, HitZone::ToggleDateTimeQuick);
+                self.render_custom_header(
+                    rt,
+                    r,
+                    u,
+                    "Date & Time Card",
+                    is_on,
+                    HitZone::ToggleDateTimeQuick,
+                    self.draft_cfg.dt_match_wallpaper,
+                    MatchTarget::DateTime,
+                );
 
                 // Large Live Preview Canvas (138..298)
                 let pv = rrect(26.0, 138.0, 734.0, 298.0, 14.0, u);
@@ -16881,6 +17034,26 @@ impl SettingsController {
                     rt.FillRoundedRectangle(&et_rr, if et_hov { &r.card_hover } else { &r.amber_dim });
                     rt.DrawRoundedRectangle(&et_rr, &r.sun_gold, 1.0 * u, None);
                     draw_txt(rt, "✎ Text", &r.tf_badge, et_rr.rect, if et_hov { &r.cream } else { &r.sun_gold });
+                } else {
+                    let (mt, wp_on) = match target {
+                        WidgetCanvasTarget::DateTime => (MatchTarget::DateTime, self.draft_cfg.dt_match_wallpaper),
+                        WidgetCanvasTarget::Apps => (MatchTarget::Apps, self.draft_cfg.apps_match_wallpaper),
+                        WidgetCanvasTarget::Vitals => (MatchTarget::Vitals, self.draft_cfg.vitals_match_wallpaper),
+                        WidgetCanvasTarget::Music => (MatchTarget::Music, self.draft_cfg.music_match_wallpaper),
+                        WidgetCanvasTarget::ControlCenter => (MatchTarget::ControlCenter, self.draft_cfg.cc_match_wallpaper),
+                        WidgetCanvasTarget::Ext(id) => (MatchTarget::Ext(id), self.draft_cfg.ext_widgets[id.idx()].match_wallpaper),
+                    };
+                    let mw_rr = rrect(236.0, 98.0, 308.0, 132.0, 8.0, u);
+                    let mw_hov = self.hovered == HitZone::ToggleMatchWallpaper(mt);
+                    rt.FillRoundedRectangle(&mw_rr, if wp_on { &r.amber_dim } else if mw_hov { &r.card_hover } else { &r.card_bg });
+                    rt.DrawRoundedRectangle(&mw_rr, if wp_on || mw_hov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
+                    draw_txt(
+                        rt,
+                        if wp_on { "WP ✓" } else { "Match WP" },
+                        &r.tf_badge,
+                        mw_rr.rect,
+                        if wp_on || mw_hov { &r.sun_gold } else { &r.cream },
+                    );
                 }
 
                 let un_rr = rrect(314.0, 98.0, 370.0, 132.0, 8.0, u);
@@ -17859,7 +18032,16 @@ impl SettingsController {
 
             WidgetPage::CustomizeApps => {
                 let is_on = self.draft_cfg.show_apps;
-                self.render_custom_header(rt, r, u, "Customize App Launchers Dock", is_on, HitZone::ToggleAppsQuick);
+                self.render_custom_header(
+                    rt,
+                    r,
+                    u,
+                    "App Launchers Dock",
+                    is_on,
+                    HitZone::ToggleAppsQuick,
+                    self.draft_cfg.apps_match_wallpaper,
+                    MatchTarget::Apps,
+                );
 
                 let pv = rrect(26.0, 140.0, 734.0, 256.0, 14.0, u);
                 let apps_pv_pal = resolve_apps_palette(&self.draft_cfg);
@@ -18565,7 +18747,16 @@ impl SettingsController {
 
             WidgetPage::CustomizeVitals => {
                 let is_on = self.draft_cfg.show_vitals;
-                self.render_custom_header(rt, r, u, "Customize System Vitals & Power", is_on, HitZone::ToggleVitalsQuick);
+                self.render_custom_header(
+                    rt,
+                    r,
+                    u,
+                    "System Vitals & Power",
+                    is_on,
+                    HitZone::ToggleVitalsQuick,
+                    self.draft_cfg.vitals_match_wallpaper,
+                    MatchTarget::Vitals,
+                );
 
                 let pv = rrect(26.0, 138.0, 734.0, 298.0, 14.0, u);
                 draw_theme_preview_backdrop(rt, pv, u, &self.draft_cfg, self.draft_cfg.vitals_match_wallpaper);
@@ -18685,7 +18876,16 @@ impl SettingsController {
 
             WidgetPage::CustomizeMusic => {
                 let is_on = self.draft_cfg.show_music;
-                self.render_custom_header(rt, r, u, "Customize NowPlaying Music Bar", is_on, HitZone::ToggleMusicQuick);
+                self.render_custom_header(
+                    rt,
+                    r,
+                    u,
+                    "NowPlaying Music Bar",
+                    is_on,
+                    HitZone::ToggleMusicQuick,
+                    self.draft_cfg.music_match_wallpaper,
+                    MatchTarget::Music,
+                );
 
                 let pv = rrect(26.0, 138.0, 734.0, 298.0, 14.0, u);
                 let mus_pv_pal = resolve_music_palette(&self.draft_cfg);
@@ -18808,7 +19008,16 @@ impl SettingsController {
 
             WidgetPage::CustomizeControlCenter => {
                 let is_on = self.draft_cfg.show_cc;
-                self.render_custom_header(rt, r, u, "Customize Quick Control Center", is_on, HitZone::ToggleCcQuick);
+                self.render_custom_header(
+                    rt,
+                    r,
+                    u,
+                    "Quick Control Center",
+                    is_on,
+                    HitZone::ToggleCcQuick,
+                    self.draft_cfg.cc_match_wallpaper,
+                    MatchTarget::ControlCenter,
+                );
 
                 let pv = rrect(26.0, 138.0, 734.0, 298.0, 14.0, u);
                 draw_theme_preview_backdrop(rt, pv, u, &self.draft_cfg, self.draft_cfg.cc_match_wallpaper);
@@ -19414,9 +19623,11 @@ impl SettingsController {
                     rt,
                     r,
                     u,
-                    &format!("Customize {}", id.title()),
+                    id.title(),
                     wcfg.enabled,
                     HitZone::ToggleExtQuick(id),
+                    wcfg.match_wallpaper,
+                    MatchTarget::Ext(id),
                 );
 
                 // Live Preview Canvas (138..296)
@@ -21619,6 +21830,7 @@ impl SettingsController {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     unsafe fn render_custom_header(
         &self,
         rt: &ID2D1DCRenderTarget,
@@ -21627,6 +21839,8 @@ impl SettingsController {
         title: &str,
         enabled: bool,
         toggle_zone: HitZone,
+        match_wp: bool,
+        match_target: MatchTarget,
     ) {
         let back_rr = rrect(26.0, 98.0, 126.0, 132.0, 8.0, u);
         let bhov = self.hovered == HitZone::BtnBackGallery;
@@ -21634,7 +21848,25 @@ impl SettingsController {
         rt.DrawRoundedRectangle(&back_rr, if bhov { &r.sun_gold } else { &r.card_border }, 1.0 * u, None);
         draw_txt(rt, "← Back", &r.tf_btn, back_rr.rect, &r.cream);
 
-        draw_txt(rt, title, &r.tf_title, rect_f(138.0, 98.0, 466.0, 132.0, u), &r.cream);
+        draw_txt(rt, title, &r.tf_title, rect_f(136.0, 98.0, 336.0, 132.0, u), &r.cream);
+
+        let mw_rr = rrect(342.0, 98.0, 466.0, 132.0, 8.0, u);
+        let mwhov = self.hovered == HitZone::ToggleMatchWallpaper(match_target);
+        rt.FillRoundedRectangle(&mw_rr, if mwhov { &r.card_hover } else if match_wp { &r.card_active } else { &r.card_bg });
+        rt.DrawRoundedRectangle(
+            &mw_rr,
+            if match_wp || mwhov { &r.sun_gold } else { &r.card_border },
+            1.0 * u,
+            None,
+        );
+        draw_txt(
+            rt,
+            "Match WP",
+            &r.tf_badge,
+            rect_f(348.0, 98.0, 418.0, 132.0, u),
+            if match_wp { &r.sun_gold } else { &r.cream },
+        );
+        draw_switch_r(rt, r, 418.0, 104.0, u, match_wp);
 
         let rp_rr = rrect(474.0, 98.0, 584.0, 132.0, 8.0, u);
         let rhov = self.hovered == HitZone::BtnResetWidgetPos;
@@ -25355,8 +25587,11 @@ mod tests {
         // 3. Bug #5: Per-widget Hover FX & per-style isolation (never mutates other widgets/styles)
         sc.active_tab = StudioTab::DesktopWidgets;
         sc.widget_page = WidgetPage::Gallery;
-        // Left gallery footer area no longer exposes HoverFxTarget::All
-        assert_eq!(sc.hit_test(120.0, 603.0), HitZone::None);
+        // Left gallery footer area no longer exposes HoverFxTarget::All (now hosts Match Wallpaper All)
+        assert_eq!(
+            sc.hit_test(120.0, 603.0),
+            HitZone::ToggleMatchWallpaper(MatchTarget::AllWidgets)
+        );
 
         // Toggling DateTime Hover FX must NOT touch Vitals, Music, Apps, CC, or Ext widgets
         sc.widget_page = WidgetPage::CustomizeDateTime;
@@ -28244,6 +28479,73 @@ mod tests {
         assert_eq!(sc.hit_test(140.0, 445.0), HitZone::None);
         assert_eq!(sc.hit_test(636.0, 443.0), HitZone::BtnConvertPortable);
         assert!(sc.render_d2d(&cfg), "Settings tab with Portable Mode pill must render cleanly");
+
+        sc.release_idle_resources();
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    fn verify_match_wallpaper_across_widget_customization_pages() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut sc = SettingsController::new(HINSTANCE::default());
+        sc.u = 1.0;
+        sc.ensure_graphics_init();
+        assert!(sc.backbuf.ensure_size(760, 640));
+
+        let mut cfg = AppConfig::default();
+        sc.draft_cfg = cfg.clone();
+        sc.active_tab = StudioTab::DesktopWidgets;
+
+        // 1. Desktop Widgets Gallery footer exposes global Match Wallpaper (All Widgets) + live Resample pill
+        sc.widget_page = WidgetPage::Gallery;
+        assert_eq!(
+            sc.hit_test(100.0, 603.0),
+            HitZone::ToggleMatchWallpaper(MatchTarget::AllWidgets)
+        );
+        let cmd_all = sc.activate_zone(HitZone::ToggleMatchWallpaper(MatchTarget::AllWidgets), &mut cfg);
+        assert!(matches!(cmd_all, SettingsCommand::ResampleWallpaper));
+        assert!(cfg.dt_match_wallpaper && cfg.apps_match_wallpaper && cfg.vitals_match_wallpaper && cfg.music_match_wallpaper && cfg.cc_match_wallpaper);
+        assert!(cfg.ext_widgets.iter().all(|w| w.match_wallpaper));
+        assert_eq!(sc.hit_test(260.0, 603.0), HitZone::BtnResampleWallpaper);
+        assert!(sc.render_d2d(&cfg), "Gallery with Match WP All ON + live swatches must render cleanly");
+
+        let cmd_off = sc.activate_zone(HitZone::ToggleMatchWallpaper(MatchTarget::AllWidgets), &mut cfg);
+        assert!(matches!(cmd_off, SettingsCommand::WidgetsConfigUpdated));
+        assert!(!cfg.dt_match_wallpaper && !cfg.cc_match_wallpaper);
+        assert!(cfg.ext_widgets.iter().all(|w| !w.match_wallpaper));
+
+        // 2. Every individual Widget Customize header exposes Match WP toggle at (400, 115) across all sub-tabs!
+        for (page, target) in [
+            (WidgetPage::CustomizeDateTime, MatchTarget::DateTime),
+            (WidgetPage::CustomizeApps, MatchTarget::Apps),
+            (WidgetPage::CustomizeVitals, MatchTarget::Vitals),
+            (WidgetPage::CustomizeMusic, MatchTarget::Music),
+            (WidgetPage::CustomizeControlCenter, MatchTarget::ControlCenter),
+            (WidgetPage::CustomizeExt(ExtWidgetId::Weather), MatchTarget::Ext(ExtWidgetId::Weather)),
+        ] {
+            sc.widget_page = page;
+            assert_eq!(
+                sc.hit_test(400.0, 115.0),
+                HitZone::ToggleMatchWallpaper(target),
+                "Header Match WP hit-test failed on {:?}",
+                page
+            );
+            let cmd = sc.activate_zone(HitZone::ToggleMatchWallpaper(target), &mut cfg);
+            assert!(matches!(cmd, SettingsCommand::ResampleWallpaper));
+            assert!(sc.render_d2d(&cfg), "Customize page {:?} with header Match WP must render cleanly", page);
+        }
+
+        // 3. Pen Canvas direct editor exposes Match WP toggle in header for non-Notes widgets
+        sc.widget_page = WidgetPage::EditWidgetCanvas(WidgetCanvasTarget::DateTime);
+        assert_eq!(
+            sc.hit_test(272.0, 115.0),
+            HitZone::ToggleMatchWallpaper(MatchTarget::DateTime)
+        );
+        assert!(sc.render_d2d(&cfg), "Pen Canvas editor with Match WP header pill must render cleanly");
 
         sc.release_idle_resources();
         unsafe {

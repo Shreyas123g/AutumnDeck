@@ -2464,6 +2464,10 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             write_status_snapshot("WALLPAPER", state);
         }
         SettingsCommand::ResampleWallpaper => {
+            schedule_config_save(state);
+            state
+                .wallpaper
+                .set_chameleon_sampling(state.config.any_match_wallpaper());
             if !state.wallpaper.resample_live_palette() {
                 let _ = theme::ensure_wallpaper_palette_for_config(&state.settings.draft_cfg, true);
             }
@@ -2473,6 +2477,10 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
             if (!state.hider.is_hidden || state.hider.peek_visible) && state.config.tb_match_wallpaper {
                 state.styler.invalidate_style_only();
                 state.styler.sync_style_fast(&state.config);
+            }
+            if state.config.mac_dock_enabled && state.config.tb_match_wallpaper {
+                state.mac_dock.mark_dirty_paint();
+                state.mac_dock.tick(&state.config);
             }
             sync_studio_live(state);
         }

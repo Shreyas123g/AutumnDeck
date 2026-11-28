@@ -159,7 +159,6 @@ const IDM_DOCK_EDGE_BOTTOM: usize = 4120;
 const IDM_DOCK_EDGE_TOP: usize = 4126;
 const IDM_DOCK_EDGE_LEFT: usize = 4121;
 const IDM_DOCK_EDGE_RIGHT: usize = 4122;
-const IDM_DOCK_HIDE_SMART: usize = 4123;
 const IDM_DOCK_HIDE_HOVER: usize = 4124;
 const IDM_DOCK_HIDE_ALWAYS: usize = 4125;
 const IDM_DOCK_HIDE_STEALTH: usize = 4134;
@@ -2576,12 +2575,6 @@ impl MacDockEngine {
         )
     }
 
-    pub fn is_hover_animating(&self) -> bool {
-        self.panes
-            .iter()
-            .any(|p| p.motion_active || p.cursor_in_dock || p.click_ripple_t < 0.995)
-    }
-
     pub fn tick_idle_poll(&mut self, cfg: &AppConfig) {
         if !cfg.mac_dock_enabled {
             return;
@@ -3276,18 +3269,20 @@ impl MacDockEngine {
         };
         let is_vertical = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
         let show_div = cfg.w_apps.show_separators;
-        // Pure Mac Dock mode: when the Clean & Minimal Top Menu Bar is active, move tray + clock
-        // cleanly up to the Menu Bar so the bottom dock stays 100% pure apps + trash + Studio!
-        let pure_mac_dock = cfg.is_clean_top_bar_active();
-        let show_clock = !cfg.w_clock.is_all_elements_off() && !pure_mac_dock;
-        let show_tray = !cfg.w_tray.is_all_elements_off() && !pure_mac_dock;
-        // Keep a reachable Hidden Tray chevron on Clean & Minimal bottom docks whenever Top Bar
-        // is OFF (even if audio/wifi/battery tray meters are individually hidden), unless every
-        // dock module has been toggled OFF.
-        let show_hidden_tray = show_tray
-            || (!pure_mac_dock
-                && cfg.tb_theme.is_clean_minimal()
-                && !cfg.is_dock_all_elements_off());
+        // 3-state Bar / Top Bar layout:
+        // - Bar OFF (`!cfg.is_dock_bar_on()`): full all-in-one bottom dock (apps + `^` + tray + clock + trash + studio), no Top Bar.
+        // - Bar ON + Top Bar ON (`cfg.is_clean_top_bar_active()`): Top Menu Bar + clean macOS bottom dock (apps + trash + studio only).
+        // - Bar ON + Top Bar OFF (`cfg.is_dock_bar_on() && !cfg.is_clean_top_bar_active()`): no Top Bar, clean macOS bottom dock
+        //   with ONLY `^` Show Hidden Icons moved onto the dock (no clock, no Wi-Fi/audio/battery tray cluster).
+        let bar_mode = cfg.is_dock_bar_on();
+        let top_bar_active = cfg.is_clean_top_bar_active();
+        let show_clock = !cfg.w_clock.is_all_elements_off() && !bar_mode;
+        let show_tray = !cfg.w_tray.is_all_elements_off() && !bar_mode;
+        let show_hidden_tray = if bar_mode {
+            !top_bar_active && !cfg.is_dock_all_elements_off()
+        } else {
+            show_tray || (cfg.tb_theme.is_clean_minimal() && !cfg.is_dock_all_elements_off())
+        };
         let show_sliver = cfg.w_util.show_desktop_sliver && !cfg.w_util.is_all_elements_off();
         let has_right_cluster = show_hidden_tray
             || show_tray
@@ -5848,6 +5843,8 @@ impl MacDockEngine {
             DockSlotKind::HiddenTrayChevron => {
                 self.thumb_popup.hide();
                 self.thumb_owner_hwnd = HWND::default();
+                self.panes[pi].hovered_idx = None;
+                self.mark_dirty_paint();
                 self.pop_until
                     .insert(id_key, Instant::now() + Duration::from_millis(180));
                 let canvas_rc = self.panes[pi].canvas_rect;
@@ -6585,12 +6582,12 @@ impl MacDockEngine {
                 add_menu_item(hmenu, IDM_DOCK_EXPLORER, "File Explorer");
                 let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
-                if cfg.tb_theme.uses_virtual_dock() {
+                if cfg.is_dock_bar_on() {
                     add_menu_item(
                         hmenu,
                         IDM_CLEAN_TOPBAR_TOGGLE,
                         if cfg.clean_top_bar_enabled {
-                            "Hide Top Bar (Dock Only)"
+                            "Hide Top Bar (Show ^ on Dock)"
                         } else {
                             "Show Top Bar"
                         },
@@ -6650,9 +6647,8 @@ impl MacDockEngine {
                     let _ = AppendMenuW(hmenu, MF_POPUP, edge_sub.0 as usize, PCWSTR(lbl.as_ptr()));
                 }
                 if let Ok(hide_sub) = CreatePopupMenu() {
-                    add_checked_item(hide_sub, IDM_DOCK_HIDE_SMART, "Smart Auto-Hide", cfg.mac_dock_hide == MacDockHideMode::SmartAutoHide);
-                    add_checked_item(hide_sub, IDM_DOCK_HIDE_HOVER, "Edge Hover Reveal", cfg.mac_dock_hide == MacDockHideMode::HoverReveal);
                     add_checked_item(hide_sub, IDM_DOCK_HIDE_ALWAYS, "Always Visible", cfg.mac_dock_hide == MacDockHideMode::AlwaysVisible);
+                    add_checked_item(hide_sub, IDM_DOCK_HIDE_HOVER, "Edge Hover Reveal", cfg.mac_dock_hide == MacDockHideMode::HoverReveal);
                     add_checked_item(hide_sub, IDM_DOCK_HIDE_STEALTH, "Full Stealth Hide (Ctrl+Alt+T)", cfg.mac_dock_hide == MacDockHideMode::StealthHide);
                     let lbl = to_wide("Auto-Hide Behavior");
                     let _ = AppendMenuW(hmenu, MF_POPUP, hide_sub.0 as usize, PCWSTR(lbl.as_ptr()));
@@ -6679,12 +6675,14 @@ impl MacDockEngine {
                     IDM_DOCK_SHOW_DESKTOP => { keep_focus = true; send_win_chord(0x44); }
                     IDM_DOCK_EXPLORER => { keep_focus = true; launch_app_path("explorer.exe"); }
                     IDM_CLEAN_TOPBAR_TOGGLE => {
-                        cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
-                        if cfg.clean_top_bar_enabled {
-                            cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
+                        if cfg.is_dock_bar_on() {
+                            cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
+                            if cfg.clean_top_bar_enabled {
+                                cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
+                            }
+                            save_config(cfg);
+                            action = MacDockAction::ConfigUpdated;
                         }
-                        save_config(cfg);
-                        action = MacDockAction::ConfigUpdated;
                     }
                     IDM_CLEAN_TOPBAR_TOP => {
                         cfg.clean_top_bar_enabled = true;
@@ -6735,12 +6733,6 @@ impl MacDockEngine {
                     }
                     IDM_DOCK_EDGE_RIGHT => {
                         cfg.set_mac_dock_edge_smart(MacDockEdge::Right);
-                        save_config(cfg);
-                        action = MacDockAction::ConfigUpdated;
-                    }
-                    IDM_DOCK_HIDE_SMART => {
-                        cfg.mac_dock_hide = MacDockHideMode::SmartAutoHide;
-                        cfg.sync_hide_mode_from_dock();
                         save_config(cfg);
                         action = MacDockAction::ConfigUpdated;
                     }
@@ -7276,14 +7268,17 @@ impl MacDockEngine {
 
     fn handle_widget_menu_cmd(&mut self, cmd: usize, cfg: &mut AppConfig) -> Option<MacDockAction> {
         if cmd == IDM_CLEAN_TOPBAR_TOGGLE {
-            cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
-            if cfg.clean_top_bar_enabled {
-                cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
+            if cfg.is_dock_bar_on() {
+                cfg.clean_top_bar_enabled = !cfg.clean_top_bar_enabled;
+                if cfg.clean_top_bar_enabled {
+                    cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
+                }
+                save_config(cfg);
+                self.dirty_windows = true;
+                self.mark_dirty_paint();
+                return Some(MacDockAction::ConfigUpdated);
             }
-            save_config(cfg);
-            self.dirty_windows = true;
-            self.mark_dirty_paint();
-            return Some(MacDockAction::ConfigUpdated);
+            return Some(MacDockAction::None);
         }
         if (IDM_DOCK_ICON_SIZE_BASE..IDM_DOCK_ICON_SIZE_BASE + DOCK_ICON_SIZE_PRESETS.len())
             .contains(&cmd)
@@ -8394,9 +8389,15 @@ impl MacDockEngine {
         // Clean & Minimal glass shelf/islands (100% click-through, never black, never oversized!)
         let u = pane.dpi_u;
         let acrylic_pills = collect_dock_acrylic_pills(pane, cfg, u);
-        let live_hw_blur =
-            if !acrylic_pills.is_empty() && !cfg.is_dock_all_elements_off() && cfg.tint_alpha > 0 {
-            let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, false, cfg.tint_alpha);
+        let shelf_card_pct = cfg.w_shelf.glass_alpha_pct.min(100);
+        let eff_shelf_tint =
+            ((cfg.tint_alpha as u32 * shelf_card_pct as u32 + 50) / 100).min(255) as u8;
+        let live_hw_blur = if !acrylic_pills.is_empty()
+            && !cfg.is_dock_all_elements_off()
+            && cfg.tint_alpha > 0
+            && shelf_card_pct > 0
+        {
+            let abgr = clean_acrylic_tint_abgr_with_alpha(cfg.tb_theme, false, eff_shelf_tint);
             pane.liquid_backdrop.sync_pills_ex(
                 self.hinst,
                 &mut self.liquid_ctx,
@@ -9206,6 +9207,7 @@ impl MacDockEngine {
             let is_vert_edge = matches!(cfg.mac_dock_edge, MacDockEdge::Left | MacDockEdge::Right);
             if pane.hover_mix > 0.25
                 && !self.menu_open
+                && !is_tray_overflow_active()
                 && (!is_vert_edge || (pane.cursor_in_dock && pane.tooltip_shown_after_dwell))
             {
                 if let Some(hidx) = pane.hovered_idx {
@@ -11140,6 +11142,15 @@ unsafe fn sync_rehide_tray_window(tray: HWND, was_tray_hidden: bool) {
 }
 
 pub const WM_APP_TRAY_OVERFLOW_FALLBACK: u32 = WM_APP + 33;
+pub const WM_APP_TRAY_OVERFLOW_DONE: u32 = WM_APP + 34;
+
+static TRAY_OVERFLOW_LAST_CLICK_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+const TRAY_OVERFLOW_DEBOUNCE_MS: u64 = 450;
+
+fn should_accept_tray_overflow_click(now_ms: u64, prev_ms: u64) -> bool {
+    prev_ms == 0 || now_ms.saturating_sub(prev_ms) >= TRAY_OVERFLOW_DEBOUNCE_MS
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TrayOverflowFallbackReq {
@@ -11525,6 +11536,7 @@ unsafe fn anchor_and_monitor_tray_overflow(
     ov: HWND,
     tray: HWND,
     was_tray_hidden: bool,
+    saved_wa: &[(RECT, RECT)],
     anchor_rect: RECT,
     edge: MacDockEdge,
 ) {
@@ -11562,12 +11574,18 @@ unsafe fn anchor_and_monitor_tray_overflow(
         }
     };
     position_ov(ov);
+    if was_tray_hidden {
+        let _ = crate::taskbar_hide::TaskbarHider::restore_work_areas_and_refit(saved_wa);
+    }
     let _ = AllowSetForegroundWindow(ASFW_ANY);
     let _ = SetForegroundWindow(ov);
     // Re-anchor once after XAML finishes layout settle
     std::thread::sleep(Duration::from_millis(35));
     if is_overflow_actually_open(ov) {
         position_ov(ov);
+    }
+    if was_tray_hidden {
+        let _ = crate::taskbar_hide::TaskbarHider::restore_work_areas_and_refit(saved_wa);
     }
 
     // Keep Shell_TrayWnd clipped to 0x0 while overflow is open so Explorer does not
@@ -11582,6 +11600,7 @@ unsafe fn anchor_and_monitor_tray_overflow(
             std::thread::sleep(Duration::from_millis(80));
         }
         sync_rehide_tray_window(tray, true);
+        let _ = crate::taskbar_hide::TaskbarHider::restore_work_areas_and_refit(saved_wa);
     }
     TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
 }
@@ -11603,17 +11622,26 @@ fn retry_hidden_tray_overflow_win_b(anchor_rect: RECT, edge: MacDockEdge) {
 
         let tray = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).unwrap_or_default();
         let was_tray_hidden = !tray.0.is_null() && !IsWindowVisible(tray).as_bool();
+        let saved_wa = if was_tray_hidden {
+            crate::taskbar_hide::TaskbarHider::snapshot_work_areas()
+        } else {
+            Vec::new()
+        };
         TRAY_OVERFLOW_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
 
         if was_tray_hidden {
             wake_hidden_tray_for_overflow(tray);
+            let _ = crate::taskbar_hide::TaskbarHider::restore_work_areas_and_refit(&saved_wa);
             std::thread::sleep(Duration::from_millis(60));
         }
         let ov = trigger_tray_chevron_win_b(tray);
         if !ov.0.is_null() {
-            anchor_and_monitor_tray_overflow(ov, tray, was_tray_hidden, anchor_rect, edge);
+            anchor_and_monitor_tray_overflow(ov, tray, was_tray_hidden, &saved_wa, anchor_rect, edge);
         } else {
             sync_rehide_tray_window(tray, was_tray_hidden);
+            if was_tray_hidden {
+                let _ = crate::taskbar_hide::TaskbarHider::restore_work_areas_and_refit(&saved_wa);
+            }
             TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     });
@@ -11625,6 +11653,14 @@ fn toggle_hidden_tray_overflow(
     anchor_rect: RECT,
     edge: MacDockEdge,
 ) {
+    // Debounce accidental double-clicks on `^` so click #2 never fights click #1's XAML wake/dismiss.
+    let now_ms = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() };
+    let prev_ms = TRAY_OVERFLOW_LAST_CLICK_MS.load(std::sync::atomic::Ordering::SeqCst);
+    if !should_accept_tray_overflow_click(now_ms, prev_ms) {
+        return;
+    }
+    TRAY_OVERFLOW_LAST_CLICK_MS.store(now_ms, std::sync::atomic::Ordering::SeqCst);
+
     unsafe {
         let vis_ov = find_tray_overflow_hwnd(true);
         if !vis_ov.0.is_null() {
@@ -11640,18 +11676,31 @@ fn toggle_hidden_tray_overflow(
     let dock_raw = dock_hwnd.0 as isize;
     let notify_raw = notify_hwnd.0 as isize;
     std::thread::spawn(move || unsafe {
-        struct BusyGuard;
+        struct BusyGuard {
+            notify_raw: isize,
+        }
         impl Drop for BusyGuard {
             fn drop(&mut self) {
                 TRAY_OVERFLOW_SUMMONING.store(false, std::sync::atomic::Ordering::SeqCst);
                 TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+                let nhw = HWND(self.notify_raw as *mut c_void);
+                if !nhw.0.is_null() && unsafe { IsWindow(Some(nhw)).as_bool() } {
+                    let _ = unsafe {
+                        PostMessageW(Some(nhw), WM_APP_TRAY_OVERFLOW_DONE, WPARAM(0), LPARAM(0))
+                    };
+                }
             }
         }
-        let _guard = BusyGuard;
+        let _guard = BusyGuard { notify_raw };
 
         let com_ok = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         let tray = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).unwrap_or_default();
         let was_tray_hidden = !tray.0.is_null() && !IsWindowVisible(tray).as_bool();
+        let saved_wa = if was_tray_hidden {
+            crate::taskbar_hide::TaskbarHider::snapshot_work_areas()
+        } else {
+            Vec::new()
+        };
         TRAY_OVERFLOW_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // 1. Grant foreground handoff BEFORE waking or invoking Explorer so Win11's XAML
@@ -11659,6 +11708,9 @@ fn toggle_hidden_tray_overflow(
         let _ = AllowSetForegroundWindow(ASFW_ANY);
         if was_tray_hidden {
             wake_hidden_tray_for_overflow(tray);
+            // Explorer asynchronously re-asserts its native AppBar work area when Shell_TrayWnd
+            // wakes: immediately restore the dock's reserved work area so maximized apps never jump!
+            let _ = crate::taskbar_hide::TaskbarHider::restore_work_areas_and_refit(&saved_wa);
         }
 
         let mut ov = HWND::default();
@@ -11708,9 +11760,12 @@ fn toggle_hidden_tray_overflow(
         }
 
         if !ov.0.is_null() {
-            anchor_and_monitor_tray_overflow(ov, tray, was_tray_hidden, anchor_rect, edge);
+            anchor_and_monitor_tray_overflow(ov, tray, was_tray_hidden, &saved_wa, anchor_rect, edge);
         } else {
             sync_rehide_tray_window(tray, was_tray_hidden);
+            if was_tray_hidden {
+                let _ = crate::taskbar_hide::TaskbarHider::restore_work_areas_and_refit(&saved_wa);
+            }
             TRAY_OVERFLOW_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
             // Tier 2 fallback: marshal back to the UI thread owning `dhw` so CreatePopupMenu +
             // TrackPopupMenu always executes on the window's owning thread.
@@ -15026,43 +15081,72 @@ mod tests {
         assert_eq!(cfg.mac_dock_edge, MacDockEdge::Left);
         assert_eq!(cfg.clean_top_bar_edge, CleanTopBarEdge::Top);
 
-        // Pure Mac Dock mode strips Tray & Clock from bottom dock when Top Bar is ON,
-        // and restores them immediately when Top Bar is turned OFF
+        // 3-State Bar / Top Bar verification:
+        // State 2: Bar ON + Top Bar ON -> pure bottom dock (NO ^, NO tray, NO clock)
         cfg.mac_dock_edge = MacDockEdge::Bottom;
+        cfg.dock_bar_enabled = true;
         cfg.clean_top_bar_enabled = true;
         let mut eng = MacDockEngine::new(HINSTANCE::default());
         eng.rebuild_slots(&cfg);
         assert!(
             !eng.slots.iter().any(|s| matches!(
                 s,
-                DockSlotKind::ClockModule { .. } | DockSlotKind::TrayStatusCluster
+                DockSlotKind::HiddenTrayChevron
+                    | DockSlotKind::ClockModule { .. }
+                    | DockSlotKind::TrayStatusCluster
             )),
-            "Pure Mac Dock must move clock & tray to Top Bar when enabled"
+            "Bar ON + Top Bar ON must move ^, clock & tray to Top Bar"
         );
 
+        // State 3: Bar ON + Top Bar OFF -> clean bottom dock moving ONLY ^ Show Hidden Icons
         cfg.clean_top_bar_enabled = false;
         eng.rebuild_slots(&cfg);
         assert!(
             eng.slots
                 .iter()
+                .any(|s| matches!(s, DockSlotKind::HiddenTrayChevron)),
+            "Bar ON + Top Bar OFF must move Show Hidden Icons (^) onto bottom dock"
+        );
+        assert!(
+            !eng.slots.iter().any(|s| matches!(
+                s,
+                DockSlotKind::ClockModule { .. } | DockSlotKind::TrayStatusCluster
+            )),
+            "Bar ON + Top Bar OFF must NOT move clock or tray cluster back onto bottom dock"
+        );
+
+        // State 1: Bar OFF -> full all-in-one bottom dock (^ + tray + clock)
+        cfg.dock_bar_enabled = false;
+        eng.rebuild_slots(&cfg);
+        assert!(
+            eng.slots
+                .iter()
+                .any(|s| matches!(s, DockSlotKind::HiddenTrayChevron)),
+            "Bar OFF must show HiddenTrayChevron on bottom dock"
+        );
+        assert!(
+            eng.slots
+                .iter()
                 .any(|s| matches!(s, DockSlotKind::ClockModule { .. })),
-            "Clock must return to bottom dock when Clean Top Bar is toggled OFF"
+            "Bar OFF must show Clock on bottom dock"
         );
         assert!(
             eng.slots
                 .iter()
                 .any(|s| matches!(s, DockSlotKind::TrayStatusCluster)),
-            "Tray status must return to bottom dock when Clean Top Bar is toggled OFF"
+            "Bar OFF must show Tray status on bottom dock"
         );
 
-        // Config round-trip persistence (including Desktop Only mode)
+        // Config round-trip persistence (including dock_bar_enabled & Desktop Only mode)
         assert!(!cfg.clean_top_bar_desktop_only, "Desktop Only must default OFF");
+        cfg.dock_bar_enabled = true;
         cfg.clean_top_bar_enabled = false;
         cfg.clean_top_bar_edge = CleanTopBarEdge::Bottom;
         cfg.clean_top_bar_style = CleanTopBarStyle::Floating;
         cfg.clean_top_bar_desktop_only = true;
         let saved = crate::config::serialize_config_ini(&cfg);
         let loaded = crate::config::parse_config_ini(&saved).expect("config ini must parse");
+        assert!(loaded.dock_bar_enabled);
         assert!(!loaded.clean_top_bar_enabled);
         assert_eq!(loaded.clean_top_bar_edge, CleanTopBarEdge::Bottom);
         assert_eq!(loaded.clean_top_bar_style, CleanTopBarStyle::Floating);
@@ -15502,14 +15586,17 @@ mod tests {
         assert!((ov_widths[ov_widths.len() - 2] - 110.0).abs() < 0.01, "TrayStatusCluster must keep full 110px width!");
         assert!(ov_widths[1] < 164.0 && ov_widths[1] >= 36.0, "Wide app pills must absorb overflow cleanly");
 
-        // Bar OFF (StealthHide) disables Top Bar automatically; turning Bar back ON restores it
+        // Bar OFF disables Top Bar automatically; turning Bar back ON restores it; double-click debounce works
+        cfg.dock_bar_enabled = false;
         cfg.clean_top_bar_enabled = true;
-        cfg.mac_dock_hide = MacDockHideMode::StealthHide;
         assert!(!cfg.is_dock_bar_on());
         assert!(!cfg.is_clean_top_bar_active());
-        cfg.mac_dock_hide = MacDockHideMode::AlwaysVisible;
+        cfg.dock_bar_enabled = true;
         assert!(cfg.is_dock_bar_on());
         assert!(cfg.is_clean_top_bar_active());
+        assert!(should_accept_tray_overflow_click(1_000, 0));
+        assert!(!should_accept_tray_overflow_click(1_200, 1_000), "Double-click within 450ms must debounce");
+        assert!(should_accept_tray_overflow_click(1_500, 1_000), "Click after 450ms must be accepted");
 
         // Dynamic inline window pill width & truncation + DPI-aware tf_tip & tf_left font sizes
         let (pw10, tc10, sc10) = dock_inline_label_metrics(10, 1.0);

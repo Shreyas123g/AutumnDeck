@@ -4301,7 +4301,12 @@ pub struct AppConfig {
     pub dock_sync_win_pins: bool,
     pub mac_dock_pinned: Vec<AppShortcut>,
 
-    // Phase 5b: Clean & Minimal macOS / Windhawk Status Menu Bar (Clean & Minimal themes only)
+    // Phase 5b: Clean & Minimal macOS / Windhawk Bar & Status Menu Bar
+    /// When true (`Bar: ON`), bottom dock uses pure macOS-style layout (no clock/tray clutter)
+    /// and unlocks the dedicated Top Menu Bar toggle (`clean_top_bar_enabled`).
+    /// When false (`Bar: OFF`), bottom dock uses full all-in-one taskbar mode (clock, tray, `^` on dock)
+    /// and locks the Top Menu Bar OFF.
+    pub dock_bar_enabled: bool,
     pub clean_top_bar_enabled: bool,
     pub clean_top_bar_edge: CleanTopBarEdge,
     pub clean_top_bar_style: CleanTopBarStyle,
@@ -5384,15 +5389,6 @@ pub enum TaskbarWidgetTab {
 }
 
 impl TaskbarWidgetTab {
-    pub const ALL: [TaskbarWidgetTab; 6] = [
-        TaskbarWidgetTab::ShelfFrame,
-        TaskbarWidgetTab::AppDock,
-        TaskbarWidgetTab::Clock,
-        TaskbarWidgetTab::SystemTray,
-        TaskbarWidgetTab::HudWing,
-        TaskbarWidgetTab::Utilities,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             TaskbarWidgetTab::ShelfFrame => "Shelf & Frame",
@@ -5871,6 +5867,7 @@ impl Default for AppConfig {
             dock_sync_win_pins: true,
             mac_dock_pinned: default_dock_pinned(),
 
+            dock_bar_enabled: true,
             clean_top_bar_enabled: true,
             clean_top_bar_edge: CleanTopBarEdge::Top,
             clean_top_bar_style: CleanTopBarStyle::Auto,
@@ -5904,15 +5901,18 @@ impl AppConfig {
         Self::anim_frame_ms_for(self.anim_fps)
     }
 
-    /// True when the Virtual Dock Bar itself is ON (enabled and not in Full Stealth Hide).
+    /// True when the Virtual Dock Bar mode is ON (pure macOS-style bottom dock + Top Bar option unlocked).
+    /// When OFF, the bottom dock renders the full all-in-one taskbar (tray + clock + hidden icons) with no Top Bar.
     pub fn is_dock_bar_on(&self) -> bool {
-        self.mac_dock_enabled && self.mac_dock_hide != MacDockHideMode::StealthHide
+        self.mac_dock_enabled && self.dock_bar_enabled
     }
 
     /// True when the macOS / Windhawk Status Menu Bar should render for the active Virtual Dock.
-    /// Locked OFF whenever the Dock Bar itself is turned OFF.
+    /// Locked OFF whenever Bar mode is OFF or the dock is in Full Stealth Hide.
     pub fn is_clean_top_bar_active(&self) -> bool {
-        self.is_dock_bar_on() && self.clean_top_bar_enabled
+        self.is_dock_bar_on()
+            && self.clean_top_bar_enabled
+            && self.mac_dock_hide != MacDockHideMode::StealthHide
     }
 
     /// Resolves whether the Clean & Minimal Top Bar uses Floating Glass Pill silhouette vs Full-Width macOS band.
@@ -6465,6 +6465,7 @@ impl AppConfig {
         let was_dock = self.mac_dock_enabled;
         let now_dock = theme.uses_virtual_dock();
         self.mac_dock_enabled = now_dock;
+        self.dock_bar_enabled = theme.is_clean_minimal();
         self.clean_top_bar_enabled = theme.is_clean_minimal();
         if self.is_clean_top_bar_active() {
             self.set_clean_top_bar_edge(self.clean_top_bar_edge);
@@ -6473,6 +6474,8 @@ impl AppConfig {
             self.sync_hide_mode_from_dock();
         } else if !was_dock && now_dock {
             self.sync_dock_hide_from_mode();
+        } else if now_dock && self.mac_dock_hide == MacDockHideMode::SmartAutoHide {
+            self.mac_dock_hide = MacDockHideMode::AlwaysVisible;
         }
     }
 
@@ -6501,10 +6504,11 @@ impl AppConfig {
 
     pub fn sync_dock_hide_from_mode(&mut self) {
         self.mac_dock_hide = match self.mode {
-            TaskbarMode::AlwaysVisible => MacDockHideMode::AlwaysVisible,
+            TaskbarMode::AlwaysVisible | TaskbarMode::SmartMaximize => {
+                MacDockHideMode::AlwaysVisible
+            }
             TaskbarMode::HoverReveal => MacDockHideMode::HoverReveal,
             TaskbarMode::StealthHide => MacDockHideMode::StealthHide,
-            TaskbarMode::SmartMaximize => MacDockHideMode::SmartAutoHide,
         };
     }
 
@@ -7647,6 +7651,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
     let mut saw_onboarding = false;
     let mut saw_anim_fps = false;
     let mut saw_viz_color_mode = false;
+    let mut saw_dock_bar_enabled = false;
     let mut canvas_schema: u8 = 5;
     let mut legacy_dynamic_accent: Option<bool> = None;
     let mut pending_ext_elems: Vec<(usize, usize, ClockElemTransform)> = Vec::new();
@@ -7953,6 +7958,10 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "mac_dock_mag_pct" => if let Ok(v) = val.parse::<u8>() { cfg.mac_dock_mag_pct = v.clamp(100, 185); },
                 "mac_dock_bounce" => cfg.mac_dock_bounce = parse_bool(val),
                 "mac_dock_dots" => cfg.mac_dock_dots = parse_bool(val),
+                "dock_bar_enabled" => {
+                    cfg.dock_bar_enabled = parse_bool(val);
+                    saw_dock_bar_enabled = true;
+                }
                 "clean_top_bar_enabled" => cfg.clean_top_bar_enabled = parse_bool(val),
                 "clean_top_bar_edge" => cfg.clean_top_bar_edge = CleanTopBarEdge::from_str(val),
                 "clean_top_bar_style" => cfg.clean_top_bar_style = CleanTopBarStyle::from_str(val),
@@ -7971,7 +7980,7 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
                 "w_shelf_layout" => cfg.w_shelf.layout_override = DockLayoutKind::from_opt_str(val),
                 "w_shelf_shape" => cfg.w_shelf.shape_override = DockShelfShape::from_opt_str(val),
                 "w_shelf_art" => cfg.w_shelf.art_override = DockArtLayer::from_opt_str(val),
-                "w_shelf_glass_pct" => if let Ok(v) = val.parse::<u8>() { cfg.w_shelf.glass_alpha_pct = v.clamp(10, 100); },
+                "w_shelf_glass_pct" => if let Ok(v) = val.parse::<u8>() { cfg.w_shelf.glass_alpha_pct = v.clamp(0, 100); },
                 "w_shelf_rim_pct" => if let Ok(v) = val.parse::<u8>() { cfg.w_shelf.rim_alpha_pct = v.clamp(0, 100); },
                 "w_shelf_show_plate" => cfg.w_shelf.show_plate = parse_bool(val),
                 "w_shelf_show_rim" => cfg.w_shelf.show_rim = parse_bool(val),
@@ -8216,6 +8225,12 @@ fn parse_config_body(text: &str, is_v5: bool) -> (AppConfig, Option<usize>, bool
 
     if !saw_anim_fps {
         cfg.set_anim_fps(AppConfig::DEFAULT_ANIM_FPS);
+    }
+    if !saw_dock_bar_enabled {
+        cfg.dock_bar_enabled = cfg.clean_top_bar_enabled;
+    }
+    if cfg.mac_dock_enabled && cfg.mac_dock_hide == MacDockHideMode::SmartAutoHide {
+        cfg.mac_dock_hide = MacDockHideMode::AlwaysVisible;
     }
 
     if canvas_schema < 6 {
@@ -8633,6 +8648,7 @@ pub fn serialize_config_ini(cfg: &AppConfig) -> String {
     out.push_str(&format!("mac_dock_mag_pct={}\n", cfg.mac_dock_mag_pct));
     out.push_str(&format!("mac_dock_bounce={}\n", b(cfg.mac_dock_bounce)));
     out.push_str(&format!("mac_dock_dots={}\n", b(cfg.mac_dock_dots)));
+    out.push_str(&format!("dock_bar_enabled={}\n", b(cfg.dock_bar_enabled)));
     out.push_str(&format!("clean_top_bar_enabled={}\n", b(cfg.clean_top_bar_enabled)));
     out.push_str(&format!("clean_top_bar_edge={}\n", cfg.clean_top_bar_edge.as_str()));
     out.push_str(&format!("clean_top_bar_style={}\n", cfg.clean_top_bar_style.as_str()));
@@ -9880,31 +9896,44 @@ ext_elem_0_4=0,0,100,0,0x778899,100,1
             parsed.wallpaper_path
         );
 
-        // Clamp guard verification for macOS icon size (24..=48), card opacity (0..=100), and label font size (10..=20)
-        let clamp_ini = "[Taskbar]\nmac_dock_icon_size=140\nw_apps_label_font_size=28\nw_apps_card_opacity=220\n";
+        // Clamp guard verification for macOS icon size (24..=48), shelf/card opacity (0..=100), and label font size (10..=20)
+        let clamp_ini = "[Taskbar]\nmac_dock_icon_size=140\nw_apps_label_font_size=28\nw_apps_card_opacity=220\nw_shelf_glass_pct=150\n";
         let (clamped_hi, _, _, _) = parse_config_body(clamp_ini, true);
         assert_eq!(clamped_hi.mac_dock_icon_size, 48);
         assert_eq!(clamped_hi.w_apps.label_font_size_px, 20);
         assert_eq!(clamped_hi.w_apps.card_opacity_pct, 100);
-        let clamp_lo_ini = "[Taskbar]\nmac_dock_icon_size=12\nw_apps_label_font_size=4\nw_apps_card_opacity=45\n";
+        assert_eq!(clamped_hi.w_shelf.glass_alpha_pct, 100);
+        let clamp_lo_ini = "[Taskbar]\nmac_dock_icon_size=12\nw_apps_label_font_size=4\nw_apps_card_opacity=45\nw_shelf_glass_pct=0\nmac_dock_enabled=1\nmac_dock_hide=smart\n";
         let (clamped_lo, _, _, _) = parse_config_body(clamp_lo_ini, true);
         assert_eq!(clamped_lo.mac_dock_icon_size, 24);
         assert_eq!(clamped_lo.w_apps.label_font_size_px, 10);
         assert_eq!(clamped_lo.w_apps.card_opacity_pct, 45);
+        assert_eq!(clamped_lo.w_shelf.glass_alpha_pct, 0);
+        assert_eq!(
+            clamped_lo.mac_dock_hide,
+            MacDockHideMode::AlwaysVisible,
+            "Legacy SmartAutoHide must coerce cleanly to AlwaysVisible on Dock themes"
+        );
 
-        // Universal Top Bar support & Bar OFF gating: Top Bar stays locked OFF when Bar is OFF (StealthHide)
+        // 3-State Bar / Top Bar gating: Bar OFF locks Top Bar OFF; Bar ON unlocks Top Bar ON/OFF independently
         let mut u_cfg = AppConfig::default();
         u_cfg.apply_taskbar_theme_preset(TaskbarTheme::QuartzShellDock);
+        assert!(!u_cfg.is_dock_bar_on(), "Non-Clean docks default to Bar OFF (all-in-one dock)");
+        assert!(!u_cfg.is_clean_top_bar_active());
+        u_cfg.dock_bar_enabled = true;
         assert!(u_cfg.is_dock_bar_on());
         assert!(!u_cfg.is_clean_top_bar_active());
         u_cfg.clean_top_bar_enabled = true;
         assert!(u_cfg.is_clean_top_bar_active());
-        u_cfg.mac_dock_hide = MacDockHideMode::StealthHide;
+        u_cfg.dock_bar_enabled = false;
         assert!(!u_cfg.is_dock_bar_on());
         assert!(!u_cfg.is_clean_top_bar_active());
-        u_cfg.mac_dock_hide = MacDockHideMode::AlwaysVisible;
+        u_cfg.dock_bar_enabled = true;
         assert!(u_cfg.is_dock_bar_on());
         assert!(u_cfg.is_clean_top_bar_active());
+        u_cfg.mac_dock_hide = MacDockHideMode::StealthHide;
+        assert!(!u_cfg.is_clean_top_bar_active(), "StealthHide hides Top Bar too");
+        u_cfg.mac_dock_hide = MacDockHideMode::AlwaysVisible;
         u_cfg.mac_dock_edge = MacDockEdge::Bottom;
         u_cfg.set_clean_top_bar_edge(CleanTopBarEdge::Bottom);
         assert_eq!(u_cfg.mac_dock_edge, MacDockEdge::Top);

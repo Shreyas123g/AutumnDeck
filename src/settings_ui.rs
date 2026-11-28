@@ -517,6 +517,7 @@ enum SliderKind {
     WallpaperVolume,
     MacDockIconSize,
     MacDockMagPct,
+    MacDockShelfOpacity,
     MacDockCardOpacity,
     MacDockLabelFontSize,
 }
@@ -675,12 +676,255 @@ impl MusicStyleProfile {
     }
 }
 
+fn visible_dock_module_tabs(cfg: &AppConfig) -> Vec<TaskbarWidgetTab> {
+    let spec = crate::dock_themes::dock_spec(cfg.tb_theme);
+    let mut tabs = Vec::with_capacity(6);
+    if spec.shape != DockShelfShape::FloatingZero && spec.layout != DockLayoutKind::IndependentOrbs {
+        tabs.push(TaskbarWidgetTab::ShelfFrame);
+    }
+    tabs.push(TaskbarWidgetTab::AppDock);
+    if !cfg.is_dock_bar_on() {
+        tabs.push(TaskbarWidgetTab::Clock);
+        tabs.push(TaskbarWidgetTab::SystemTray);
+    }
+    if !cfg.tb_theme.is_clean_minimal()
+        && matches!(
+            spec.layout,
+            DockLayoutKind::HudConsoleDeck | DockLayoutKind::MultiIslandBar
+        )
+    {
+        tabs.push(TaskbarWidgetTab::HudWing);
+    }
+    tabs.push(TaskbarWidgetTab::Utilities);
+    tabs
+}
+
+fn active_dock_module_tab(selected: TaskbarWidgetTab, cfg: &AppConfig) -> TaskbarWidgetTab {
+    let tabs = visible_dock_module_tabs(cfg);
+    if tabs.contains(&selected) {
+        selected
+    } else {
+        tabs.first().copied().unwrap_or(TaskbarWidgetTab::AppDock)
+    }
+}
+
+fn dock_module_tab_rect(idx: usize, total: usize) -> (f32, f32, f32, f32) {
+    let n = total.max(1) as f32;
+    let gap = 6.0;
+    let avail = 662.0 - 38.0;
+    let w = (avail - gap * (n - 1.0)) / n;
+    let x0 = 38.0 + (idx as f32) * (w + gap);
+    (x0, 280.0, x0 + w, 314.0)
+}
+
+fn dock_module_prop_specs(tab: TaskbarWidgetTab, cfg: &AppConfig) -> Vec<(HitZone, String)> {
+    let spec = crate::dock_themes::dock_spec(cfg.tb_theme);
+    let is_clean = cfg.tb_theme.is_clean_minimal();
+    match tab {
+        TaskbarWidgetTab::ShelfFrame => {
+            if is_clean {
+                if spec.layout == DockLayoutKind::FullEdgeTaskbar {
+                    vec![(
+                        HitZone::TbWidgetProp1,
+                        format!(
+                            "Layout: {}",
+                            cfg.w_shelf
+                                .layout_override
+                                .map(|l| l.label())
+                                .unwrap_or("Theme")
+                        ),
+                    )]
+                } else {
+                    vec![(
+                        HitZone::TbWidgetProp2,
+                        format!(
+                            "Shape: {}",
+                            cfg.w_shelf
+                                .shape_override
+                                .map(|s| s.label())
+                                .unwrap_or("Theme")
+                        ),
+                    )]
+                }
+            } else {
+                vec![
+                    (
+                        HitZone::TbWidgetProp1,
+                        format!(
+                            "Layout: {}",
+                            cfg.w_shelf
+                                .layout_override
+                                .map(|l| l.label())
+                                .unwrap_or("Theme")
+                        ),
+                    ),
+                    (
+                        HitZone::TbWidgetProp2,
+                        format!(
+                            "Shape: {}",
+                            cfg.w_shelf
+                                .shape_override
+                                .map(|s| s.label())
+                                .unwrap_or("Theme")
+                        ),
+                    ),
+                    (
+                        HitZone::TbWidgetProp3,
+                        format!(
+                            "Art: {}",
+                            cfg.w_shelf
+                                .art_override
+                                .map(|a| a.label())
+                                .unwrap_or("Theme")
+                        ),
+                    ),
+                ]
+            }
+        }
+        TaskbarWidgetTab::AppDock => vec![
+            (
+                HitZone::TbWidgetProp1,
+                format!("Card: {}", cfg.w_apps.card_style.label()),
+            ),
+            (
+                HitZone::TbWidgetProp2,
+                format!(
+                    "Dot: {}",
+                    cfg.w_apps
+                        .indicator_override
+                        .map(|d| d.label())
+                        .unwrap_or("Theme")
+                ),
+            ),
+            (
+                HitZone::TbWidgetProp3,
+                format!(
+                    "Brand Glow: {}",
+                    if cfg.w_apps.per_app_brand_glow { "ON" } else { "OFF" }
+                ),
+            ),
+        ],
+        TaskbarWidgetTab::Clock => vec![
+            (
+                HitZone::TbWidgetProp1,
+                format!("Clock: {}", cfg.w_clock.engine.label()),
+            ),
+            (
+                HitZone::ToggleWidgets24h,
+                format!(
+                    "Format: {}",
+                    if cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h) {
+                        "24-Hour"
+                    } else {
+                        "12-Hour"
+                    }
+                ),
+            ),
+            (
+                HitZone::TbWidgetProp2,
+                format!(
+                    "Seconds: {}",
+                    if cfg.w_clock.show_seconds { "ON" } else { "OFF" }
+                ),
+            ),
+            (
+                HitZone::TbWidgetProp3,
+                format!("Wheel: {}", cfg.w_clock.wheel_action.label()),
+            ),
+        ],
+        TaskbarWidgetTab::SystemTray => vec![
+            (
+                HitZone::TbWidgetProp1,
+                format!("Audio: {}", cfg.w_tray.audio_style.label()),
+            ),
+            (
+                HitZone::TbWidgetProp2,
+                format!("Battery: {}", cfg.w_tray.battery_style.label()),
+            ),
+            (
+                HitZone::TbWidgetProp3,
+                format!("Net: {}", cfg.w_tray.net_style.label()),
+            ),
+        ],
+        TaskbarWidgetTab::HudWing => vec![
+            (
+                HitZone::TbWidgetProp1,
+                format!("HUD: {}", cfg.w_hud.mode.label()),
+            ),
+            (
+                HitZone::TbWidgetProp2,
+                format!("Telemetry: {}", cfg.w_hud.content.label()),
+            ),
+            (
+                HitZone::TbWidgetProp3,
+                format!(
+                    "Marquee: {}",
+                    if cfg.w_hud.marquee_ticker { "ON" } else { "OFF" }
+                ),
+            ),
+        ],
+        TaskbarWidgetTab::Utilities => {
+            let mut out = vec![(
+                HitZone::TbWidgetProp1,
+                format!("Start: {}", cfg.w_util.start_style.label()),
+            )];
+            if matches!(
+                spec.layout,
+                DockLayoutKind::FullEdgeTaskbar | DockLayoutKind::HudConsoleDeck
+            ) {
+                out.push((
+                    HitZone::TbWidgetProp2,
+                    format!(
+                        "Edge Sliver: {}",
+                        if cfg.w_util.show_desktop_sliver {
+                            "ON"
+                        } else {
+                            "OFF"
+                        }
+                    ),
+                ));
+            }
+            out.push((
+                HitZone::TbWidgetProp3,
+                format!(
+                    "Utilities: {}",
+                    if !cfg.w_util.is_all_elements_off() {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                ),
+            ));
+            out
+        }
+    }
+}
+
+fn dock_module_prop_rect(idx: usize, total: usize) -> (f32, f32, f32, f32) {
+    let n = total.max(1) as f32;
+    let gap = 8.0;
+    let avail = 722.0 - 38.0;
+    let w = (avail - gap * (n - 1.0)) / n;
+    let x0 = 38.0 + (idx as f32) * (w + gap);
+    (x0, 328.0, x0 + w, 384.0)
+}
+
 fn dock_widget_elem_toggles(tab: TaskbarWidgetTab, cfg: &AppConfig) -> Vec<(&'static str, bool, u8)> {
+    let spec = crate::dock_themes::dock_spec(cfg.tb_theme);
+    let is_clean = cfg.tb_theme.is_clean_minimal();
     match tab {
         TaskbarWidgetTab::ShelfFrame => vec![
             ("Plate Backdrop", cfg.w_shelf.show_plate, 0),
             ("Border Rim", cfg.w_shelf.show_rim, 1),
-            ("Theme Art / FX", cfg.w_shelf.show_art, 2),
+            (
+                if is_clean {
+                    "Glass Reflections"
+                } else {
+                    "Theme Art / FX"
+                },
+                cfg.w_shelf.show_art,
+                2,
+            ),
         ],
         TaskbarWidgetTab::AppDock => vec![
             ("App Icons", cfg.w_apps.show_icons, 0),
@@ -697,17 +941,40 @@ fn dock_widget_elem_toggles(tab: TaskbarWidgetTab, cfg: &AppConfig) -> Vec<(&'st
             ("Audio Meter", cfg.w_tray.show_audio, 1),
             ("Battery Gauge", cfg.w_tray.show_battery, 2),
         ],
-        TaskbarWidgetTab::HudWing => vec![
-            ("Telemetry Wing", cfg.w_hud.show_telemetry, 0),
-            ("Active App Chip", cfg.w_hud.show_active_app, 1),
-        ],
-        TaskbarWidgetTab::Utilities => vec![
-            ("Start", cfg.w_util.show_start, 0),
-            ("Search", cfg.w_util.show_search, 1),
-            ("Task View", cfg.w_util.show_taskview, 2),
-            ("Trash", cfg.w_util.show_trash, 3),
-            ("Studio", cfg.w_util.show_studio, 4),
-        ],
+        TaskbarWidgetTab::HudWing => {
+            let mut v = vec![("Telemetry Wing", cfg.w_hud.show_telemetry, 0)];
+            if spec.layout == DockLayoutKind::MultiIslandBar && !is_clean {
+                v.push(("Active App Chip", cfg.w_hud.show_active_app, 1));
+            }
+            v
+        }
+        TaskbarWidgetTab::Utilities => {
+            let mut v = vec![("Start", cfg.w_util.show_start, 0)];
+            if !is_clean
+                && matches!(
+                    spec.layout,
+                    DockLayoutKind::MultiIslandBar
+                        | DockLayoutKind::FullEdgeTaskbar
+                        | DockLayoutKind::InlineMorphRail
+                        | DockLayoutKind::HudConsoleDeck
+                )
+            {
+                v.push(("Search", cfg.w_util.show_search, 1));
+            }
+            if !is_clean
+                && matches!(
+                    spec.layout,
+                    DockLayoutKind::MultiIslandBar
+                        | DockLayoutKind::FullEdgeTaskbar
+                        | DockLayoutKind::HudConsoleDeck
+                )
+            {
+                v.push(("Task View", cfg.w_util.show_taskview, 2));
+            }
+            v.push(("Trash", cfg.w_util.show_trash, 3));
+            v.push(("Studio", cfg.w_util.show_studio, 4));
+            v
+        }
     }
 }
 
@@ -1596,7 +1863,6 @@ pub struct SettingsController {
     tb_theme_page: usize,
     tb_fx_page: usize,
     pub dock_custom_tab: DockCustomTab,
-    last_visible_dock_hide: MacDockHideMode,
     tb_widget_tab: TaskbarWidgetTab,
     tb_anim_phase: f32,
     tb_mouse_logic: Option<(f32, f32)>,
@@ -1865,7 +2131,6 @@ impl SettingsController {
             tb_theme_page: 0,
             tb_fx_page: 0,
             dock_custom_tab: DockCustomTab::LayoutHide,
-            last_visible_dock_hide: MacDockHideMode::AlwaysVisible,
             tb_widget_tab: TaskbarWidgetTab::ShelfFrame,
             tb_anim_phase: 0.0,
             tb_mouse_logic: None,
@@ -3052,9 +3317,6 @@ impl SettingsController {
     pub fn sync_from_config(&mut self, cfg: &AppConfig) {
         self.draft_cfg = cfg.clone();
         self.draft_initialized = true;
-        if cfg.mac_dock_hide != MacDockHideMode::StealthHide {
-            self.last_visible_dock_hide = cfg.mac_dock_hide;
-        }
         if self.is_in_customize_editor() {
             self.customize_baseline = self.current_widget_canvas_target().map(|t| (t, cfg.clone()));
         } else {
@@ -3988,6 +4250,7 @@ impl SettingsController {
                         kind,
                         SliderKind::MacDockIconSize
                             | SliderKind::MacDockMagPct
+                            | SliderKind::MacDockShelfOpacity
                             | SliderKind::MacDockCardOpacity
                             | SliderKind::MacDockLabelFontSize
                     ) {
@@ -4923,6 +5186,7 @@ impl SettingsController {
             SliderKind::TaskbarOpacity => (232.0, 640.0),
             SliderKind::MacDockIconSize
             | SliderKind::MacDockMagPct
+            | SliderKind::MacDockShelfOpacity
             | SliderKind::MacDockCardOpacity
             | SliderKind::MacDockLabelFontSize => (232.0, 640.0),
             SliderKind::TbVizOpacity => (154.0, 314.0),
@@ -5010,6 +5274,15 @@ impl SettingsController {
             if new_sz != cfg.mac_dock_icon_size {
                 cfg.mac_dock_icon_size = new_sz;
                 self.draft_cfg.mac_dock_icon_size = new_sz;
+                return Some(SettingsCommand::MacDockPreview);
+            }
+            return None;
+        }
+        if kind == SliderKind::MacDockShelfOpacity {
+            let new_op = (t * 100.0).round() as u8;
+            if new_op != cfg.w_shelf.glass_alpha_pct {
+                cfg.w_shelf.glass_alpha_pct = new_op;
+                self.draft_cfg.w_shelf.glass_alpha_pct = new_op;
                 return Some(SettingsCommand::MacDockPreview);
             }
             return None;
@@ -5325,6 +5598,7 @@ impl SettingsController {
             | SliderKind::TbVizHue
             | SliderKind::MacDockIconSize
             | SliderKind::MacDockMagPct
+            | SliderKind::MacDockShelfOpacity
             | SliderKind::MacDockCardOpacity
             | SliderKind::MacDockLabelFontSize => {}
         }
@@ -5805,7 +6079,14 @@ impl SettingsController {
                 let (tb_mode, dock_hide) = match idx {
                     0 => (TaskbarMode::AlwaysVisible, MacDockHideMode::AlwaysVisible),
                     1 => (TaskbarMode::HoverReveal, MacDockHideMode::HoverReveal),
-                    _ => (TaskbarMode::SmartMaximize, MacDockHideMode::SmartAutoHide),
+                    _ => (
+                        if cfg.mac_dock_enabled {
+                            TaskbarMode::StealthHide
+                        } else {
+                            TaskbarMode::SmartMaximize
+                        },
+                        MacDockHideMode::StealthHide,
+                    ),
                 };
                 cfg.mode = tb_mode;
                 cfg.mac_dock_hide = dock_hide;
@@ -5891,24 +6172,13 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::ToggleDockBar => {
-                if cfg.is_dock_bar_on() {
-                    if cfg.mac_dock_hide != MacDockHideMode::StealthHide {
-                        self.last_visible_dock_hide = cfg.mac_dock_hide;
-                    }
-                    cfg.mac_dock_hide = MacDockHideMode::StealthHide;
-                } else {
-                    cfg.mac_dock_enabled = true;
-                    cfg.mac_dock_hide = if self.last_visible_dock_hide == MacDockHideMode::StealthHide
-                    {
-                        MacDockHideMode::AlwaysVisible
-                    } else {
-                        self.last_visible_dock_hide
-                    };
+                cfg.dock_bar_enabled = !cfg.dock_bar_enabled;
+                if cfg.dock_bar_enabled && cfg.clean_top_bar_enabled {
+                    cfg.set_clean_top_bar_edge(cfg.clean_top_bar_edge);
                 }
-                cfg.sync_hide_mode_from_dock();
-                self.draft_cfg.mac_dock_enabled = cfg.mac_dock_enabled;
-                self.draft_cfg.mac_dock_hide = cfg.mac_dock_hide;
-                self.draft_cfg.mode = cfg.mode;
+                self.draft_cfg.dock_bar_enabled = cfg.dock_bar_enabled;
+                self.draft_cfg.clean_top_bar_edge = cfg.clean_top_bar_edge;
+                self.draft_cfg.mac_dock_edge = cfg.mac_dock_edge;
                 SettingsCommand::MacDockUpdated
             }
             HitZone::ToggleCleanTopBar => {
@@ -5942,12 +6212,14 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::MacDockHideBtn(hm) => {
-                if hm != MacDockHideMode::StealthHide {
-                    self.last_visible_dock_hide = hm;
-                }
-                cfg.mac_dock_hide = hm;
+                let eff_hm = if hm == MacDockHideMode::SmartAutoHide {
+                    MacDockHideMode::AlwaysVisible
+                } else {
+                    hm
+                };
+                cfg.mac_dock_hide = eff_hm;
                 cfg.sync_hide_mode_from_dock();
-                self.draft_cfg.mac_dock_hide = hm;
+                self.draft_cfg.mac_dock_hide = eff_hm;
                 self.draft_cfg.mode = cfg.mode;
                 SettingsCommand::MacDockUpdated
             }
@@ -5978,21 +6250,36 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::TbWidgetCycleTheme => {
-                let presets = [
-                    None,
-                    Some(TaskbarTheme::QuartzShellDock),
-                    Some(TaskbarTheme::CupertinoDock),
-                    Some(TaskbarTheme::CyberpunkHudDock),
-                    Some(TaskbarTheme::VaporwaveHorizonDock),
-                    Some(TaskbarTheme::BiolumAbyssDock),
-                    Some(TaskbarTheme::KumikoWoodDock),
-                    Some(TaskbarTheme::NextSlatePlankDock),
-                ];
+                let active_tab = active_dock_module_tab(self.tb_widget_tab, cfg);
+                self.tb_widget_tab = active_tab;
+                let presets: &[Option<TaskbarTheme>] = if cfg.tb_theme.is_clean_minimal() {
+                    &[
+                        None,
+                        Some(TaskbarTheme::Os26LiquidGlassLight),
+                        Some(TaskbarTheme::Os26LiquidGlassDark),
+                        Some(TaskbarTheme::LiquidGlassClear),
+                        Some(TaskbarTheme::DockLikeDark),
+                        Some(TaskbarTheme::LuminosityFloat),
+                        Some(TaskbarTheme::CatppuccinTiles),
+                        Some(TaskbarTheme::RosePineTiles),
+                    ]
+                } else {
+                    &[
+                        None,
+                        Some(TaskbarTheme::QuartzShellDock),
+                        Some(TaskbarTheme::CupertinoDock),
+                        Some(TaskbarTheme::CyberpunkHudDock),
+                        Some(TaskbarTheme::VaporwaveHorizonDock),
+                        Some(TaskbarTheme::BiolumAbyssDock),
+                        Some(TaskbarTheme::KumikoWoodDock),
+                        Some(TaskbarTheme::NextSlatePlankDock),
+                    ]
+                };
                 let next_th = |cur: Option<TaskbarTheme>| -> Option<TaskbarTheme> {
                     let idx = presets.iter().position(|&p| p == cur).unwrap_or(0);
                     presets[(idx + 1) % presets.len()]
                 };
-                match self.tb_widget_tab {
+                match active_tab {
                     TaskbarWidgetTab::ShelfFrame => cfg.w_shelf.theme_override = next_th(cfg.w_shelf.theme_override),
                     TaskbarWidgetTab::AppDock => cfg.w_apps.theme_override = next_th(cfg.w_apps.theme_override),
                     TaskbarWidgetTab::Clock => cfg.w_clock.theme_override = next_th(cfg.w_clock.theme_override),
@@ -6004,7 +6291,9 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::TbWidgetProp1 => {
-                match self.tb_widget_tab {
+                let active_tab = active_dock_module_tab(self.tb_widget_tab, cfg);
+                self.tb_widget_tab = active_tab;
+                match active_tab {
                     TaskbarWidgetTab::ShelfFrame => {
                         cfg.w_shelf.layout_override = match cfg.w_shelf.layout_override {
                             None => Some(DockLayoutKind::ALL[0]),
@@ -6058,7 +6347,9 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::TbWidgetProp2 => {
-                match self.tb_widget_tab {
+                let active_tab = active_dock_module_tab(self.tb_widget_tab, cfg);
+                self.tb_widget_tab = active_tab;
+                match active_tab {
                     TaskbarWidgetTab::ShelfFrame => {
                         cfg.w_shelf.shape_override = match cfg.w_shelf.shape_override {
                             None => Some(DockShelfShape::ALL[0]),
@@ -6111,7 +6402,9 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::TbWidgetProp3 => {
-                match self.tb_widget_tab {
+                let active_tab = active_dock_module_tab(self.tb_widget_tab, cfg);
+                self.tb_widget_tab = active_tab;
+                match active_tab {
                     TaskbarWidgetTab::ShelfFrame => {
                         cfg.w_shelf.art_override = match cfg.w_shelf.art_override {
                             None => Some(DockArtLayer::ALL[0]),
@@ -6159,7 +6452,9 @@ impl SettingsController {
                 SettingsCommand::MacDockUpdated
             }
             HitZone::TbWidgetElemToggle(idx) => {
-                match (self.tb_widget_tab, idx) {
+                let active_tab = active_dock_module_tab(self.tb_widget_tab, cfg);
+                self.tb_widget_tab = active_tab;
+                match (active_tab, idx) {
                     (TaskbarWidgetTab::ShelfFrame, 0) => cfg.w_shelf.show_plate = !cfg.w_shelf.show_plate,
                     (TaskbarWidgetTab::ShelfFrame, 1) => cfg.w_shelf.show_rim = !cfg.w_shelf.show_rim,
                     (TaskbarWidgetTab::ShelfFrame, 2) => cfg.w_shelf.show_art = !cfg.w_shelf.show_art,
@@ -8807,16 +9102,15 @@ impl SettingsController {
                                     }
                                 }
                                 for (i, hm) in [
-                                    MacDockHideMode::SmartAutoHide,
-                                    MacDockHideMode::HoverReveal,
                                     MacDockHideMode::AlwaysVisible,
+                                    MacDockHideMode::HoverReveal,
                                     MacDockHideMode::StealthHide,
                                 ]
                                 .into_iter()
                                 .enumerate()
                                 {
-                                    let x0 = 26.0 + (i as f32) * 179.0;
-                                    if in_rect(x, y, x0, 374.0, x0 + 171.0, 432.0) {
+                                    let x0 = 26.0 + (i as f32) * 239.0;
+                                    if in_rect(x, y, x0, 374.0, x0 + 230.0, 432.0) {
                                         return HitZone::MacDockHideBtn(hm);
                                     }
                                 }
@@ -8834,19 +9128,22 @@ impl SettingsController {
                                 }
                             }
                             DockCustomTab::SizeGlass => {
-                                if in_rect(x, y, 222.0, 290.0, 650.0, 319.0) {
+                                if in_rect(x, y, 222.0, 288.0, 650.0, 314.0) {
                                     return HitZone::Slider(SliderKind::MacDockIconSize);
                                 }
-                                if in_rect(x, y, 222.0, 321.0, 650.0, 350.0) {
+                                if in_rect(x, y, 222.0, 315.0, 650.0, 341.0) {
                                     return HitZone::Slider(SliderKind::MacDockMagPct);
                                 }
-                                if in_rect(x, y, 222.0, 352.0, 650.0, 381.0) {
+                                if in_rect(x, y, 222.0, 342.0, 650.0, 368.0) {
                                     return HitZone::Slider(SliderKind::TaskbarOpacity);
                                 }
-                                if in_rect(x, y, 222.0, 383.0, 650.0, 412.0) {
+                                if in_rect(x, y, 222.0, 369.0, 650.0, 395.0) {
+                                    return HitZone::Slider(SliderKind::MacDockShelfOpacity);
+                                }
+                                if in_rect(x, y, 222.0, 396.0, 650.0, 422.0) {
                                     return HitZone::Slider(SliderKind::MacDockCardOpacity);
                                 }
-                                if in_rect(x, y, 222.0, 414.0, 650.0, 443.0) {
+                                if in_rect(x, y, 222.0, 423.0, 650.0, 449.0) {
                                     return HitZone::Slider(SliderKind::MacDockLabelFontSize);
                                 }
                                 for (i, mode) in [
@@ -8859,14 +9156,14 @@ impl SettingsController {
                                 .enumerate()
                                 {
                                     let px0 = 164.0 + (i as f32) * 141.0;
-                                    if in_rect(x, y, px0, 456.0, px0 + 133.0, 488.0) {
+                                    if in_rect(x, y, px0, 460.0, px0 + 133.0, 492.0) {
                                         return HitZone::SetDockLabelMode(mode);
                                     }
                                 }
-                                if in_rect(x, y, 40.0, 504.0, 372.0, 548.0) {
+                                if in_rect(x, y, 40.0, 508.0, 372.0, 552.0) {
                                     return HitZone::ToggleAmberRim;
                                 }
-                                if in_rect(x, y, 388.0, 504.0, 720.0, 548.0) {
+                                if in_rect(x, y, 388.0, 508.0, 720.0, 552.0) {
                                     return HitZone::ToggleMatchWallpaper(MatchTarget::Taskbar);
                                 }
                             }
@@ -8903,41 +9200,30 @@ impl SettingsController {
                                 }
                             }
                             DockCustomTab::Modules => {
-                                for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
-                                    let tx0 = 38.0 + (i as f32) * 105.0;
-                                    if in_rect(x, y, tx0, 280.0, tx0 + 99.0, 314.0) {
+                                let vis_tabs = visible_dock_module_tabs(&self.draft_cfg);
+                                let active_tab =
+                                    active_dock_module_tab(self.tb_widget_tab, &self.draft_cfg);
+                                for (i, &tab) in vis_tabs.iter().enumerate() {
+                                    let (tx0, ty0, tx1, ty1) =
+                                        dock_module_tab_rect(i, vis_tabs.len());
+                                    if in_rect(x, y, tx0, ty0, tx1, ty1) {
                                         return HitZone::TbWidgetTabBtn(tab);
                                     }
                                 }
                                 if in_rect(x, y, 670.0, 280.0, 722.0, 314.0) {
                                     return HitZone::TbWidgetResetAll;
                                 }
-                                if self.tb_widget_tab == TaskbarWidgetTab::Clock {
-                                    if in_rect(x, y, 38.0, 328.0, 203.0, 384.0) {
-                                        return HitZone::TbWidgetProp1;
-                                    }
-                                    if in_rect(x, y, 211.0, 328.0, 376.0, 384.0) {
-                                        return HitZone::ToggleWidgets24h;
-                                    }
-                                    if in_rect(x, y, 384.0, 328.0, 549.0, 384.0) {
-                                        return HitZone::TbWidgetProp2;
-                                    }
-                                    if in_rect(x, y, 557.0, 328.0, 722.0, 384.0) {
-                                        return HitZone::TbWidgetProp3;
-                                    }
-                                } else {
-                                    if in_rect(x, y, 38.0, 328.0, 258.0, 384.0) {
-                                        return HitZone::TbWidgetProp1;
-                                    }
-                                    if in_rect(x, y, 266.0, 328.0, 490.0, 384.0) {
-                                        return HitZone::TbWidgetProp2;
-                                    }
-                                    if in_rect(x, y, 498.0, 328.0, 722.0, 384.0) {
-                                        return HitZone::TbWidgetProp3;
+                                let prop_specs =
+                                    dock_module_prop_specs(active_tab, &self.draft_cfg);
+                                for (i, &(hz, _)) in prop_specs.iter().enumerate() {
+                                    let (bx0, by0, bx1, by1) =
+                                        dock_module_prop_rect(i, prop_specs.len());
+                                    if in_rect(x, y, bx0, by0, bx1, by1) {
+                                        return hz;
                                     }
                                 }
                                 let elem_toggles =
-                                    dock_widget_elem_toggles(self.tb_widget_tab, &self.draft_cfg);
+                                    dock_widget_elem_toggles(active_tab, &self.draft_cfg);
                                 for (idx, &(_, _, elem_id)) in elem_toggles.iter().enumerate() {
                                     let (ex0, ey0, ex1, ey1) =
                                         dock_widget_elem_pill_rect(idx, elem_toggles.len());
@@ -11803,9 +12089,9 @@ impl SettingsController {
 
                 let cur_hide = if cfg.mac_dock_enabled {
                     match cfg.mac_dock_hide {
-                        MacDockHideMode::AlwaysVisible => 0u8,
-                        MacDockHideMode::HoverReveal | MacDockHideMode::StealthHide => 1u8,
-                        MacDockHideMode::SmartAutoHide => 2u8,
+                        MacDockHideMode::AlwaysVisible | MacDockHideMode::SmartAutoHide => 0u8,
+                        MacDockHideMode::HoverReveal => 1u8,
+                        MacDockHideMode::StealthHide => 2u8,
                     }
                 } else {
                     match cfg.mode {
@@ -11814,11 +12100,19 @@ impl SettingsController {
                         _ => 2u8,
                     }
                 };
-                let hide_cards = [
-                    (0u8, "Always Visible", "Recommended", "Stays pinned on screen with reserved work area"),
-                    (1u8, "Edge Hover Reveal", "Minimal Space", "Hidden until your cursor touches the screen edge"),
-                    (2u8, "Smart Auto-Hide", "Adaptive", "Visible on desktop, hides when an app maximizes"),
-                ];
+                let hide_cards = if cfg.mac_dock_enabled {
+                    [
+                        (0u8, "Always Visible", "Recommended", "Stays pinned on screen with reserved work area"),
+                        (1u8, "Edge Hover Reveal", "Minimal Space", "Hidden until your cursor touches the screen edge"),
+                        (2u8, "Full Stealth Hide", "Hotkey Only", "Completely hidden until toggled with Ctrl+Alt+T"),
+                    ]
+                } else {
+                    [
+                        (0u8, "Always Visible", "Recommended", "Stays pinned on screen with reserved work area"),
+                        (1u8, "Edge Hover Reveal", "Minimal Space", "Hidden until your cursor touches the screen edge"),
+                        (2u8, "Smart Auto-Hide", "Adaptive", "Visible on desktop, hides when an app maximizes"),
+                    ]
+                };
                 for (i, title, tag, desc) in hide_cards {
                     let x0 = 44.0 + (i as f32) * 228.0;
                     let x1 = x0 + 216.0;
@@ -12881,15 +13175,16 @@ impl SettingsController {
                                 &r.sun_gold,
                             );
                             let hides = [
-                                (MacDockHideMode::SmartAutoHide, "Smart Auto-Hide", "Hides on maximized app"),
-                                (MacDockHideMode::HoverReveal, "Edge Hover Reveal", "Shows on screen edge"),
                                 (MacDockHideMode::AlwaysVisible, "Always Visible", "Permanent floating dock"),
+                                (MacDockHideMode::HoverReveal, "Edge Hover Reveal", "Shows on screen edge"),
                                 (MacDockHideMode::StealthHide, "Full Stealth Hide", "Hidden • Ctrl+Alt+T"),
                             ];
                             for (i, (hm, title, desc)) in hides.into_iter().enumerate() {
-                                let x0 = 26.0 + (i as f32) * 179.0;
-                                let c_rr = rrect(x0, 374.0, x0 + 171.0, 432.0, 10.0, u);
-                                let act = cfg.mac_dock_hide == hm;
+                                let x0 = 26.0 + (i as f32) * 239.0;
+                                let c_rr = rrect(x0, 374.0, x0 + 230.0, 432.0, 10.0, u);
+                                let act = cfg.mac_dock_hide == hm
+                                    || (hm == MacDockHideMode::AlwaysVisible
+                                        && cfg.mac_dock_hide == MacDockHideMode::SmartAutoHide);
                                 let hov = self.hovered == HitZone::MacDockHideBtn(hm);
                                 rt.FillRoundedRectangle(
                                     &c_rr,
@@ -12905,14 +13200,14 @@ impl SettingsController {
                                     rt,
                                     title,
                                     &r.tf_title,
-                                    rect_f(x0 + 12.0, 382.0, x0 + 160.0, 403.0, u),
+                                    rect_f(x0 + 14.0, 382.0, x0 + 216.0, 403.0, u),
                                     if act { &r.sun_gold } else { &r.cream },
                                 );
                                 draw_txt(
                                     rt,
                                     desc,
                                     &r.tf_sub,
-                                    rect_f(x0 + 12.0, 405.0, x0 + 160.0, 425.0, u),
+                                    rect_f(x0 + 14.0, 405.0, x0 + 216.0, 425.0, u),
                                     &r.warm_sub,
                                 );
                             }
@@ -12999,7 +13294,7 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                304.0,
+                                301.0,
                                 t_sz,
                                 &format!("{} px", cur_ico),
                                 self.dragging_slider == Some(SliderKind::MacDockIconSize)
@@ -13015,7 +13310,7 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                335.0,
+                                328.0,
                                 t_mag,
                                 &if cfg.mac_dock_mag_pct <= 102 {
                                     "Off".to_string()
@@ -13035,11 +13330,29 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                366.0,
+                                355.0,
                                 pct,
                                 &format!("{}%", (pct * 100.0).round() as i32),
                                 self.dragging_slider == Some(SliderKind::TaskbarOpacity)
                                     || self.hovered == HitZone::Slider(SliderKind::TaskbarOpacity),
+                            );
+
+                            let shelf_pct = cfg.w_shelf.glass_alpha_pct.min(100);
+                            let t_shelf = (shelf_pct as f32 / 100.0).clamp(0.0, 1.0);
+                            draw_slider_row(
+                                rt,
+                                r,
+                                u,
+                                "Dock Shelf / Card Opacity",
+                                44.0,
+                                232.0,
+                                640.0,
+                                382.0,
+                                t_shelf,
+                                &format!("{}%", shelf_pct),
+                                self.dragging_slider == Some(SliderKind::MacDockShelfOpacity)
+                                    || self.hovered
+                                        == HitZone::Slider(SliderKind::MacDockShelfOpacity),
                             );
 
                             let card_pct = cfg.w_apps.card_opacity_pct.min(100);
@@ -13052,7 +13365,7 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                397.0,
+                                409.0,
                                 t_card,
                                 &format!("{}%", card_pct),
                                 self.dragging_slider == Some(SliderKind::MacDockCardOpacity)
@@ -13069,7 +13382,7 @@ impl SettingsController {
                                 44.0,
                                 232.0,
                                 640.0,
-                                428.0,
+                                436.0,
                                 t_fs,
                                 &format!("{} px", cfg.w_apps.label_font_size_px.clamp(10, 20)),
                                 self.dragging_slider == Some(SliderKind::MacDockLabelFontSize)
@@ -13080,7 +13393,7 @@ impl SettingsController {
                                 rt,
                                 "App Name Display",
                                 &r.tf_title,
-                                rect_f(44.0, 456.0, 160.0, 488.0, u),
+                                rect_f(44.0, 460.0, 160.0, 492.0, u),
                                 &r.cream,
                             );
                             let label_modes = [
@@ -13091,7 +13404,7 @@ impl SettingsController {
                             ];
                             for (i, (mode, lbl)) in label_modes.into_iter().enumerate() {
                                 let px0 = 164.0 + (i as f32) * 141.0;
-                                let prr = rrect(px0, 456.0, px0 + 133.0, 488.0, 8.0, u);
+                                let prr = rrect(px0, 460.0, px0 + 133.0, 492.0, 8.0, u);
                                 let act = cfg.w_apps.label_mode == mode
                                     || (mode == DockRunningLabelMode::InheritTheme
                                         && cfg.w_apps.label_mode == DockRunningLabelMode::IconOnly);
@@ -13125,9 +13438,9 @@ impl SettingsController {
                                 r,
                                 u,
                                 40.0,
-                                504.0,
+                                508.0,
                                 372.0,
-                                548.0,
+                                552.0,
                                 "Crystal Glow Rim",
                                 cfg.amber_border,
                                 self.hovered == HitZone::ToggleAmberRim,
@@ -13137,9 +13450,9 @@ impl SettingsController {
                                 r,
                                 u,
                                 388.0,
-                                504.0,
+                                508.0,
                                 720.0,
-                                548.0,
+                                552.0,
                                 "Match Wallpaper Accent",
                                 cfg.tb_match_wallpaper,
                                 self.hovered == HitZone::ToggleMatchWallpaper(MatchTarget::Taskbar),
@@ -13183,11 +13496,11 @@ impl SettingsController {
                             draw_txt(
                                 rt,
                                 if !bar_on {
-                                    "Locked (Bar is OFF) • Turn Bar ON in the header first to enable or toggle the Top Bar"
+                                    "Locked (Bar is OFF) • All-in-one dock mode (clock, tray & ^ on dock). Turn Bar ON first."
                                 } else if tb_on {
-                                    "Enabled • Moves clock & system tray from the dock into a clean macOS-style menu bar"
+                                    "Enabled • Top Menu Bar active with clean macOS bottom dock"
                                 } else {
-                                    "Disabled (Dock Only) • Keeps clock, Wi-Fi, audio, battery & hidden icons inside the dock"
+                                    "Disabled • Top Menu Bar hidden; clean bottom dock with only Show Hidden Icons (^)"
                                 },
                                 &r.tf_sub,
                                 rect_f(44.0, 302.0, 646.0, 326.0, u),
@@ -13366,10 +13679,13 @@ impl SettingsController {
                             rt.FillRoundedRectangle(&pin_rr, &r.card_bg);
                             rt.DrawRoundedRectangle(&pin_rr, &r.card_border, 1.0 * u, None);
 
-                            for (i, &tab) in TaskbarWidgetTab::ALL.iter().enumerate() {
-                                let tx0 = 38.0 + (i as f32) * 105.0;
-                                let trr = rrect(tx0, 280.0, tx0 + 99.0, 314.0, 8.0, u);
-                                let act = self.tb_widget_tab == tab;
+                            let vis_tabs = visible_dock_module_tabs(cfg);
+                            let active_tab = active_dock_module_tab(self.tb_widget_tab, cfg);
+                            for (i, &tab) in vis_tabs.iter().enumerate() {
+                                let (tx0, ty0, tx1, ty1) =
+                                    dock_module_tab_rect(i, vis_tabs.len());
+                                let trr = rrect(tx0, ty0, tx1, ty1, 8.0, u);
+                                let act = active_tab == tab;
                                 let hov = self.hovered == HitZone::TbWidgetTabBtn(tab);
                                 if act {
                                     rt.FillRoundedRectangle(&trr, &r.sun_gold);
@@ -13404,117 +13720,22 @@ impl SettingsController {
                                 if rst_hov { &r.dark_ink } else { &r.coral },
                             );
 
-                            let (p1_lbl, p2_lbl, p3_lbl, th_ovr) = match self.tb_widget_tab {
-                                TaskbarWidgetTab::ShelfFrame => (
-                                    format!(
-                                        "Layout: {}",
-                                        cfg.w_shelf
-                                            .layout_override
-                                            .map(|l| l.label())
-                                            .unwrap_or("Theme")
-                                    ),
-                                    format!(
-                                        "Shape: {}",
-                                        cfg.w_shelf
-                                            .shape_override
-                                            .map(|s| s.label())
-                                            .unwrap_or("Theme")
-                                    ),
-                                    format!(
-                                        "Art: {}",
-                                        cfg.w_shelf
-                                            .art_override
-                                            .map(|a| a.label())
-                                            .unwrap_or("Theme")
-                                    ),
-                                    cfg.w_shelf.theme_override,
-                                ),
-                                TaskbarWidgetTab::AppDock => (
-                                    format!("Card: {}", cfg.w_apps.card_style.label()),
-                                    format!(
-                                        "Dot: {}",
-                                        cfg.w_apps
-                                            .indicator_override
-                                            .map(|d| d.label())
-                                            .unwrap_or("Theme")
-                                    ),
-                                    format!(
-                                        "Brand Glow: {}",
-                                        if cfg.w_apps.per_app_brand_glow { "ON" } else { "OFF" }
-                                    ),
-                                    cfg.w_apps.theme_override,
-                                ),
-                                TaskbarWidgetTab::Clock => (
-                                    format!("Clock: {}", cfg.w_clock.engine.label()),
-                                    format!(
-                                        "Seconds: {}",
-                                        if cfg.w_clock.show_seconds { "ON" } else { "OFF" }
-                                    ),
-                                    format!("Wheel: {}", cfg.w_clock.wheel_action.label()),
-                                    cfg.w_clock.theme_override,
-                                ),
-                                TaskbarWidgetTab::SystemTray => (
-                                    format!("Audio: {}", cfg.w_tray.audio_style.label()),
-                                    format!("Battery: {}", cfg.w_tray.battery_style.label()),
-                                    format!("Net: {}", cfg.w_tray.net_style.label()),
-                                    cfg.w_tray.theme_override,
-                                ),
-                                TaskbarWidgetTab::HudWing => (
-                                    format!("HUD: {}", cfg.w_hud.mode.label()),
-                                    format!("Telemetry: {}", cfg.w_hud.content.label()),
-                                    format!(
-                                        "Marquee: {}",
-                                        if cfg.w_hud.marquee_ticker { "ON" } else { "OFF" }
-                                    ),
-                                    cfg.w_hud.theme_override,
-                                ),
-                                TaskbarWidgetTab::Utilities => (
-                                    format!("Start: {}", cfg.w_util.start_style.label()),
-                                    format!(
-                                        "Edge Sliver: {}",
-                                        if cfg.w_util.show_desktop_sliver { "ON" } else { "OFF" }
-                                    ),
-                                    format!(
-                                        "Utilities: {}",
-                                        if !cfg.w_util.is_all_elements_off() { "ON" } else { "OFF" }
-                                    ),
-                                    cfg.w_util.theme_override,
-                                ),
+                            let th_ovr = match active_tab {
+                                TaskbarWidgetTab::ShelfFrame => cfg.w_shelf.theme_override,
+                                TaskbarWidgetTab::AppDock => cfg.w_apps.theme_override,
+                                TaskbarWidgetTab::Clock => cfg.w_clock.theme_override,
+                                TaskbarWidgetTab::SystemTray => cfg.w_tray.theme_override,
+                                TaskbarWidgetTab::HudWing => cfg.w_hud.theme_override,
+                                TaskbarWidgetTab::Utilities => cfg.w_util.theme_override,
                             };
-
-                            let clock_24h_lbl = format!(
-                                "Format: {}",
-                                if cfg.w_clock.use_24h.unwrap_or(cfg.widgets_24h) {
-                                    "24-Hour"
-                                } else {
-                                    "12-Hour"
-                                }
-                            );
-                            let prop_cards: Vec<(f32, f32, HitZone, &str)> =
-                                if self.tb_widget_tab == TaskbarWidgetTab::Clock {
-                                    vec![
-                                        (38.0f32, 203.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
-                                        (
-                                            211.0f32,
-                                            376.0f32,
-                                            HitZone::ToggleWidgets24h,
-                                            clock_24h_lbl.as_str(),
-                                        ),
-                                        (384.0f32, 549.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
-                                        (557.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
-                                    ]
-                                } else {
-                                    vec![
-                                        (38.0f32, 258.0f32, HitZone::TbWidgetProp1, p1_lbl.as_str()),
-                                        (266.0f32, 490.0f32, HitZone::TbWidgetProp2, p2_lbl.as_str()),
-                                        (498.0f32, 722.0f32, HitZone::TbWidgetProp3, p3_lbl.as_str()),
-                                    ]
-                                };
-
-                            for (bx0, bx1, hz, txt) in prop_cards {
-                                let brr = rrect(bx0, 328.0, bx1, 384.0, 9.0, u);
-                                let bhov = self.hovered == hz;
-                                let (lbl_key, lbl_val) = txt.split_once(": ").unwrap_or(("Option", txt));
+                            let prop_specs = dock_module_prop_specs(active_tab, cfg);
+                            for (i, (hz, txt)) in prop_specs.iter().enumerate() {
+                                let (bx0, by0, bx1, by1) =
+                                    dock_module_prop_rect(i, prop_specs.len());
+                                let brr = rrect(bx0, by0, bx1, by1, 9.0, u);
+                                let bhov = self.hovered == *hz;
+                                let (lbl_key, lbl_val) =
+                                    txt.split_once(": ").unwrap_or(("Option", txt.as_str()));
                                 let is_default =
                                     matches!(lbl_val, "Theme" | "OFF" | "Inherit" | "12-Hour");
                                 rt.FillRoundedRectangle(
@@ -13537,21 +13758,21 @@ impl SettingsController {
                                     rt,
                                     lbl_key,
                                     &r.tf_sub,
-                                    rect_f(bx0 + 12.0, 334.0, bx1 - 20.0, 353.0, u),
+                                    rect_f(bx0 + 12.0, by0 + 6.0, bx1 - 20.0, by0 + 25.0, u),
                                     &r.warm_sub,
                                 );
                                 draw_txt(
                                     rt,
                                     lbl_val,
                                     &r.tf_title,
-                                    rect_f(bx0 + 12.0, 353.0, bx1 - 20.0, 377.0, u),
+                                    rect_f(bx0 + 12.0, by0 + 25.0, bx1 - 20.0, by1 - 7.0, u),
                                     if !is_default { &r.sun_gold } else { &r.cream },
                                 );
                                 draw_txt(
                                     rt,
                                     "›",
                                     &r.tf_title,
-                                    rect_f(bx1 - 20.0, 328.0, bx1 - 6.0, 384.0, u),
+                                    rect_f(bx1 - 20.0, by0, bx1 - 6.0, by1, u),
                                     if bhov { &r.sun_gold } else { &r.muted_txt },
                                 );
                             }
@@ -13563,7 +13784,7 @@ impl SettingsController {
                                 rect_f(38.0, 398.0, 380.0, 414.0, u),
                                 &r.sun_gold,
                             );
-                            let elem_toggles = dock_widget_elem_toggles(self.tb_widget_tab, cfg);
+                            let elem_toggles = dock_widget_elem_toggles(active_tab, cfg);
                             for (idx, &(el_lbl, is_on, elem_id)) in elem_toggles.iter().enumerate() {
                                 let (ex0, ey0, ex1, ey1) =
                                     dock_widget_elem_pill_rect(idx, elem_toggles.len());
@@ -20417,14 +20638,19 @@ impl SettingsController {
                     &r.coral,
                 );
             } else {
+                let cap_desc = match self.draft_cfg.wallpaper_fps_cap {
+                    WallpaperFpsCap::Auto => "Auto (Native Hz)",
+                    WallpaperFpsCap::Fps60 => "60 FPS Cap",
+                    WallpaperFpsCap::Fps30 => "30 FPS Cap",
+                };
                 let tip_txt = if self.draft_cfg.wallpaper_pause_maximized {
-                    "VSync triple-buffered Flip-Discard • pauses decode when covered."
+                    format!("{} • VSync Flip-Discard • pauses when covered", cap_desc)
                 } else {
-                    "VSync triple-buffered Flip-Discard • plays behind maximized apps."
+                    format!("{} • VSync Flip-Discard • plays behind apps", cap_desc)
                 };
                 draw_txt(
                     rt,
-                    tip_txt,
+                    &tip_txt,
                     &r.tf_sub,
                     rect_f(262.0, 534.0, 720.0, 562.0, u),
                     &r.warm_sub,
@@ -25545,15 +25771,15 @@ mod tests {
         assert_eq!(sc.hit_test(520.0, 555.0), HitZone::TabSettings);
         assert!(sc.render_d2d(&cfg), "Taskbar Customize with Settings quick link must render cleanly");
 
-        // 5. Dock Customize: 4th visibility card (Full Stealth Hide) + Modules -> Clock 12h/24h toggle
+        // 5. Dock Customize: 3 clean visibility cards (NO Smart Auto-Hide!) + Modules -> Clock 12h/24h toggle (Bar OFF)
         cfg.tb_theme = TaskbarTheme::RealisticWaterDock;
         cfg.mac_dock_enabled = true;
+        cfg.dock_bar_enabled = false;
         sc.draft_cfg = cfg.clone();
         sc.dock_custom_tab = DockCustomTab::LayoutHide;
-        assert_eq!(sc.hit_test(110.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::SmartAutoHide));
-        assert_eq!(sc.hit_test(290.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::HoverReveal));
-        assert_eq!(sc.hit_test(470.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::AlwaysVisible));
-        assert_eq!(sc.hit_test(648.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::StealthHide));
+        assert_eq!(sc.hit_test(140.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::AlwaysVisible));
+        assert_eq!(sc.hit_test(380.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::HoverReveal));
+        assert_eq!(sc.hit_test(620.0, 403.0), HitZone::MacDockHideBtn(MacDockHideMode::StealthHide));
         let cmd_stealth = sc.activate_zone(HitZone::MacDockHideBtn(MacDockHideMode::StealthHide), &mut cfg);
         assert!(matches!(cmd_stealth, SettingsCommand::MacDockUpdated));
         assert_eq!(cfg.mac_dock_hide, MacDockHideMode::StealthHide);
@@ -26268,7 +26494,7 @@ mod tests {
         sc.ensure_graphics_init();
         assert!(sc.backbuf.ensure_size(760, 640));
 
-        // 1. Verify Dock customization UI element toggles across all 6 tabs
+        // 1. Verify Dock customization UI element toggles across theme-specific visible tabs
         let mut cfg = AppConfig::default();
         cfg.apply_taskbar_theme_preset(TaskbarTheme::RealisticWaterDock);
         sc.draft_cfg = cfg.clone();
@@ -26276,7 +26502,10 @@ mod tests {
         sc.taskbar_page = TaskbarPage::Customize;
         sc.dock_custom_tab = DockCustomTab::Modules;
 
-        for tab in TaskbarWidgetTab::ALL {
+        // RealisticWaterDock (FishEyeShelf, Bar OFF) exposes ShelfFrame, AppDock, Clock, SystemTray, Utilities (NO HudWing!)
+        let water_tabs = visible_dock_module_tabs(&cfg);
+        assert!(!water_tabs.contains(&TaskbarWidgetTab::HudWing));
+        for &tab in &water_tabs {
             sc.tb_widget_tab = tab;
             assert!(
                 sc.render_d2d(&cfg),
@@ -26306,8 +26535,11 @@ mod tests {
                 assert!(!now_on, "Element {} on tab {:?} must be OFF after toggle", k, tab);
             }
         }
-
-        // All 6 dock tabs now have all element toggles OFF -> is_dock_all_elements_off() must be true!
+        // Toggle remaining non-rendered hidden flags so full all-off check passes cleanly
+        cfg.w_hud.show_telemetry = false;
+        cfg.w_hud.show_active_app = false;
+        cfg.w_util.show_search = false;
+        cfg.w_util.show_taskview = false;
         assert!(cfg.w_shelf.is_all_elements_off());
         assert!(cfg.w_apps.is_all_elements_off());
         assert!(cfg.w_clock.is_all_elements_off());
@@ -26316,6 +26548,36 @@ mod tests {
         assert!(cfg.w_util.is_all_elements_off());
         assert!(cfg.is_dock_all_elements_off());
         assert!(!crate::dock_themes::is_ambient_animated_cfg(&cfg));
+
+        // Verify Clean & Minimal OS26 Liquid Glass Light theme-specific Modules filtering:
+        // - Bar ON hides Clock, SystemTray, and HudWing; Utilities exposes only Start, Trash, Studio!
+        let mut os26 = AppConfig::default();
+        os26.apply_taskbar_theme_preset(TaskbarTheme::Os26LiquidGlassLight);
+        let os26_bar_on_tabs = visible_dock_module_tabs(&os26);
+        assert_eq!(
+            os26_bar_on_tabs,
+            vec![
+                TaskbarWidgetTab::ShelfFrame,
+                TaskbarWidgetTab::AppDock,
+                TaskbarWidgetTab::Utilities,
+            ]
+        );
+        let os26_util_elems = dock_widget_elem_toggles(TaskbarWidgetTab::Utilities, &os26);
+        assert_eq!(os26_util_elems.len(), 3, "OS26 Utilities must only show Start, Trash, Studio");
+        os26.dock_bar_enabled = false;
+        let os26_bar_off_tabs = visible_dock_module_tabs(&os26);
+        assert!(os26_bar_off_tabs.contains(&TaskbarWidgetTab::Clock));
+        assert!(os26_bar_off_tabs.contains(&TaskbarWidgetTab::SystemTray));
+        assert!(!os26_bar_off_tabs.contains(&TaskbarWidgetTab::HudWing));
+
+        // Verify CyberpunkHudDock (HudConsoleDeck) DOES expose HudWing & Edge Sliver
+        let mut cyber = AppConfig::default();
+        cyber.apply_taskbar_theme_preset(TaskbarTheme::CyberpunkHudDock);
+        assert!(visible_dock_module_tabs(&cyber).contains(&TaskbarWidgetTab::HudWing));
+        // Verify barless IndependentOrbs hides ShelfFrame
+        let mut orbs = AppConfig::default();
+        orbs.apply_taskbar_theme_preset(TaskbarTheme::BubblesDark);
+        assert!(!visible_dock_module_tabs(&orbs).contains(&TaskbarWidgetTab::ShelfFrame));
 
         // 2. Verify Native Taskbar Customize UI element toggles (Backdrop, Border Rim, Live FX)
         let mut native_cfg = AppConfig::default();
@@ -27782,12 +28044,13 @@ mod tests {
 
         let _ = sc.activate_zone(HitZone::DockCustomTabBtn(DockCustomTab::SizeGlass), &mut cfg);
         assert_eq!(sc.dock_custom_tab, DockCustomTab::SizeGlass);
-        assert_eq!(sc.hit_test(400.0, 304.0), HitZone::Slider(SliderKind::MacDockIconSize));
-        assert_eq!(sc.hit_test(400.0, 335.0), HitZone::Slider(SliderKind::MacDockMagPct));
-        assert_eq!(sc.hit_test(400.0, 366.0), HitZone::Slider(SliderKind::TaskbarOpacity));
-        assert_eq!(sc.hit_test(400.0, 397.0), HitZone::Slider(SliderKind::MacDockCardOpacity));
-        assert_eq!(sc.hit_test(400.0, 428.0), HitZone::Slider(SliderKind::MacDockLabelFontSize));
-        assert_eq!(sc.hit_test(512.0, 472.0), HitZone::SetDockLabelMode(DockRunningLabelMode::AllRunningApps));
+        assert_eq!(sc.hit_test(400.0, 301.0), HitZone::Slider(SliderKind::MacDockIconSize));
+        assert_eq!(sc.hit_test(400.0, 328.0), HitZone::Slider(SliderKind::MacDockMagPct));
+        assert_eq!(sc.hit_test(400.0, 355.0), HitZone::Slider(SliderKind::TaskbarOpacity));
+        assert_eq!(sc.hit_test(400.0, 382.0), HitZone::Slider(SliderKind::MacDockShelfOpacity));
+        assert_eq!(sc.hit_test(400.0, 409.0), HitZone::Slider(SliderKind::MacDockCardOpacity));
+        assert_eq!(sc.hit_test(400.0, 436.0), HitZone::Slider(SliderKind::MacDockLabelFontSize));
+        assert_eq!(sc.hit_test(512.0, 476.0), HitZone::SetDockLabelMode(DockRunningLabelMode::AllRunningApps));
 
         // Drag Icon Size to ends -> strictly capped at authentic macOS 24..=48 px!
         let _ = sc.update_slider_from_x(SliderKind::MacDockIconSize, 640.0, &mut cfg);
@@ -27801,6 +28064,15 @@ mod tests {
         let cmd_op = sc.update_slider_from_x(SliderKind::TaskbarOpacity, 640.0, &mut cfg);
         assert!(matches!(cmd_op, Some(SettingsCommand::MacDockPreview)));
         assert_eq!(cfg.tint_alpha, 255);
+
+        // Drag Outer Dock Shelf / Card Opacity -> 0% (transparent) and back to 40% emitting MacDockPreview!
+        let cmd_shelf0 = sc.update_slider_from_x(SliderKind::MacDockShelfOpacity, 232.0, &mut cfg);
+        assert!(matches!(cmd_shelf0, Some(SettingsCommand::MacDockPreview)));
+        assert_eq!(cfg.w_shelf.glass_alpha_pct, 0);
+        assert_eq!(sc.draft_cfg.w_shelf.glass_alpha_pct, 0);
+        let cmd_shelf40 = sc.update_slider_from_x(SliderKind::MacDockShelfOpacity, 232.0 + 408.0 * 0.40, &mut cfg);
+        assert!(matches!(cmd_shelf40, Some(SettingsCommand::MacDockPreview)));
+        assert_eq!(cfg.w_shelf.glass_alpha_pct, 40);
 
         // Drag Icon Box / Card Opacity -> 0% (transparent) and back to 65% emitting MacDockPreview!
         let cmd_card0 = sc.update_slider_from_x(SliderKind::MacDockCardOpacity, 232.0, &mut cfg);
@@ -27820,12 +28092,17 @@ mod tests {
         assert_eq!(cfg.w_apps.label_mode, DockRunningLabelMode::AllRunningApps);
         assert!(sc.render_d2d(&cfg), "Dock Customize Tab 2 (Size & Glass) must render cleanly");
 
-        // Top Bar tab works when Bar is ON, and locks cleanly when Bar is toggled OFF!
+        // Top Bar tab is locked while Bar is OFF, and unlocks cleanly when Bar is toggled ON!
         cfg.apply_taskbar_theme_preset(TaskbarTheme::QuartzShellDock);
         sc.draft_cfg = cfg.clone();
-        assert!(cfg.is_dock_bar_on());
+        assert!(!cfg.is_dock_bar_on(), "Non-Clean dock starts with Bar OFF (all-in-one dock)");
         assert!(!cfg.clean_top_bar_enabled);
         let _ = sc.activate_zone(HitZone::DockCustomTabBtn(DockCustomTab::TopBar), &mut cfg);
+        assert_eq!(sc.hit_test(380.0, 300.0), HitZone::None, "Top Bar switch must be locked while Bar is OFF");
+        let cmd_bar_on = sc.activate_zone(HitZone::ToggleDockBar, &mut cfg);
+        assert!(matches!(cmd_bar_on, SettingsCommand::MacDockUpdated));
+        assert!(cfg.is_dock_bar_on());
+        assert_eq!(cfg.mac_dock_hide, MacDockHideMode::AlwaysVisible, "ToggleDockBar must NOT hide the dock");
         assert_eq!(sc.hit_test(380.0, 300.0), HitZone::ToggleCleanTopBar);
         let _ = sc.activate_zone(HitZone::ToggleCleanTopBar, &mut cfg);
         assert!(cfg.clean_top_bar_enabled && cfg.is_clean_top_bar_active());
@@ -27834,11 +28111,11 @@ mod tests {
         assert_eq!(cfg.clean_top_bar_style, CleanTopBarStyle::Floating);
         assert!(sc.render_d2d(&cfg), "Dock Customize Tab 3 (Top Bar ON) must render cleanly");
 
-        // Toggle Bar OFF via header pill -> StealthHide, Top Bar hides & Tab 3 locks!
+        // Toggle Bar OFF via header pill -> switches to all-in-one dock, locks Top Bar without stealth-hiding dock!
         let cmd_bar_off = sc.activate_zone(HitZone::ToggleDockBar, &mut cfg);
         assert!(matches!(cmd_bar_off, SettingsCommand::MacDockUpdated));
         assert!(!cfg.is_dock_bar_on());
-        assert_eq!(cfg.mac_dock_hide, MacDockHideMode::StealthHide);
+        assert_eq!(cfg.mac_dock_hide, MacDockHideMode::AlwaysVisible);
         assert!(!cfg.is_clean_top_bar_active(), "Top Bar must be inactive while Bar is OFF");
         assert_eq!(sc.hit_test(380.0, 300.0), HitZone::None, "Top Bar switch must be locked while Bar is OFF");
         let cmd_locked = sc.activate_zone(HitZone::ToggleCleanTopBar, &mut cfg);
@@ -27846,11 +28123,10 @@ mod tests {
         assert!(cfg.clean_top_bar_enabled, "Saved clean_top_bar_enabled preference must remain intact while locked");
         assert!(sc.render_d2d(&cfg), "Dock Customize Tab 3 (Bar OFF locked state) must render cleanly");
 
-        // Toggle Bar back ON via header pill -> restores AlwaysVisible & unlocks Top Bar!
-        let cmd_bar_on = sc.activate_zone(HitZone::ToggleDockBar, &mut cfg);
-        assert!(matches!(cmd_bar_on, SettingsCommand::MacDockUpdated));
+        // Toggle Bar back ON via header pill -> restores Bar ON & unlocks Top Bar!
+        let cmd_bar_on2 = sc.activate_zone(HitZone::ToggleDockBar, &mut cfg);
+        assert!(matches!(cmd_bar_on2, SettingsCommand::MacDockUpdated));
         assert!(cfg.is_dock_bar_on());
-        assert_eq!(cfg.mac_dock_hide, MacDockHideMode::AlwaysVisible);
         assert!(cfg.is_clean_top_bar_active());
         assert_eq!(sc.hit_test(380.0, 300.0), HitZone::ToggleCleanTopBar);
 

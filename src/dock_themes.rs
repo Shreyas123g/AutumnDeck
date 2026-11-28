@@ -130,7 +130,7 @@ pub fn resolve_shelf_spec(cfg: &AppConfig) -> DockVisualSpec {
     if let Some(art) = cfg.w_shelf.art_override {
         s.art = art;
     }
-    let glass_k = (cfg.w_shelf.glass_alpha_pct as f32 / 100.0).clamp(0.10, 1.0);
+    let glass_k = (cfg.w_shelf.glass_alpha_pct as f32 / 100.0).clamp(0.0, 1.0);
     s.bg_alpha_bias = (s.bg_alpha_bias * glass_k).clamp(0.0, 0.98);
     let rim_k = (cfg.w_shelf.rim_alpha_pct as f32 / 100.0).clamp(0.0, 1.0);
     s.rim_outer.3 = (s.rim_outer.3 * rim_k).clamp(0.0, 1.0);
@@ -3501,8 +3501,9 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
     if !show_plate && !show_art && !show_rim {
         return;
     }
-    let shelf_vis = (cfg.tint_alpha as f32 / 24.0).clamp(0.0, 1.0);
-    if shelf_vis <= 0.01 {
+    let shelf_card_k = (cfg.w_shelf.glass_alpha_pct.min(100) as f32) / 100.0;
+    let shelf_vis = (cfg.tint_alpha as f32 / 24.0).clamp(0.0, 1.0) * shelf_card_k;
+    if shelf_vis <= 0.005 {
         return;
     }
     let spec = if is_preview {
@@ -3563,7 +3564,8 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                 );
             }
             let def_pbr_a = spec.bg_alpha_bias.clamp(0.55, 0.98);
-            let base_a = scale_dock_theme_alpha(cfg.tb_theme, def_pbr_a, cfg.tint_alpha, 0.12, 0.99);
+            let base_a = scale_dock_theme_alpha(cfg.tb_theme, def_pbr_a, cfg.tint_alpha, 0.12, 0.99)
+                * shelf_card_k;
             let tint_override = if cfg.tb_match_wallpaper {
                 Some((
                     crate::theme::rgb_to_u32(pal.glass_top),
@@ -3646,7 +3648,7 @@ pub unsafe fn draw_dock_shelf_and_art_with_ripple(
                     u,
                     pbr_mat,
                     custom_border,
-                    spec.rim_outer.3.max(0.75),
+                    spec.rim_outer.3.max(0.75) * shelf_card_k,
                     hover_mix,
                     cham_base.as_ref(),
                 );
@@ -7492,13 +7494,13 @@ pub unsafe fn draw_dock_preview_card(
         let ink = pal.text_primary;
         let ink_m = pal.text_muted;
         let sweep = (anim_phase * 0.9).sin() * 1.15;
-        if cfg.clean_top_bar_enabled {
+        if cfg.is_clean_top_bar_active() {
             draw_clean_top_bar_preview(rt, &br, bar_x, y, bar_w, h, u, theme, cfg, pal);
         }
         match spec.layout {
             DockLayoutKind::IndependentOrbs => {
-                // ZERO bar behind apps! Pure Mac Dock tiles when Top Bar is ON, or tiles + unified tray pill when OFF
-                let pure_mode = cfg.clean_top_bar_enabled;
+                // ZERO bar behind apps! Pure Mac Dock tiles when Bar is ON, or tiles + unified tray pill when OFF
+                let pure_mode = cfg.is_dock_bar_on();
                 let n_icons = if pure_mode { 6usize } else { 5usize };
                 let inside_ind = uses_inside_tile_pill_indicator(theme);
                 let tile_step = (if w < 260.0 { 24.5 } else { 27.5 }) * size_k;
@@ -7576,7 +7578,7 @@ pub unsafe fn draw_dock_preview_card(
                 // Authentic 2-Island Windhawk layout (`LiquidGlassClear` & `DockLike`):
                 // Pure Mac Dock (Bar ON): [Start + Apps] | [Trash + Studio]
                 // Classic (Bar OFF):      [Start + Apps] | [Unified Tray + Clock]
-                let pure_mode = cfg.clean_top_bar_enabled;
+                let pure_mode = cfg.is_dock_bar_on();
                 let iy0 = (y + h - 31.0) * u;
                 let iy1 = (y + h - 6.0) * u;
                 let pad_x = if pure_mode {
@@ -7679,7 +7681,7 @@ pub unsafe fn draw_dock_preview_card(
             }
             DockLayoutKind::FullEdgeTaskbar => {
                 // BlobLight, AerisGlassLight, CleanSlateCards: crisp full-edge architectural bar + animated icon cards
-                let pure_mode = cfg.clean_top_bar_enabled;
+                let pure_mode = cfg.is_dock_bar_on();
                 let shelf_r = D2D_RECT_F { left: x * u, top: (y + h - 27.0) * u, right: (x + w) * u, bottom: bot_y };
                 draw_dock_shelf_and_art(rt, d2d, &br, shelf_r, cfg, pal, anim_phase, 0.70, sweep_n, false, u, true);
                 let cy = (shelf_r.top + shelf_r.bottom) * 0.5;
@@ -7739,7 +7741,7 @@ pub unsafe fn draw_dock_preview_card(
             }
             _ => {
                 // FishEyeShelf: OS26 Liquid Glass Light/Dark, One UI Light/Dark Chips, LuminosityFloat
-                let pure_mode = cfg.clean_top_bar_enabled;
+                let pure_mode = cfg.is_dock_bar_on();
                 let margin_x = if pure_mode {
                     if w < 260.0 { 22.0 } else { 32.0 }
                 } else if w < 260.0 {

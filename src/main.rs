@@ -107,6 +107,7 @@ const WM_APP_OPEN_ONBOARDING: u32 = WM_APP + 30;
 const WM_APP_DOCK_ICON_READY: u32 = WM_APP + 31;
 const WM_APP_WP_STATE_CHANGED: u32 = WM_APP + 32;
 const WM_APP_TRAY_OVERFLOW_FALLBACK: u32 = mac_dock::WM_APP_TRAY_OVERFLOW_FALLBACK;
+const WM_APP_TRAY_OVERFLOW_DONE: u32 = mac_dock::WM_APP_TRAY_OVERFLOW_DONE;
 
 const TIMER_SETTLE_HIDE: usize = 101;
 const TIMER_EVAL_DEBOUNCE: usize = 102;
@@ -1228,6 +1229,13 @@ unsafe extern "system" fn global_wnd_proc(
             state.config.mode = TaskbarMode::StealthHide;
             state.config.sync_dock_hide_from_mode();
             schedule_config_save(state);
+            if state.hider.is_hidden
+                && state.hider.peek_visible
+                && !state.config.mac_dock_enabled
+                && state.config.mode == TaskbarMode::HoverReveal
+            {
+                state.hider.keep_peek_topmost(true);
+            }
             evaluate_mode_and_apply(state, false);
             LRESULT(0)
         }
@@ -1488,6 +1496,23 @@ unsafe extern "system" fn global_wnd_proc(
         WM_APP_TRAY_OVERFLOW_FALLBACK => {
             if !state.shutting_down {
                 state.mac_dock.show_pending_tray_overflow_fallback();
+            }
+            LRESULT(0)
+        }
+        WM_APP_TRAY_OVERFLOW_DONE => {
+            if !state.shutting_down && state.config.mac_dock_enabled {
+                state.last_dock_reserves.clear();
+                let dock_reserves = state.mac_dock.desired_work_area_reserves(&state.config);
+                let mut wa_changed = state.hider.settle_hidden(dock_reserves.is_empty());
+                if !dock_reserves.is_empty() {
+                    wa_changed |= TaskbarHider::apply_dock_work_area(&dock_reserves);
+                    state.last_dock_reserves = dock_reserves;
+                }
+                if wa_changed {
+                    state.self_workarea_broadcast_until =
+                        Some(Instant::now() + Duration::from_millis(1200));
+                }
+                state.mac_dock.mark_dirty_paint();
             }
             LRESULT(0)
         }
@@ -1989,6 +2014,13 @@ unsafe extern "system" fn global_wnd_proc(
                     state.mac_dock.mark_dirty_paint();
                 }
             }
+            if state.hider.is_hidden
+                && state.hider.peek_visible
+                && !state.config.mac_dock_enabled
+                && state.config.mode == TaskbarMode::HoverReveal
+            {
+                state.hider.keep_peek_topmost(true);
+            }
             evaluate_mode_and_apply(state, false);
             if !state.config.mac_dock_enabled {
                 schedule_pill_rechecks(state.hidden_hwnd);
@@ -2156,7 +2188,7 @@ fn step_edge_peek(state: &mut AppState) {
         .any(|&g| is_cursor_in_taskbar_zone(pt, g, 18))
         || is_shell_flyout_active()
     {
-        state.hider.keep_peek_topmost();
+        state.hider.keep_peek_topmost(overlay_only);
         state.styler.ensure_zorder_only(&state.config);
         state.peek_leave_ticks = 0;
     } else {
@@ -2165,6 +2197,11 @@ fn step_edge_peek(state: &mut AppState) {
             state.hider.peek_hide(overlay_only);
             state.styler.hide_overlays();
             state.peek_leave_ticks = 0;
+            if !state.hidden_hwnd.0.is_null() {
+                unsafe {
+                    let _ = SetTimer(Some(state.hidden_hwnd), TIMER_SETTLE_HIDE, 140, None);
+                }
+            }
             update_viz_timer(state);
         }
     }
@@ -2523,6 +2560,13 @@ fn handle_settings_command(state: &mut AppState, cmd: SettingsCommand, prev_pill
                 "GAME_MODE",
                 if state.config.game_mode_pause { "enabled" } else { "disabled" },
             );
+            if state.hider.is_hidden
+                && state.hider.peek_visible
+                && !state.config.mac_dock_enabled
+                && state.config.mode == TaskbarMode::HoverReveal
+            {
+                state.hider.keep_peek_topmost(true);
+            }
             evaluate_mode_and_apply(state, false);
         }
         SettingsCommand::ExportDiagnostics => {
@@ -2648,10 +2692,10 @@ fn should_run_workarea_watchdog(
 }
 
 fn sync_wallpaper_interactive_yield(state: &mut AppState) {
-    let yield_ui = state.settings.is_visible()
-        || (state.config.mac_dock_enabled && state.mac_dock.is_hover_animating())
-        || state.on_battery_or_saver
-        || state.config.performance_mode == config::PerformanceMode::Eco;
+    // Only yield `Auto` wallpaper pacing when the user explicitly selects `Eco` performance mode.
+    // Never throttle playback while Studio is open, on Dock hover, or on normal battery so the
+    // Live Wallpaper FPS Cap bar (Auto / 60 / 30) responds immediately and video stays smooth!
+    let yield_ui = state.config.performance_mode == config::PerformanceMode::Eco;
     state.wallpaper.set_interactive_yield(yield_ui);
 }
 

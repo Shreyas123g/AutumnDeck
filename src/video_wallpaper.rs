@@ -271,15 +271,16 @@ fn compute_target_frame_interval_us(fps_cap: WallpaperFpsCap, monitor_hz: u32) -
     }
 }
 
-/// Computes the effective pacer interval when UI interaction (Dock hover, Settings Studio,
-/// battery/Eco mode) requests gentler Main-UI-thread wallpaper cadence so foreground UI stays crisp.
+/// Computes the effective pacer interval respecting the user's explicit FPS cap first.
+/// Only `Auto` yields to 30 FPS when explicit `PerformanceMode::Eco` is active; explicit
+/// `60` / `30` caps are ALWAYS honored verbatim so the FPS Cap bar works reliably.
 fn compute_effective_pacer_interval_us(
     fps_cap: WallpaperFpsCap,
     monitor_hz: u32,
     interactive_yield: bool,
 ) -> u64 {
     let base = compute_target_frame_interval_us(fps_cap, monitor_hz);
-    if interactive_yield {
+    if interactive_yield && fps_cap == WallpaperFpsCap::Auto {
         base.max(33_333)
     } else {
         base
@@ -304,13 +305,14 @@ pub(crate) fn compute_cover_reclaim_delay_ms(
     }
 }
 
-/// Minimum interval between GPU `Present()` calls when a hard FPS cap is selected, with ~1.2ms
-/// tolerance so VSync jitter on 60Hz/30Hz displays never halves the frame rate.
+/// Minimum interval between GPU `Present()` calls when a hard FPS cap is selected, with
+/// generous scheduling-jitter tolerance so normal UI-thread wakeup drift on 60Hz/120Hz
+/// displays never halves 60 FPS down to 30 FPS while still strictly enforcing the cap.
 fn compute_min_present_interval_us(fps_cap: WallpaperFpsCap) -> u64 {
     match fps_cap {
         WallpaperFpsCap::Auto => 0,
-        WallpaperFpsCap::Fps60 => 15_500,
-        WallpaperFpsCap::Fps30 => 31_500,
+        WallpaperFpsCap::Fps60 => 13_500,
+        WallpaperFpsCap::Fps30 => 29_000,
     }
 }
 
@@ -1593,7 +1595,11 @@ impl VideoWallpaperEngine {
         self.volume_pct = cfg.wallpaper_volume_pct;
         self.pause_when_covered = cfg.wallpaper_pause_maximized;
         self.trim_on_pause = cfg.wallpaper_trim_memory;
+        let prev_fps_cap = self.fps_cap;
         self.fps_cap = cfg.wallpaper_fps_cap;
+        if prev_fps_cap != self.fps_cap {
+            self.last_presented_at = None;
+        }
         self.sync_pacer_cadence();
 
         if !want_enabled {
@@ -2409,16 +2415,16 @@ impl VideoWallpaperEngine {
                 if let Ok(dxgi_dev) = dev.cast::<IDXGIDevice>() {
                     if let Ok(adapter) = dxgi_dev.GetAdapter() {
                         if let Ok(factory) = adapter.GetParent::<IDXGIFactory2>() {
-                            // Prefer lean double-buffered FLIP_DISCARD with a frame-latency waitable
-                            // object (1-frame max latency) to minimize GPU/driver backbuffer memory
-                            // while keeping VSync-aligned smooth playback without stalling UI.
+                            // Prefer triple-buffered FLIP_DISCARD with a frame-latency waitable
+                            // object (2-frame max latency) for tear-free, stutter-free VSync
+                            // video playback without ever dropping frames on minor phase jitter.
                             let candidates = [
                                 (
-                                    2u32,
+                                    3u32,
                                     DXGI_SWAP_EFFECT_FLIP_DISCARD,
                                     DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                                 ),
-                                (2u32, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_CHAIN_FLAG(0)),
+                                (3u32, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_SWAP_CHAIN_FLAG(0)),
                                 (
                                     2u32,
                                     DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
@@ -2454,7 +2460,7 @@ impl VideoWallpaperEngine {
                                     if sc_flag == DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
                                     {
                                         if let Ok(sc2) = sc.cast::<IDXGISwapChain2>() {
-                                            let _ = sc2.SetMaximumFrameLatency(1);
+                                            let _ = sc2.SetMaximumFrameLatency(2);
                                             let waitable = sc2.GetFrameLatencyWaitableObject();
                                             if !waitable.is_invalid() && !waitable.0.is_null() {
                                                 self.frame_latency_waitable = waitable;
@@ -2591,7 +2597,7 @@ impl VideoWallpaperEngine {
                         let _ = mt.SetMultithreadProtected(true);
                     }
                     if let Ok(dxgi3) = dev.cast::<IDXGIDevice3>() {
-                        let _ = dxgi3.SetMaximumFrameLatency(1);
+                        let _ = dxgi3.SetMaximumFrameLatency(2);
                     }
                     has_video_dev = used_video_flags && dev.cast::<ID3D11VideoDevice>().is_ok();
                 }
@@ -3136,10 +3142,9 @@ impl VideoWallpaperEngine {
                 &MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
                 DXGI_FORMAT_B8G8R8A8_UNORM.0 as u32,
             );
-            // Prefer MF_MEDIA_ENGINE_REAL_TIME_MODE (0x8) to keep Media Engine's internal
-            // pre-rendered video sample ring lean (preventing 9x 4K BGRA = ~300-450 MB RAM bloat)
-            // while keeping full hardware DXVA decode; fall back cleanly to 0 if unsupported.
-            const MF_MEDIA_ENGINE_REAL_TIME_MODE_FLAG: u32 = 0x8;
+            // Use standard Media Engine mode (0) so Media Foundation keeps its full hardware
+            // DXVA B-frame lookahead buffer for smooth, zero-stutter prerecorded MP4 playback.
+            // (Memory when covered by maximized windows is reclaimed cleanly by our 8s cover timer.)
             let eng_opt: Option<IMFMediaEngine> = {
                 let _mf = MfCallGuard::enter();
                 CoCreateInstance::<_, IMFMediaEngineClassFactory>(
@@ -3148,12 +3153,7 @@ impl VideoWallpaperEngine {
                     CLSCTX_INPROC_SERVER,
                 )
                 .ok()
-                .and_then(|factory| {
-                    factory
-                        .CreateInstance(MF_MEDIA_ENGINE_REAL_TIME_MODE_FLAG, &attrs)
-                        .or_else(|_| factory.CreateInstance(0, &attrs))
-                        .ok()
-                })
+                .and_then(|factory| factory.CreateInstance(0, &attrs).ok())
                 .map(|eng| {
                     let _ = eng.SetLoop(true);
                     let _ = eng.SetAutoPlay(true);
@@ -3591,7 +3591,7 @@ impl VideoWallpaperEngine {
                 // Wait strictly 1:1 right before Present() so the waitable swapchain semaphore
                 // can never leak if TransferVideoFrame returns an error on a seek frame.
                 if !waitable_h.0.is_null() {
-                    let wait_ms = if force_current { 16 } else { 0 };
+                    let wait_ms = if force_current { 16 } else { 4 };
                     if WaitForSingleObject(waitable_h, wait_ms) != WAIT_OBJECT_0 {
                         return;
                     }
@@ -4360,8 +4360,8 @@ mod tests {
         assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps60, 60), 16_666);
         assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps30, 144), 33_333);
         assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Auto), 0);
-        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps60), 15_500);
-        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps30), 31_500);
+        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps60), 13_500);
+        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps30), 29_000);
 
         // 2. Double-buffered async staging slot FIFO lifecycle
         let mut slots = AsyncPaletteSlots::default();
@@ -4441,6 +4441,11 @@ mod tests {
         assert_eq!(
             compute_effective_pacer_interval_us(WallpaperFpsCap::Auto, 60, true),
             33_333
+        );
+        assert_eq!(
+            compute_effective_pacer_interval_us(WallpaperFpsCap::Fps60, 60, true),
+            16_666,
+            "Explicit 60 FPS cap must never be overridden down to 30 FPS"
         );
         assert_eq!(
             compute_effective_pacer_interval_us(WallpaperFpsCap::Fps30, 60, true),

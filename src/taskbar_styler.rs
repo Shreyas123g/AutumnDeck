@@ -6274,6 +6274,42 @@ unsafe fn draw_glass_surface(
     dc_rt.EndDraw(None, None).is_ok()
 }
 
+fn is_tray_uia_control(aid: &str, cls: &str) -> bool {
+    if cls.contains("ShowDesktopButton") || aid.contains("ShowDesktop") {
+        return false;
+    }
+    aid == "SystemTrayIcon"
+        || aid.contains("Clock")
+        || aid.contains("Tray")
+        || aid.contains("InputIndicator")
+        || aid.contains("ControlCenter")
+        || aid.contains("QuickSettings")
+        || aid.contains("Notification")
+        || aid.contains("Battery")
+        || aid.contains("Network")
+        || aid.contains("Volume")
+        || cls.contains("SystemTray")
+        || cls.contains("TrayClock")
+        || cls.contains("ClockButton")
+        || cls.contains("InputIndicator")
+        || cls.contains("NotificationCenter")
+        || cls.contains("TrayButton")
+}
+
+fn clamp_rect_inside(r: RECT, bounds: RECT) -> Option<RECT> {
+    let clamped = RECT {
+        left: r.left.max(bounds.left),
+        top: r.top.max(bounds.top),
+        right: r.right.min(bounds.right),
+        bottom: r.bottom.min(bounds.bottom),
+    };
+    if clamped.right > clamped.left + 4 && clamped.bottom > clamped.top + 4 {
+        Some(clamped)
+    } else {
+        None
+    }
+}
+
 fn measure_pills_cached(
     uia: &IUIAutomation,
     btn_cond: &IUIAutomationCondition,
@@ -6344,7 +6380,7 @@ fn measure_pills_cached(
             || cls.contains("Widgets")
             || cls.contains("Overflow");
 
-        let is_tray_item = aid == "SystemTrayIcon" && !cls.contains("ShowDesktopButton");
+        let is_tray_item = is_tray_uia_control(&aid, &cls);
 
         if is_app_item {
             app_bounds = Some(merge_rect(app_bounds, r));
@@ -6353,6 +6389,43 @@ fn measure_pills_cached(
             }
         } else if is_tray_item {
             tray_bounds = Some(merge_rect(tray_bounds, r));
+        }
+    }
+
+    // Fallback/supplement via Win32 child `TrayNotifyWnd` & `TrayClockWClass`: ensures vertical
+    // taskbars (ExplorerPatcher / Windhawk / StartAllBack / classic tray) always include the full
+    // language indicator, battery %, and clock inside the Unified / Split pill capsule.
+    unsafe {
+        if let Ok(notify_hw) = FindWindowExW(Some(hwnd), None, w!("TrayNotifyWnd"), PCWSTR::null())
+        {
+            if !notify_hw.0.is_null() && IsWindowVisible(notify_hw).as_bool() {
+                let mut nr = RECT::default();
+                if GetWindowRect(notify_hw, &mut nr).is_ok() {
+                    if let Some(mut cr) = clamp_rect_inside(nr, bar_rect) {
+                        // Exclude thin Show Desktop sliver at the extreme far end when present.
+                        if let Ok(sd_hw) = FindWindowExW(
+                            Some(notify_hw),
+                            None,
+                            w!("TrayShowDesktopButtonWClass"),
+                            PCWSTR::null(),
+                        ) {
+                            if !sd_hw.0.is_null() {
+                                let mut sdr = RECT::default();
+                                if GetWindowRect(sd_hw, &mut sdr).is_ok() {
+                                    if is_vertical && sdr.top > cr.top + 12 {
+                                        cr.bottom = cr.bottom.min(sdr.top);
+                                    } else if !is_vertical && sdr.left > cr.left + 12 {
+                                        cr.right = cr.right.min(sdr.left);
+                                    }
+                                }
+                            }
+                        }
+                        if cr.right > cr.left + 4 && cr.bottom > cr.top + 4 {
+                            tray_bounds = Some(merge_rect(tray_bounds, cr));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -8663,6 +8736,7 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         cfg.tb_show_backdrop = base_cfg.tb_show_backdrop;
         cfg.tb_show_rim = base_cfg.tb_show_rim;
         cfg.tb_show_fx = base_cfg.tb_show_fx;
+        cfg.dock_bar_enabled = base_cfg.dock_bar_enabled;
         cfg.clean_top_bar_enabled = base_cfg.clean_top_bar_enabled;
         cfg.clean_top_bar_edge = base_cfg.clean_top_bar_edge;
         cfg.clean_top_bar_style = base_cfg.clean_top_bar_style;
@@ -8671,6 +8745,7 @@ pub unsafe fn draw_taskbar_preview_card_with_viz(
         cfg.mac_dock_mag_pct = base_cfg.mac_dock_mag_pct;
         cfg.mac_dock_edge = base_cfg.mac_dock_edge;
         cfg.mac_dock_dots = base_cfg.mac_dock_dots;
+        cfg.w_shelf.glass_alpha_pct = base_cfg.w_shelf.glass_alpha_pct;
         cfg.w_apps.card_opacity_pct = base_cfg.w_apps.card_opacity_pct;
         cfg.tb_hover_react = base_cfg.tb_hover_react;
     }
@@ -9768,6 +9843,18 @@ mod tests {
         assert_eq!(split, vec![app_pill, tray_pill]);
         let unified = finalize_pills(Some(app_pill), Some(tray_pill), PillMode::UnifiedPill, 12, false, sec_bar);
         assert_eq!(unified.len(), 1);
+        assert!(is_tray_uia_control("SystemTrayIcon", "SystemTray.NormalButton"));
+        assert!(is_tray_uia_control("ClockButton", "TrayClockWClass"));
+        assert!(is_tray_uia_control("InputIndicatorButton", "SystemTray.OmniButton"));
+        assert!(is_tray_uia_control("ControlCenterButton", "SystemTray.OmniButton"));
+        assert!(!is_tray_uia_control("ShowDesktopButton", "Taskbar.ShowDesktopButton"));
+        let bar_v = RECT { left: 0, top: 0, right: 48, bottom: 1080 };
+        let app_v = RECT { left: 4, top: 8, right: 44, bottom: 420 };
+        let tray_v = RECT { left: 4, top: 760, right: 44, bottom: 1072 };
+        let uni_v = finalize_pills(Some(app_v), Some(tray_v), PillMode::UnifiedPill, 12, true, bar_v);
+        assert_eq!(uni_v.len(), 1);
+        assert_eq!(uni_v[0].top, 8);
+        assert_eq!(uni_v[0].bottom, 1072);
         assert_eq!(unified[0].left, app_pill.left);
         assert_eq!(unified[0].right, tray_pill.right);
     }

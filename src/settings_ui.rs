@@ -1313,6 +1313,7 @@ fn ext_layout_toggles(id: ExtWidgetId, wcfg: &ExtWidgetConfig) -> Vec<(&'static 
 enum HitZone {
     None,
     TitleDrag,
+    BtnHeaderKofi,
     BtnMinimize,
     BtnClose,
     TabTaskbar,
@@ -5633,6 +5634,8 @@ impl SettingsController {
             zone,
             HitZone::None
                 | HitZone::TitleDrag
+                | HitZone::BtnHeaderKofi
+                | HitZone::BtnSupportKofi
                 | HitZone::BtnMinimize
                 | HitZone::BtnClose
                 | HitZone::BtnDiscardWidget
@@ -5826,7 +5829,7 @@ impl SettingsController {
                 self.startup_on = is_startup_enabled();
                 SettingsCommand::None
             }
-            HitZone::BtnSupportKofi => {
+            HitZone::BtnSupportKofi | HitZone::BtnHeaderKofi => {
                 open_kofi_support_page();
                 self.setup_feedback = Some((
                     true,
@@ -8989,19 +8992,22 @@ impl SettingsController {
             }
             return HitZone::None;
         }
-        // Header-integrated settings gear & master toggles (keeps top 4-tab bar 100% overlap-free)
+        // Header-integrated Ko-fi icon, settings gear & master toggles (keeps top 4-tab bar 100% overlap-free)
+        if in_rect(x, y, 586.0, 14.0, 618.0, 44.0) {
+            return HitZone::BtnHeaderKofi;
+        }
         if in_rect(x, y, 624.0, 14.0, 656.0, 44.0) {
             return HitZone::TabSettings;
         }
         if self.active_tab == StudioTab::DesktopWidgets {
-            if in_rect(x, y, 380.0, 15.0, 494.0, 45.0) {
+            if in_rect(x, y, 356.0, 15.0, 464.0, 45.0) {
                 return HitZone::ToggleWidgetsLock;
             }
-            if in_rect(x, y, 500.0, 15.0, 616.0, 45.0) {
+            if in_rect(x, y, 470.0, 15.0, 580.0, 45.0) {
                 return HitZone::ToggleWidgetsMaster;
             }
         } else if self.active_tab == StudioTab::Wallpaper {
-            if in_rect(x, y, 474.0, 15.0, 616.0, 45.0) {
+            if in_rect(x, y, 440.0, 15.0, 580.0, 45.0) {
                 return HitZone::ToggleWallpaperMaster;
             }
         }
@@ -11614,11 +11620,11 @@ impl SettingsController {
             let (st_x0, st_x1) = if self.onboarding_active {
                 (404.0, 648.0)
             } else if is_widgets_gallery {
-                (272.0, 374.0)
+                (252.0, 350.0)
             } else if is_wallpaper_tab {
-                (272.0, 468.0)
+                (262.0, 434.0)
             } else {
-                (374.0, 616.0)
+                (338.0, 580.0)
             };
 
             let status_rr = rrect(st_x0, 14.0, st_x1, 46.0, 16.0, u);
@@ -11727,10 +11733,10 @@ impl SettingsController {
             };
             draw_txt(rt, &st_label, &r.tf_sub, rect_f(st_x0 + 26.0, 13.0, st_x1 - 8.0, 46.0, u), &r.cream);
 
-            // Header-integrated master switches + Settings gear button
+            // Header-integrated master switches, Ko-fi coffee button & Settings gear button
             if is_widgets_gallery {
                 let lk_hov = self.hovered == HitZone::ToggleWidgetsLock;
-                let lk_rr = rrect(380.0, 15.0, 494.0, 45.0, 8.0, u);
+                let lk_rr = rrect(356.0, 15.0, 464.0, 45.0, 8.0, u);
                 rt.FillRoundedRectangle(&lk_rr, if lk_hov { &r.card_hover } else { &r.card_bg });
                 rt.DrawRoundedRectangle(
                     &lk_rr,
@@ -11742,13 +11748,13 @@ impl SettingsController {
                     rt,
                     if self.draft_cfg.widgets_locked { "Locked" } else { "Lock" },
                     &r.tf_btn,
-                    rect_f(384.0, 15.0, 444.0, 45.0, u),
+                    rect_f(360.0, 15.0, 414.0, 45.0, u),
                     if self.draft_cfg.widgets_locked { &r.sun_gold } else { &r.warm_sub },
                 );
-                draw_switch_r(rt, r, 446.0, 19.0, u, self.draft_cfg.widgets_locked);
+                draw_switch_r(rt, r, 416.0, 19.0, u, self.draft_cfg.widgets_locked);
 
                 let m_hov = self.hovered == HitZone::ToggleWidgetsMaster;
-                let m_rr = rrect(500.0, 15.0, 616.0, 45.0, 8.0, u);
+                let m_rr = rrect(470.0, 15.0, 580.0, 45.0, 8.0, u);
                 rt.FillRoundedRectangle(&m_rr, if m_hov { &r.card_hover } else { &r.card_bg });
                 rt.DrawRoundedRectangle(
                     &m_rr,
@@ -11760,13 +11766,13 @@ impl SettingsController {
                     rt,
                     "Engine",
                     &r.tf_btn,
-                    rect_f(504.0, 15.0, 566.0, 45.0, u),
+                    rect_f(474.0, 15.0, 530.0, 45.0, u),
                     if self.draft_cfg.widgets_enabled { &r.sun_gold } else { &r.warm_sub },
                 );
-                draw_switch_r(rt, r, 568.0, 19.0, u, self.draft_cfg.widgets_enabled);
+                draw_switch_r(rt, r, 532.0, 19.0, u, self.draft_cfg.widgets_enabled);
             } else if is_wallpaper_tab {
                 let m_hov = self.hovered == HitZone::ToggleWallpaperMaster;
-                let m_rr = rrect(474.0, 15.0, 616.0, 45.0, 8.0, u);
+                let m_rr = rrect(440.0, 15.0, 580.0, 45.0, 8.0, u);
                 rt.FillRoundedRectangle(&m_rr, if m_hov { &r.card_hover } else { &r.card_bg });
                 rt.DrawRoundedRectangle(
                     &m_rr,
@@ -11785,13 +11791,27 @@ impl SettingsController {
                     rt,
                     wp_toggle_lbl,
                     &r.tf_btn,
-                    rect_f(478.0, 15.0, 564.0, 45.0, u),
+                    rect_f(444.0, 15.0, 528.0, 45.0, u),
                     if self.draft_cfg.wallpaper_enabled { &r.sun_gold } else { &r.warm_sub },
                 );
-                draw_switch_r(rt, r, 566.0, 19.0, u, self.draft_cfg.wallpaper_enabled);
+                draw_switch_r(rt, r, 530.0, 19.0, u, self.draft_cfg.wallpaper_enabled);
             }
 
             if !self.onboarding_active {
+                let kofi_hov = self.hovered == HitZone::BtnHeaderKofi;
+                let kofi_rr = rrect(586.0, 14.0, 618.0, 44.0, 8.0, u);
+                rt.FillRoundedRectangle(
+                    &kofi_rr,
+                    if kofi_hov { &r.amber_dim } else { &r.card_bg },
+                );
+                rt.DrawRoundedRectangle(
+                    &kofi_rr,
+                    if kofi_hov { &r.sun_gold } else { &r.card_border },
+                    if kofi_hov { 1.25 * u } else { 1.0 * u },
+                    None,
+                );
+                draw_kofi_coffee_icon(rt, r, 602.0, 29.0, u, kofi_hov);
+
                 let cfg_act = self.active_tab == StudioTab::Settings;
                 let cfg_hov = self.hovered == HitZone::TabSettings;
                 let cfg_rr = rrect(624.0, 14.0, 656.0, 44.0, 8.0, u);
@@ -22708,6 +22728,92 @@ unsafe fn draw_switch_r(rt: &ID2D1DCRenderTarget, r: &PaintResources, x0: f32, y
     );
 }
 
+unsafe fn draw_kofi_coffee_icon(
+    rt: &ID2D1DCRenderTarget,
+    r: &PaintResources,
+    cx: f32,
+    cy: f32,
+    u: f32,
+    hovered: bool,
+) {
+    let steam_br = if hovered { &r.cream } else { &r.sun_gold };
+    // Subtle steam wisps rising above the cup rim
+    rt.DrawLine(
+        Vector2 { X: (cx - 3.2) * u, Y: (cy - 8.4) * u },
+        Vector2 { X: (cx - 3.2) * u, Y: (cy - 5.6) * u },
+        steam_br,
+        1.35 * u,
+        r.round_cap.as_ref(),
+    );
+    rt.DrawLine(
+        Vector2 { X: (cx + 0.6) * u, Y: (cy - 7.7) * u },
+        Vector2 { X: (cx + 0.6) * u, Y: (cy - 5.3) * u },
+        steam_br,
+        1.35 * u,
+        r.round_cap.as_ref(),
+    );
+    // Open C-shaped mug handle on the right (drawn first so cup overlaps cleanly)
+    rt.DrawEllipse(
+        &D2D1_ELLIPSE {
+            point: Vector2 { X: (cx + 4.8) * u, Y: (cy + 1.3) * u },
+            radiusX: 2.3 * u,
+            radiusY: 2.2 * u,
+        },
+        &r.cream,
+        1.5 * u,
+        None,
+    );
+    // Flat-top, rounded-bottom mug silhouette
+    rt.PushAxisAlignedClip(
+        &rect_f(cx - 7.6, cy - 3.2, cx + 5.2, cy + 7.2, u),
+        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    );
+    rt.FillRoundedRectangle(
+        &rrect(cx - 7.4, cy - 7.0, cx + 5.0, cy + 6.6, 4.2, u),
+        &r.cream,
+    );
+    rt.PopAxisAlignedClip();
+    // Signature Ko-fi heart inside the mug
+    rt.FillEllipse(
+        &D2D1_ELLIPSE {
+            point: Vector2 { X: (cx - 2.45) * u, Y: (cy + 0.9) * u },
+            radiusX: 1.3 * u,
+            radiusY: 1.2 * u,
+        },
+        &r.coral,
+    );
+    rt.FillEllipse(
+        &D2D1_ELLIPSE {
+            point: Vector2 { X: (cx + 0.05) * u, Y: (cy + 0.9) * u },
+            radiusX: 1.3 * u,
+            radiusY: 1.2 * u,
+        },
+        &r.coral,
+    );
+    rt.DrawLine(
+        Vector2 { X: (cx - 2.8) * u, Y: (cy + 1.4) * u },
+        Vector2 { X: (cx - 1.2) * u, Y: (cy + 3.3) * u },
+        &r.coral,
+        1.65 * u,
+        r.round_cap.as_ref(),
+    );
+    rt.DrawLine(
+        Vector2 { X: (cx + 0.4) * u, Y: (cy + 1.4) * u },
+        Vector2 { X: (cx - 1.2) * u, Y: (cy + 3.3) * u },
+        &r.coral,
+        1.65 * u,
+        r.round_cap.as_ref(),
+    );
+    // Saucer base line
+    rt.DrawLine(
+        Vector2 { X: (cx - 8.0) * u, Y: (cy + 8.6) * u },
+        Vector2 { X: (cx + 5.6) * u, Y: (cy + 8.6) * u },
+        &r.cream,
+        1.4 * u,
+        r.round_cap.as_ref(),
+    );
+}
+
 fn in_rect(x: f32, y: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
     x >= x0 && x <= x1 && y >= y0 && y <= y1
 }
@@ -25957,7 +26063,47 @@ mod tests {
         sc.draft_cfg = cfg.clone();
         sc.active_tab = StudioTab::Wallpaper;
 
-        // 1. Clicking header gear opens Settings and remembers previous tab; clicking again returns
+        // 1. Clicking header Ko-fi coffee icon links directly to Ko-fi without changing tabs or draft edits;
+        //    clicking header gear opens Settings and remembers previous tab; clicking again returns
+        assert_eq!(sc.hit_test(602.0, 29.0), HitZone::BtnHeaderKofi);
+        sc.hovered = HitZone::BtnHeaderKofi;
+        assert!(sc.render_d2d(&cfg), "Header Ko-fi coffee icon must render cleanly on hover");
+        sc.hovered = HitZone::None;
+        let hk_cmd = sc.activate_zone(HitZone::BtnHeaderKofi, &mut cfg);
+        assert!(matches!(hk_cmd, SettingsCommand::None));
+        assert!(
+            sc.setup_feedback
+                .as_ref()
+                .map(|(ok, msg)| *ok && msg.contains(KOFI_SUPPORT_URL))
+                .unwrap_or(false),
+            "Clicking header Ko-fi coffee icon must open Ko-fi feedback with KOFI_SUPPORT_URL"
+        );
+        assert_eq!(sc.active_tab, StudioTab::Wallpaper);
+        assert!(sc.render_d2d(&cfg), "Wallpaper header with Ko-fi icon must render cleanly");
+        assert_eq!(sc.hit_test(510.0, 30.0), HitZone::ToggleWallpaperMaster);
+        assert_eq!(sc.hit_test(300.0, 29.0), HitZone::TitleDrag);
+
+        // Header Ko-fi button works in DesktopWidgets Customize without committing unsaved draft edits,
+        // and stays hidden behind TitleDrag during onboarding
+        sc.active_tab = StudioTab::DesktopWidgets;
+        sc.widget_page = WidgetPage::CustomizeDateTime;
+        let orig_dt_alpha = cfg.dt_glass_alpha;
+        sc.draft_cfg.dt_glass_alpha = orig_dt_alpha.wrapping_add(17);
+        assert_eq!(sc.hit_test(410.0, 30.0), HitZone::ToggleWidgetsLock);
+        assert_eq!(sc.hit_test(525.0, 30.0), HitZone::ToggleWidgetsMaster);
+        assert_eq!(sc.hit_test(602.0, 29.0), HitZone::BtnHeaderKofi);
+        assert!(sc.render_d2d(&cfg), "DesktopWidgets header with Ko-fi icon must render cleanly");
+        assert!(matches!(
+            sc.activate_zone(HitZone::BtnHeaderKofi, &mut cfg),
+            SettingsCommand::None
+        ));
+        assert_eq!(cfg.dt_glass_alpha, orig_dt_alpha, "Header Ko-fi click must not auto-commit widget drafts");
+        sc.onboarding_active = true;
+        assert_eq!(sc.hit_test(602.0, 29.0), HitZone::TitleDrag);
+        sc.onboarding_active = false;
+        sc.draft_cfg = cfg.clone();
+        sc.active_tab = StudioTab::Wallpaper;
+
         assert_eq!(sc.hit_test(640.0, 29.0), HitZone::TabSettings);
         sc.activate_zone(HitZone::TabSettings, &mut cfg);
         assert_eq!(sc.active_tab, StudioTab::Settings);

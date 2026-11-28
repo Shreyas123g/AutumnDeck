@@ -22,8 +22,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SendNotifyMessageW, SetForegroundWindow, SetWindowPos, ShowWindow,
     SystemParametersInfoW, GUITHREADINFO, GUI_INMENUMODE, GUI_POPUPMENUMODE, GWL_EXSTYLE,
     GWL_STYLE, GW_OWNER, HWND_BROADCAST, HWND_TOPMOST, SMTO_ABORTIFHUNG, SPI_SETWORKAREA,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
-    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     WM_SETTINGCHANGE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
@@ -554,8 +554,9 @@ impl TaskbarHider {
     }
 
     /// Reveals Shell_TrayWnd while hidden.
-    /// `overlay_only = true` (`Edge Hover Peek`) skips WorkArea & WM_WINDOWPOSCHANGING so
-    /// maximized windows never shrink or twitch.
+    /// `overlay_only = true` (`Edge Hover Peek`) uses `SWP_SHOWWINDOW | SWP_NOSENDCHANGING`
+    /// WITHOUT `ShowWindow(SW_SHOWNA)` or `0x05CA` so Explorer's AppBar manager never shrinks
+    /// `rcWork` and maximized windows never resize or twitch!
     /// `overlay_only = false` (`Smart Auto-Hide`) docks the taskbar cleanly and slides
     /// maximized windows aside so the peeked bar never covers app sidebars or headers.
     pub fn peek_show(&mut self, overlay_only: bool) {
@@ -564,25 +565,9 @@ impl TaskbarHider {
         }
         self.peek_visible = true;
         unsafe {
-            let cls = to_wide("Shell_TrayWnd");
-            if let Ok(main_hw) = FindWindowW(PCWSTR(cls.as_ptr()), PCWSTR::null()) {
-                if !main_hw.0.is_null() {
-                    let mut res = 0usize;
-                    let _ = SendMessageTimeoutW(
-                        main_hw,
-                        0x05CA,
-                        WPARAM(0),
-                        LPARAM(0),
-                        SMTO_ABORTIFHUNG,
-                        120,
-                        Some(&mut res),
-                    );
-                }
-            }
             if overlay_only {
                 let hwnds = Self::collect_taskbar_hwnds();
                 for &hw in &hwnds {
-                    let _ = ShowWindow(hw, SW_SHOWNA);
                     let _ = SetWindowPos(
                         hw,
                         Some(HWND_TOPMOST),
@@ -597,18 +582,8 @@ impl TaskbarHider {
                             | SWP_NOSENDCHANGING,
                     );
                     let _ = InvalidateRect(Some(hw), None, true);
-                    // Wait for Explorer to process SW_SHOWNA so we immediately undo any
-                    // AppBar work-area shrink before maximized windows shift aside.
-                    let _ = SendMessageTimeoutW(
-                        hw,
-                        windows::Win32::UI::WindowsAndMessaging::WM_NULL,
-                        WPARAM(0),
-                        LPARAM(0),
-                        SMTO_ABORTIFHUNG,
-                        60,
-                        None,
-                    );
                 }
+                // Safety net only: if Explorer still externally mutated rcWork, restore it.
                 let mut wa_restored = false;
                 for mi in Self::query_all_monitors() {
                     if mi.rcWork != mi.rcMonitor {
@@ -626,6 +601,21 @@ impl TaskbarHider {
                     Self::refit_maximized_windows();
                 }
             } else {
+                let cls = to_wide("Shell_TrayWnd");
+                if let Ok(main_hw) = FindWindowW(PCWSTR(cls.as_ptr()), PCWSTR::null()) {
+                    if !main_hw.0.is_null() {
+                        let mut res = 0usize;
+                        let _ = SendMessageTimeoutW(
+                            main_hw,
+                            0x05CA,
+                            WPARAM(0),
+                            LPARAM(0),
+                            SMTO_ABORTIFHUNG,
+                            120,
+                            Some(&mut res),
+                        );
+                    }
+                }
                 let bar_rects = Self::collect_bar_rects();
                 for mi in Self::query_all_monitors() {
                     let mut target = self.resolve_monitor_work(&mi, &bar_rects, false);
@@ -672,11 +662,13 @@ impl TaskbarHider {
         unsafe {
             for hw in Self::collect_taskbar_hwnds() {
                 if !hw.0.is_null() {
-                    if !IsWindowVisible(hw).as_bool() {
-                        let _ = ShowWindow(hw, SW_SHOWNA);
-                    }
+                    let vis = IsWindowVisible(hw).as_bool();
                     let ex = GetWindowLongW(hw, GWL_EXSTYLE) as u32;
-                    if (ex & WS_EX_TOPMOST.0) == 0 {
+                    let is_topmost = (ex & WS_EX_TOPMOST.0) != 0;
+                    if !vis || !is_topmost {
+                        if !vis && !overlay_only {
+                            let _ = ShowWindow(hw, SW_SHOWNA);
+                        }
                         let _ = SetWindowPos(
                             hw,
                             Some(HWND_TOPMOST),
@@ -693,9 +685,6 @@ impl TaskbarHider {
                     }
                 }
             }
-            // In Edge Hover Reveal (overlay_only), Explorer may asynchronously shrink rcWork
-            // while Shell_TrayWnd is temporarily visible; immediately restore full-monitor
-            // work area and snap any displaced maximized windows back flush to the edge.
             if overlay_only {
                 let mut wa_restored = false;
                 for mi in Self::query_all_monitors() {
@@ -717,7 +706,7 @@ impl TaskbarHider {
         }
     }
 
-    pub fn peek_hide(&mut self, _overlay_only: bool) {
+    pub fn peek_hide(&mut self, overlay_only: bool) {
         if !self.is_hidden || !self.peek_visible {
             return;
         }
@@ -725,18 +714,36 @@ impl TaskbarHider {
         unsafe {
             for hw in Self::collect_taskbar_hwnds() {
                 if IsWindowVisible(hw).as_bool() {
-                    let _ = ShowWindow(hw, SW_HIDE);
-                    let _ = SendMessageTimeoutW(
-                        hw,
-                        windows::Win32::UI::WindowsAndMessaging::WM_NULL,
-                        WPARAM(0),
-                        LPARAM(0),
-                        SMTO_ABORTIFHUNG,
-                        50,
-                        None,
-                    );
+                    if overlay_only {
+                        let _ = SetWindowPos(
+                            hw,
+                            None,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOACTIVATE
+                                | SWP_NOMOVE
+                                | SWP_NOSIZE
+                                | SWP_NOZORDER
+                                | SWP_HIDEWINDOW
+                                | SWP_NOSENDCHANGING,
+                        );
+                    } else {
+                        let _ = ShowWindow(hw, SW_HIDE);
+                        let _ = SendMessageTimeoutW(
+                            hw,
+                            windows::Win32::UI::WindowsAndMessaging::WM_NULL,
+                            WPARAM(0),
+                            LPARAM(0),
+                            SMTO_ABORTIFHUNG,
+                            50,
+                            None,
+                        );
+                    }
                 }
             }
+            let mut wa_restored = false;
             for mi in Self::query_all_monitors() {
                 if mi.rcWork != mi.rcMonitor {
                     let mut full = mi.rcMonitor;
@@ -746,12 +753,14 @@ impl TaskbarHider {
                         Some((&mut full as *mut RECT) as *mut c_void),
                         SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
                     );
+                    wa_restored = true;
                 }
             }
-            // Always verify maximized windows against rcWork after peek_hide (even in
-            // overlay_only mode): refit_maximized_windows() skips windows already flush
-            // with rcWork and instantly heals any window Explorer shifted during peek.
-            Self::refit_maximized_windows();
+            // In overlay_only (Edge Hover Reveal), only refit if Explorer actually mutated rcWork
+            // so maximized windows never twitch on hover leave.
+            if !overlay_only || wa_restored {
+                Self::refit_maximized_windows();
+            }
         }
     }
 

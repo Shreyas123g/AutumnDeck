@@ -267,24 +267,16 @@ fn compute_target_frame_interval_us(fps_cap: WallpaperFpsCap, monitor_hz: u32) -
     match fps_cap {
         WallpaperFpsCap::Fps30 => 33_333,
         WallpaperFpsCap::Fps60 => 1_000_000 / hz.min(60),
-        WallpaperFpsCap::Auto => 1_000_000 / hz.clamp(30, 120),
     }
 }
 
-/// Computes the effective pacer interval respecting the user's explicit FPS cap first.
-/// Only `Auto` yields to 30 FPS when explicit `PerformanceMode::Eco` is active; explicit
-/// `60` / `30` caps are ALWAYS honored verbatim so the FPS Cap bar works reliably.
+/// Computes the effective pacer interval honoring the user's explicit 60 / 30 FPS cap verbatim.
 fn compute_effective_pacer_interval_us(
     fps_cap: WallpaperFpsCap,
     monitor_hz: u32,
-    interactive_yield: bool,
+    _interactive_yield: bool,
 ) -> u64 {
-    let base = compute_target_frame_interval_us(fps_cap, monitor_hz);
-    if interactive_yield && fps_cap == WallpaperFpsCap::Auto {
-        base.max(33_333)
-    } else {
-        base
-    }
+    compute_target_frame_interval_us(fps_cap, monitor_hz)
 }
 
 /// Computes how long a paused, maximized-covered video holds its `IMFMediaEngine` before
@@ -310,7 +302,6 @@ pub(crate) fn compute_cover_reclaim_delay_ms(
 /// displays never halves 60 FPS down to 30 FPS while still strictly enforcing the cap.
 fn compute_min_present_interval_us(fps_cap: WallpaperFpsCap) -> u64 {
     match fps_cap {
-        WallpaperFpsCap::Auto => 0,
         WallpaperFpsCap::Fps60 => 13_500,
         WallpaperFpsCap::Fps30 => 29_000,
     }
@@ -1206,7 +1197,7 @@ impl VideoWallpaperEngine {
     pub fn new(hinst: HINSTANCE) -> Self {
         Self::register_class(hinst);
         let monitor_hz = query_primary_monitor_refresh_hz();
-        let initial_us = compute_target_frame_interval_us(WallpaperFpsCap::Auto, monitor_hz);
+        let initial_us = compute_target_frame_interval_us(WallpaperFpsCap::Fps60, monitor_hz);
         Self {
             hinst,
             hwnd: HWND::default(),
@@ -1241,7 +1232,7 @@ impl VideoWallpaperEngine {
             pacer_interval_us: Arc::new(AtomicU64::new(initial_us)),
             pump_queued: Arc::new(AtomicBool::new(false)),
             monitor_hz,
-            fps_cap: WallpaperFpsCap::Auto,
+            fps_cap: WallpaperFpsCap::Fps60,
             interactive_yield: false,
             native_video_size: (0, 0),
             last_presented_at: None,
@@ -4352,14 +4343,13 @@ mod tests {
 
     #[test]
     fn video_fps_pacing_async_palette_slots_and_decode_telemetry() {
-        // 1. Adaptive frame pacer cadence & minimum present guard
-        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Auto, 60), 16_666);
-        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Auto, 144), 8_333);
-        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Auto, 30), 33_333);
+        // 1. Adaptive frame pacer cadence & minimum present guard (60 FPS default, Auto removed)
+        assert_eq!(WallpaperFpsCap::default(), WallpaperFpsCap::Fps60);
+        assert_eq!(WallpaperFpsCap::from_str("auto"), WallpaperFpsCap::Fps60);
         assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps60, 144), 16_666);
         assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps60, 60), 16_666);
+        assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps60, 30), 33_333);
         assert_eq!(compute_target_frame_interval_us(WallpaperFpsCap::Fps30, 144), 33_333);
-        assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Auto), 0);
         assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps60), 13_500);
         assert_eq!(compute_min_present_interval_us(WallpaperFpsCap::Fps30), 29_000);
 
@@ -4417,11 +4407,7 @@ mod tests {
         assert_eq!(eng.decode_mode(), VideoDecodeMode::SoftwareCpu);
 
         // 4. Persisted WallpaperFpsCap INI roundtrip
-        for cap in [
-            WallpaperFpsCap::Auto,
-            WallpaperFpsCap::Fps60,
-            WallpaperFpsCap::Fps30,
-        ] {
+        for cap in [WallpaperFpsCap::Fps60, WallpaperFpsCap::Fps30] {
             let mut cfg = AppConfig::default();
             cfg.wallpaper_fps_cap = cap;
             let ini = crate::config::serialize_config_ini(&cfg);
@@ -4429,18 +4415,14 @@ mod tests {
             assert_eq!(parsed.wallpaper_fps_cap, cap);
         }
 
-        // 5. 4K covered auto-reclaim delay and interactive UI yield cadence
+        // 5. 4K covered auto-reclaim delay and explicit FPS cap cadence
         assert_eq!(compute_cover_reclaim_delay_ms(true, 1920, 1080), 4_000);
         assert_eq!(compute_cover_reclaim_delay_ms(false, 3840, 2160), 8_000);
         assert_eq!(compute_cover_reclaim_delay_ms(false, 2560, 1440), 8_000);
         assert_eq!(compute_cover_reclaim_delay_ms(false, 1920, 1080), 15_000);
         assert_eq!(
-            compute_effective_pacer_interval_us(WallpaperFpsCap::Auto, 60, false),
+            compute_effective_pacer_interval_us(WallpaperFpsCap::Fps60, 60, false),
             16_666
-        );
-        assert_eq!(
-            compute_effective_pacer_interval_us(WallpaperFpsCap::Auto, 60, true),
-            33_333
         );
         assert_eq!(
             compute_effective_pacer_interval_us(WallpaperFpsCap::Fps60, 60, true),

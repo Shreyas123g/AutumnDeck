@@ -3334,6 +3334,16 @@ impl SettingsController {
         }
     }
 
+    /// Repaints the Settings window in-place (e.g. when live wallpaper color swatches update)
+    /// without resetting `self.draft_cfg` or reverting any in-progress user selection.
+    pub fn invalidate_redraw(&self) {
+        if !self.hwnd.0.is_null() && unsafe { IsWindowVisible(self.hwnd).as_bool() } {
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), None, false);
+            }
+        }
+    }
+
     pub fn sync_cached_wallpaper_path(&mut self, old_path: &str, new_path: &str) {
         if new_path.is_empty() {
             return;
@@ -3346,11 +3356,22 @@ impl SettingsController {
                 preset.path = new_path.to_string();
             }
         }
-        if !self.hwnd.0.is_null() && unsafe { IsWindowVisible(self.hwnd).as_bool() } {
-            unsafe {
-                let _ = InvalidateRect(Some(self.hwnd), None, false);
+        // Deduplicate gallery cards if the cached destination path already existed in the list.
+        let mut seen: Vec<String> = Vec::with_capacity(self.wallpaper_presets.len());
+        self.wallpaper_presets.retain(|p| {
+            let key = p.path.to_ascii_lowercase();
+            if seen.contains(&key) {
+                false
+            } else {
+                seen.push(key);
+                true
             }
+        });
+        let max_scroll = self.wallpaper_presets.len().saturating_sub(4);
+        if self.wallpaper_scroll > max_scroll {
+            self.wallpaper_scroll = max_scroll;
         }
+        self.invalidate_redraw();
     }
 
     fn prepend_browsed_wallpaper(&mut self, path: &str) {
@@ -8667,10 +8688,14 @@ impl SettingsController {
                 if let Some(chosen) = pick_video_file(self.hwnd) {
                     self.draft_cfg.wallpaper_path = chosen.clone();
                     self.draft_cfg.wallpaper_enabled = true;
+                    cfg.wallpaper_path = chosen.clone();
+                    cfg.wallpaper_enabled = true;
                     self.prepend_browsed_wallpaper(&chosen);
-                    self.applied_flash = false;
+                    self.applied_flash = true;
+                    SettingsCommand::WallpaperConfigUpdated
+                } else {
+                    SettingsCommand::None
                 }
-                SettingsCommand::None
             }
             HitZone::BtnStopLively => SettingsCommand::StopExternalLively,
             HitZone::BtnRefreshWallpapers => {
@@ -8681,11 +8706,16 @@ impl SettingsController {
             }
             HitZone::SelectWallpaperPreset(idx) => {
                 if let Some(p) = self.wallpaper_presets.get(idx) {
-                    self.draft_cfg.wallpaper_path = p.path.clone();
+                    let chosen = p.path.clone();
+                    self.draft_cfg.wallpaper_path = chosen.clone();
                     self.draft_cfg.wallpaper_enabled = true;
-                    self.applied_flash = false;
+                    cfg.wallpaper_path = chosen;
+                    cfg.wallpaper_enabled = true;
+                    self.applied_flash = true;
+                    SettingsCommand::WallpaperConfigUpdated
+                } else {
+                    SettingsCommand::None
                 }
-                SettingsCommand::None
             }
             HitZone::ScrollWpUp => {
                 if self.wallpaper_scroll > 0 {
@@ -11205,13 +11235,10 @@ impl SettingsController {
                     if in_rect(x, y, 264.0, 490.0, 722.0, 526.0) {
                         return HitZone::Slider(SliderKind::WallpaperVolume);
                     }
-                    if in_rect(x, y, 96.0, 534.0, 148.0, 562.0) {
-                        return HitZone::WallpaperFpsCap(WallpaperFpsCap::Auto);
-                    }
-                    if in_rect(x, y, 152.0, 534.0, 198.0, 562.0) {
+                    if in_rect(x, y, 96.0, 534.0, 162.0, 562.0) {
                         return HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps60);
                     }
-                    if in_rect(x, y, 202.0, 534.0, 248.0, 562.0) {
+                    if in_rect(x, y, 168.0, 534.0, 234.0, 562.0) {
                         return HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps30);
                     }
                 }
@@ -20641,7 +20668,7 @@ impl SettingsController {
                     || self.dragging_slider == Some(SliderKind::WallpaperVolume),
             );
 
-            // Row 3: Wallpaper FPS Cap (Auto / 60 / 30) + inline DXVA decode diagnostic pill
+            // Row 3: Wallpaper FPS Cap (60 FPS default / 30 FPS) + inline DXVA decode diagnostic pill
             draw_txt(
                 rt,
                 "FPS Cap",
@@ -20650,9 +20677,8 @@ impl SettingsController {
                 &r.warm_sub,
             );
             let fps_pills = [
-                (WallpaperFpsCap::Auto, 96.0f32, 148.0f32),
-                (WallpaperFpsCap::Fps60, 152.0f32, 198.0f32),
-                (WallpaperFpsCap::Fps30, 202.0f32, 248.0f32),
+                (WallpaperFpsCap::Fps60, 96.0f32, 162.0f32),
+                (WallpaperFpsCap::Fps30, 168.0f32, 234.0f32),
             ];
             for (cap, px0, px1) in fps_pills {
                 let is_sel = self.draft_cfg.wallpaper_fps_cap == cap;
@@ -20674,7 +20700,7 @@ impl SettingsController {
             }
 
             if sw_decode_warn {
-                let warn_rr = rrect(258.0, 534.0, 722.0, 562.0, 7.0, u);
+                let warn_rr = rrect(246.0, 534.0, 722.0, 562.0, 7.0, u);
                 if let Some(ref wbg) = solid(rt, rgb_u8(226, 92, 82, 0.18)) {
                     rt.FillRoundedRectangle(&warn_rr, wbg);
                 }
@@ -20692,9 +20718,8 @@ impl SettingsController {
                 );
             } else {
                 let cap_desc = match self.draft_cfg.wallpaper_fps_cap {
-                    WallpaperFpsCap::Auto => "Auto (Native Hz)",
-                    WallpaperFpsCap::Fps60 => "60 FPS Cap",
-                    WallpaperFpsCap::Fps30 => "30 FPS Cap",
+                    WallpaperFpsCap::Fps60 => "60 FPS Default",
+                    WallpaperFpsCap::Fps30 => "30 FPS Eco Cap",
                 };
                 let tip_txt = if self.draft_cfg.wallpaper_pause_maximized {
                     format!("{} • VSync Flip-Discard • pauses when covered", cap_desc)
@@ -20705,7 +20730,7 @@ impl SettingsController {
                     rt,
                     &tip_txt,
                     &r.tf_sub,
-                    rect_f(262.0, 534.0, 720.0, 562.0, u),
+                    rect_f(248.0, 534.0, 720.0, 562.0, u),
                     &r.warm_sub,
                 );
             }
@@ -25517,35 +25542,58 @@ mod tests {
             },
         ];
 
-        // Video mode hit-tests: full-width Pause on Maximized, Mute, Volume Slider (Reclaim RAM hidden from UI)
+        // Video mode hit-tests: full-width Pause on Maximized, Mute, Volume Slider, 60/30 FPS Cap (no Auto)
         assert_eq!(sc.hit_test(180.0, 463.0), HitZone::ToggleWallpaperPauseMax);
         assert_eq!(sc.hit_test(520.0, 463.0), HitZone::ToggleWallpaperPauseMax);
         assert_eq!(sc.hit_test(140.0, 508.0), HitZone::ToggleWallpaperMute);
         assert_eq!(sc.hit_test(480.0, 508.0), HitZone::Slider(SliderKind::WallpaperVolume));
         assert_eq!(
-            sc.hit_test(122.0, 548.0),
-            HitZone::WallpaperFpsCap(WallpaperFpsCap::Auto)
-        );
-        assert_eq!(
-            sc.hit_test(175.0, 548.0),
+            sc.hit_test(129.0, 548.0),
             HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps60)
         );
         assert_eq!(
-            sc.hit_test(225.0, 548.0),
+            sc.hit_test(200.0, 548.0),
             HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps30)
         );
         assert!(sc.render_d2d(&cfg), "Wallpaper Studio video mode must render cleanly");
 
-        // FPS Cap pills update both draft and live config immediately
-        assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Auto);
-        let c_fps60 = sc.activate_zone(HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps60), &mut cfg);
-        assert!(matches!(c_fps60, SettingsCommand::WallpaperConfigUpdated));
+        // FPS Cap defaults to 60 FPS and pills update both draft and live config immediately
         assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps60);
-        assert_eq!(sc.draft_cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps60);
-
         let c_fps30 = sc.activate_zone(HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps30), &mut cfg);
         assert!(matches!(c_fps30, SettingsCommand::WallpaperConfigUpdated));
         assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps30);
+        assert_eq!(sc.draft_cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps30);
+
+        let c_fps60 = sc.activate_zone(HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps60), &mut cfg);
+        assert!(matches!(c_fps60, SettingsCommand::WallpaperConfigUpdated));
+        assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps60);
+        let c_fps30_back = sc.activate_zone(HitZone::WallpaperFpsCap(WallpaperFpsCap::Fps30), &mut cfg);
+        assert!(matches!(c_fps30_back, SettingsCommand::WallpaperConfigUpdated));
+        assert_eq!(cfg.wallpaper_fps_cap, WallpaperFpsCap::Fps30);
+
+        // Browsing a file then clicking another Wallpaper Gallery card immediately switches BOTH
+        // draft and live cfg to the gallery card and never reverts to the browsed file!
+        let browsed_path = r"C:\Users\demo\browsed_clip.mp4".to_string();
+        sc.draft_cfg.wallpaper_path = browsed_path.clone();
+        cfg.wallpaper_path = browsed_path.clone();
+        sc.prepend_browsed_wallpaper(&browsed_path);
+        assert_eq!(sc.wallpaper_presets[0].path, browsed_path);
+        let gallery_pick_cmd = sc.activate_zone(HitZone::SelectWallpaperPreset(1), &mut cfg);
+        assert!(matches!(gallery_pick_cmd, SettingsCommand::WallpaperConfigUpdated));
+        assert_eq!(cfg.wallpaper_path, r"C:\Users\demo\ocean_loop.mp4");
+        assert_eq!(sc.draft_cfg.wallpaper_path, r"C:\Users\demo\ocean_loop.mp4");
+        // Live palette redraw does not clobber selection; cached-path sync deduplicates entries
+        sc.invalidate_redraw();
+        assert_eq!(sc.draft_cfg.wallpaper_path, r"C:\Users\demo\ocean_loop.mp4");
+        sc.sync_cached_wallpaper_path(&browsed_path, &cfg.wallpaper_path);
+        assert_eq!(
+            sc.wallpaper_presets
+                .iter()
+                .filter(|p| p.path.eq_ignore_ascii_case(&cfg.wallpaper_path))
+                .count(),
+            1,
+            "sync_cached_wallpaper_path must deduplicate gallery cards"
+        );
 
         // Software/WARP decode fallback renders inline diagnostic pill cleanly in Direct2D
         for mode in [

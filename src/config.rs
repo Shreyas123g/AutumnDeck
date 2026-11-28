@@ -3760,21 +3760,19 @@ impl PerformanceMode {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WallpaperFpsCap {
-    Auto,
     Fps60,
     Fps30,
 }
 
 impl Default for WallpaperFpsCap {
     fn default() -> Self {
-        Self::Auto
+        Self::Fps60
     }
 }
 
 impl WallpaperFpsCap {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Fps60 => "60",
             Self::Fps30 => "30",
         }
@@ -3782,17 +3780,15 @@ impl WallpaperFpsCap {
 
     pub fn from_str(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
-            "60" | "fps60" | "60fps" => Self::Fps60,
             "30" | "fps30" | "30fps" => Self::Fps30,
-            _ => Self::Auto,
+            _ => Self::Fps60,
         }
     }
 
     pub fn short_label(&self) -> &'static str {
         match self {
-            Self::Auto => "Auto",
-            Self::Fps60 => "60",
-            Self::Fps30 => "30",
+            Self::Fps60 => "60 FPS",
+            Self::Fps30 => "30 FPS",
         }
     }
 }
@@ -5848,7 +5844,7 @@ impl Default for AppConfig {
             wallpaper_trim_memory: false,
             wallpaper_mute: true,
             wallpaper_volume_pct: 0,
-            wallpaper_fps_cap: WallpaperFpsCap::Auto,
+            wallpaper_fps_cap: WallpaperFpsCap::Fps60,
             game_mode_pause: true,
             onboarding_done: false,
 

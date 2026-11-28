@@ -1435,7 +1435,8 @@ unsafe extern "system" fn global_wnd_proc(
         WM_APP_PALETTE_UPDATED => {
             if state.config.any_match_wallpaper() {
                 state.widgets.apply_config(&state.config);
-                state.settings.sync_from_config(&state.config);
+                // Redraw live wallpaper swatches/previews WITHOUT clobbering unsaved draft edits!
+                state.settings.invalidate_redraw();
                 if (!state.hider.is_hidden || state.hider.peek_visible) && state.config.tb_match_wallpaper {
                     state.styler.invalidate_style_only();
                     state.styler.sync_style_fast(&state.config);
@@ -2694,7 +2695,7 @@ fn should_run_workarea_watchdog(
 fn sync_wallpaper_interactive_yield(state: &mut AppState) {
     // Only yield `Auto` wallpaper pacing when the user explicitly selects `Eco` performance mode.
     // Never throttle playback while Studio is open, on Dock hover, or on normal battery so the
-    // Live Wallpaper FPS Cap bar (Auto / 60 / 30) responds immediately and video stays smooth!
+    // Live Wallpaper FPS Cap bar (60 / 30) responds immediately and video stays smooth!
     let yield_ui = state.config.performance_mode == config::PerformanceMode::Eco;
     state.wallpaper.set_interactive_yield(yield_ui);
 }
